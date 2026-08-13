@@ -23,6 +23,9 @@ pub enum Command {
         bench: Option<usize>,
         /// Which tab to open on.
         tab: crate::app::Tab,
+        /// Text to put in the search box before the first frame. Exists so a
+        /// search can be photographed and checked, not only tried by hand.
+        search: String,
     },
     Scan(ScanArgs),
     /// Group every entry by the program behind it (milestone 8).
@@ -41,6 +44,10 @@ pub enum Command {
         path: String,
         confirmed: bool,
     },
+    /// Create an entry of one's own in HKCU (milestone 10).
+    Create(Box<crate::registry::create::NewEntry>),
+    /// List what this tool created, from entries.json.
+    Created,
     Smoke,
     Help,
 }
@@ -58,6 +65,8 @@ Verwendung / Usage:
   ctxmenu                   Fenster öffnen / open the window
   ctxmenu --tab <name>      Fenster auf einem Reiter oeffnen / open on a tab:
                             categories, filetypes, programs, backups
+  ctxmenu --search <text>   Fenster mit gesetzter Suche oeffnen /
+                            open the window with the search box filled
   ctxmenu --synthetic <n> [--bench <frames>]
                             Fenster mit n erzeugten Zeilen, optional als
                             Messlauf / window with n generated rows,
@@ -75,6 +84,13 @@ Verwendung / Usage:
   ctxmenu delete <key> --yes
                             Schlüssel sichern und löschen /
                             back up and delete a key
+  ctxmenu create --category <name> --name <text> --command <zeile>
+                 [--key <name>] [--icon <ref>] [--position top|bottom]
+                 [--extended]
+                            Eigenen Eintrag in HKCU anlegen /
+                            create your own entry in HKCU
+  ctxmenu created           Selbst angelegte Eintraege auflisten /
+                            list entries created by this tool
   ctxmenu --smoke           Smoke-Test-Fenster / open the smoke test window
   ctxmenu --help            Diese Hilfe / this help
 
@@ -98,16 +114,18 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             synthetic: None,
             bench: None,
             tab: crate::app::Tab::Categories,
+            search: String::new(),
         });
     }
 
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--smoke" => return Ok(Command::Smoke),
-        "--synthetic" | "--bench" | "--tab" => {
+        "--synthetic" | "--bench" | "--tab" | "--search" => {
             let mut synthetic = None;
             let mut bench = None;
             let mut tab = crate::app::Tab::Categories;
+            let mut search = String::new();
             let mut rest = args.iter();
 
             while let Some(flag) = rest.next() {
@@ -115,6 +133,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     .next()
                     .with_context(|| format!("{flag} erwartet einen Wert / expects a value"))?;
                 match flag.as_str() {
+                    "--search" => search = value.clone(),
                     "--tab" => {
                         tab = crate::app::Tab::from_slug(value).with_context(|| {
                             format!("Unbekannter Reiter / unknown tab: {value}")
@@ -138,6 +157,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 synthetic,
                 bench,
                 tab,
+                search,
             });
         }
         "programs" => return Ok(Command::Programs),
@@ -179,6 +199,54 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 path: path.clone(),
                 confirmed: args.iter().any(|a| a == "--yes"),
             });
+        }
+        "created" => return Ok(Command::Created),
+        "create" => {
+            use crate::registry::create::NewEntry;
+            let mut entry = NewEntry {
+                category: Category::Directory,
+                key_name: String::new(),
+                display_name: String::new(),
+                command: String::new(),
+                icon: None,
+                position: None,
+                extended: false,
+            };
+
+            let mut rest = args[1..].iter();
+            while let Some(flag) = rest.next() {
+                if flag == "--extended" {
+                    entry.extended = true;
+                    continue;
+                }
+                let value = rest
+                    .next()
+                    .with_context(|| format!("{flag} erwartet einen Wert / expects a value"))?;
+                match flag.as_str() {
+                    "--category" => {
+                        entry.category = Category::from_slug(value).with_context(|| {
+                            format!("Unbekannte Kategorie / unknown category: {value}")
+                        })?;
+                    }
+                    "--name" => entry.display_name = value.clone(),
+                    "--key" => entry.key_name = value.clone(),
+                    "--command" => entry.command = value.clone(),
+                    "--icon" => entry.icon = Some(value.clone()),
+                    "--position" => {
+                        entry.position = Some(match value.to_ascii_lowercase().as_str() {
+                            "top" | "oben" => "Top".to_string(),
+                            "bottom" | "unten" => "Bottom".to_string(),
+                            other => other.to_string(),
+                        });
+                    }
+                    other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
+                }
+            }
+
+            if entry.key_name.trim().is_empty() {
+                entry.key_name = crate::registry::create::suggest_key_name(&entry.display_name);
+            }
+            return Ok(Command::Create(Box::new(entry)));
         }
         "scan" => {}
         other => bail!("Unbekannter Befehl / unknown command: {other}\n\n{HELP}"),
@@ -528,6 +596,47 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     Ok(())
 }
 
+/// Creates an entry and tells the shell about it.
+pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
+    use crate::registry::create::{self, Problem};
+
+    for problem in create::check(entry) {
+        match problem {
+            Problem::Error(message) => crate::errln!("Fehler / error: {message}"),
+            Problem::Warning(message) => crate::errln!("Warnung / warning: {message}"),
+        }
+    }
+
+    let target = create::create(entry)?;
+    // Without this the key is there and the running Explorer still shows the
+    // old menu -- which looks exactly like a failed write.
+    crate::elevation::notify_shell();
+
+    crate::outln!("Angelegt / created: {}", target.full_path());
+    crate::outln!("  {} -> {}", entry.display_name, entry.command);
+    crate::outln!("  entries.json: {}", create::entries_path()?.display());
+    Ok(())
+}
+
+/// Lists what this tool created, as recorded in `entries.json`.
+pub fn run_created() -> Result<()> {
+    let recorded = crate::registry::create::recorded()?;
+    if recorded.is_empty() {
+        crate::outln!("Nichts angelegt / nothing created yet");
+        return Ok(());
+    }
+
+    for entry in &recorded {
+        let location = entry
+            .target()
+            .map(|t| t.full_path())
+            .unwrap_or_else(|_| "?".into());
+        crate::outln!("{:<28} {}", entry.display_name, location);
+        crate::outln!("    {}", entry.command);
+    }
+    Ok(())
+}
+
 pub fn run_backups() -> Result<()> {
     let backups = backup::list()?;
     if backups.is_empty() {
@@ -553,6 +662,9 @@ pub fn run_backups() -> Result<()> {
         crate::outln!("    {}", directory.display());
         for entry in &manifest.entries {
             crate::outln!("      {}", entry.registry_path);
+        }
+        for note in &manifest.notes {
+            crate::outln!("      ! {note}");
         }
     }
     Ok(())
@@ -776,6 +888,34 @@ mod tests {
         assert!(parse_args(&["scan", "--scope", "nonsense"]).is_err());
         assert!(parse_args(&["scan", "--category"]).is_err());
         assert!(parse_args(&["nonsense"]).is_err());
+    }
+
+    #[test]
+    fn a_new_entry_is_assembled_from_the_flags() {
+        let Command::Create(entry) = parse_args(&[
+            "create",
+            "--category",
+            "directorybackground",
+            "--name",
+            "Hier öffnen",
+            "--command",
+            r#""C:\Windows\notepad.exe" "%V""#,
+            "--position",
+            "oben",
+            "--extended",
+        ])
+        .unwrap() else {
+            panic!("expected a create command");
+        };
+
+        assert_eq!(entry.category, Category::DirectoryBackground);
+        assert_eq!(entry.display_name, "Hier öffnen");
+        assert_eq!(entry.position.as_deref(), Some("Top"));
+        assert!(entry.extended);
+        // Not given, so derived — otherwise the key would be nameless.
+        assert_eq!(entry.key_name, "ctxmenu_Hier_öffnen");
+        // A flag taking no value must not swallow the next one.
+        assert!(entry.command.contains("%V"));
     }
 
     #[test]

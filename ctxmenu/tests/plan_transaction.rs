@@ -66,6 +66,25 @@ impl Drop for Fixture {
     }
 }
 
+/// Every failed step with its reason.
+///
+/// A bare count in an assertion says "two of three" and nothing about which one
+/// or why; that turned a rare failure into a guessing game once already.
+fn failures(report: &ctxmenu::registry::plan::Report) -> String {
+    report
+        .results
+        .iter()
+        .filter(|r| !r.succeeded())
+        .map(|r| {
+            format!(
+                "\n  {} -> {}",
+                r.registry_path,
+                r.error.as_deref().unwrap_or("?")
+            )
+        })
+        .collect::<String>()
+}
+
 fn flag_present(target: &RegTarget, name: &str) -> bool {
     CURRENT_USER
         .open(target.key_path())
@@ -78,7 +97,12 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
     let fixture = Fixture::create("hide", &["a", "b", "c", "d", "e"]);
 
     let report = execute(&fixture.plan(Action::Hide)).expect("plan runs");
-    assert_eq!(report.succeeded(), 5, "every entry must be reported");
+    assert_eq!(
+        report.succeeded(),
+        5,
+        "every entry must be reported{}",
+        failures(&report)
+    );
     assert_eq!(report.failed(), 0);
     assert!(report.backup_directory.is_some(), "a backup is mandatory");
 
@@ -115,7 +139,12 @@ fn one_backup_covers_the_whole_group_rather_than_one_per_entry() {
     // in parallel also changes, and an assertion over it fails for reasons
     // that have nothing to do with the property being tested.
     let manifest = backup::read_manifest(path).expect("manifest.json");
-    assert_eq!(manifest.entries.len(), 3, "all three keys must be in it");
+    assert_eq!(
+        manifest.entries.len(),
+        3,
+        "all three keys must be in it, missing: {:?}",
+        manifest.missing
+    );
     assert!(manifest.missing.is_empty());
 
     let reg_files = std::fs::read_dir(path)
@@ -172,7 +201,7 @@ fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
     let fixture = Fixture::create("delete", &["one", "two", "three"]);
 
     let report = execute(&fixture.plan(Action::Delete)).expect("plan runs");
-    assert_eq!(report.succeeded(), 3);
+    assert_eq!(report.succeeded(), 3, "{}", failures(&report));
     for target in &fixture.targets {
         assert!(!write::exists(target), "{} survived", target.full_path());
     }

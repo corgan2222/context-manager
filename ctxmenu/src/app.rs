@@ -18,6 +18,7 @@ use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
 use crate::program::group::{self, ProgramGroup};
 use crate::program::identity::NameResolver;
 use crate::registry::backup::{self, BackupManifest};
+use crate::registry::create::{self, NewEntry, Problem};
 use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
 use crate::settings::{Language, Settings, ThemeChoice};
@@ -45,6 +46,11 @@ impl Tab {
     }
 }
 
+/// Placeholder shown in the empty command field.
+const HINT_COMMAND: &str = "\"C:\\Windows\\notepad.exe\" \"%1\"";
+/// Placeholder shown in the empty icon field.
+const HINT_ICON: &str = "C:\\Windows\\notepad.exe,0";
+
 /// A modal question or report.
 enum Dialog {
     /// Drawn up but not yet applied. Holds everything the user needs to
@@ -56,6 +62,80 @@ enum Dialog {
     Running,
     Done(Report),
     Error(String),
+    /// The form for a new entry of one's own (milestone 10).
+    Editor(Box<NewEntry>),
+}
+
+/// One line of the table.
+///
+/// A cascading menu is one registry key with its children nested underneath,
+/// so a flat list of entry indices cannot show it. A row therefore names an
+/// entry plus, optionally, the path down into its `sub_commands` — one index
+/// per nesting level, because Windows allows a submenu inside a submenu.
+///
+/// Only top-level rows are selectable: a child lives at
+/// `…\shell\<parent>\shell\<child>`, which is deliberately not expressible
+/// as a `RegTarget`, so no action could be applied to it anyway.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    /// Index into `ScanResult::entries`.
+    pub entry: usize,
+    /// Empty for the entry itself.
+    pub path: Vec<usize>,
+}
+
+impl Row {
+    fn top(entry: usize) -> Self {
+        Row {
+            entry,
+            path: Vec::new(),
+        }
+    }
+
+    fn is_top(&self) -> bool {
+        self.path.is_empty()
+    }
+}
+
+/// Walks a row's path down into the nested children.
+///
+/// Returns `None` only if the path does not fit the entry, which can happen
+/// for a single frame after a rescan replaced the scan behind the rows.
+fn resolve<'a>(scan: &'a ScanResult, row: &Row) -> Option<&'a ContextEntry> {
+    let mut entry = scan.entries.get(row.entry)?;
+    for step in &row.path {
+        entry = children(entry)?.get(*step)?;
+    }
+    Some(entry)
+}
+
+fn children(entry: &ContextEntry) -> Option<&Vec<ContextEntry>> {
+    match &entry.kind {
+        EntryKind::Verb { sub_commands, .. } if !sub_commands.is_empty() => Some(sub_commands),
+        _ => None,
+    }
+}
+
+/// Appends `entry` and everything below it.
+fn push_with_children(rows: &mut Vec<Row>, entry: &ContextEntry, row: Row) {
+    let Some(kids) = children(entry) else {
+        rows.push(row);
+        return;
+    };
+
+    rows.push(row.clone());
+    for (index, child) in kids.iter().enumerate() {
+        let mut path = row.path.clone();
+        path.push(index);
+        push_with_children(
+            rows,
+            child,
+            Row {
+                entry: row.entry,
+                path,
+            },
+        );
+    }
 }
 
 /// What the scan thread reports back.
@@ -73,7 +153,7 @@ pub struct App {
     ///
     /// The single most important field for performance: filter, search and
     /// sorting are evaluated here once, not per frame (ToDo 4.3).
-    visible_rows: Vec<usize>,
+    visible_rows: Vec<Row>,
     filter_dirty: bool,
 
     tab: Tab,
@@ -116,6 +196,13 @@ pub struct App {
     frame_times: FrameTimes,
     bench: Option<Bench>,
     theme_reported: bool,
+    /// Milliseconds from process creation to the first frame that actually
+    /// showed rows — the milestone 12 target of under two seconds.
+    ///
+    /// Measured from the process creation time rather than from `main`, so the
+    /// loader, the static CRT and the window creation are all inside the
+    /// number instead of hiding in front of it.
+    first_list_ms: Option<f64>,
 }
 
 /// Drives the window at full speed for a fixed number of frames, scrolling as
@@ -140,6 +227,7 @@ impl App {
         synthetic: Option<usize>,
         bench_frames: Option<usize>,
         start_tab: Tab,
+        start_search: String,
     ) -> Self {
         install_fonts(&cc.egui_ctx);
 
@@ -160,7 +248,7 @@ impl App {
             groups: Vec::new(),
             selected: rustc_hash::FxHashSet::default(),
             focused: None,
-            search: String::new(),
+            search: start_search,
             dialog: None,
             action_rx: None,
             scan_rx: None,
@@ -177,6 +265,7 @@ impl App {
             titlebar_supported: true,
             frame_times: FrameTimes::default(),
             theme_reported: false,
+            first_list_ms: None,
             bench: bench_frames.map(|frames| Bench {
                 // The first frames pay for fonts, textures and window setup;
                 // measuring those would flatter or slander the result.
@@ -282,6 +371,7 @@ impl App {
         self.visible_rows.clear();
         let Some(scan) = &self.scan else { return };
 
+        let searching = !self.search.trim().is_empty();
         let candidates: Vec<usize> = match self.tab {
             // Base categories only. Without the second condition, "no
             // category selected" would also pour in every file type entry
@@ -296,6 +386,24 @@ impl App {
                     None => Category::BASE.contains(&e.category),
                 })
                 .map(|(i, _)| i)
+                .collect(),
+
+            // Without a selection the file type and program tabs show nothing,
+            // which is right for browsing and wrong for searching: a term
+            // typed into an empty tab would answer "no hits" while the entry
+            // sits two clicks away. A search therefore widens the candidate
+            // set to the whole tab.
+            Tab::FileTypes if self.selected_ext.is_none() && !searching => Vec::new(),
+            Tab::FileTypes if self.selected_ext.is_none() => scan
+                .file_types
+                .iter()
+                .flat_map(|info| info.entry_indices.iter().copied())
+                .collect(),
+
+            Tab::Programs if self.selected_group.is_none() && searching => self
+                .groups
+                .iter()
+                .flat_map(|group| group.entry_indices.iter().copied())
                 .collect(),
 
             Tab::FileTypes => match &self.selected_ext {
@@ -339,7 +447,10 @@ impl App {
             if !needle.is_empty() && !matches_search(entry, &needle) {
                 continue;
             }
-            self.visible_rows.push(index);
+            // Children come with their parent rather than being filtered
+            // separately: a submenu entry without the menu it hangs in would
+            // say nothing about where it appears.
+            push_with_children(&mut self.visible_rows, entry, Row::top(index));
         }
     }
 
@@ -354,6 +465,24 @@ impl App {
             self.titlebar_supported = theme::set_titlebar_dark(hwnd, dark);
             self.titlebar_dark = Some(dark);
         }
+    }
+
+    /// Notes when the table first had something in it.
+    ///
+    /// Called at the end of a frame, so "the list is visible" means the rows
+    /// were built in this frame, not merely that the data arrived.
+    fn note_first_list(&mut self) {
+        if self.first_list_ms.is_some() || self.visible_rows.is_empty() {
+            return;
+        }
+
+        let ms = milliseconds_since_process_start();
+        self.first_list_ms = Some(ms);
+        crate::errln!(
+            "startup_to_first_list_ms={ms:.0} entries={} rows={}",
+            self.total_entry_count(),
+            self.visible_rows.len()
+        );
     }
 
     /// Writes what the theme actually resolved to, once, to stderr.
@@ -617,6 +746,10 @@ impl eframe::App for App {
                 egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui));
             }
         }
+
+        // After the panels: at this point the rows of this frame really have
+        // been built, which is what "the list is visible" has to mean.
+        self.note_first_list();
     }
 }
 
@@ -740,8 +873,32 @@ impl App {
                 ui.label(self.tr.fmt_selected_count.replace("{}", &count.to_string()));
                 ui.separator();
 
+                // Creating one's own entry does not act on the selection, so
+                // it sits before the selection controls rather than among the
+                // actions that do.
+                if ui.button(self.tr.editor_new).clicked() {
+                    self.dialog = Some(Dialog::Editor(Box::new(NewEntry {
+                        category: self
+                            .selected_category
+                            .clone()
+                            .unwrap_or(Category::Directory),
+                        key_name: String::new(),
+                        display_name: String::new(),
+                        command: String::new(),
+                        icon: None,
+                        position: None,
+                        extended: false,
+                    })));
+                }
+                ui.separator();
+
                 if ui.button(self.tr.btn_select_all).clicked() {
-                    self.selected = self.visible_rows.iter().copied().collect();
+                    self.selected = self
+                        .visible_rows
+                        .iter()
+                        .filter(|row| row.is_top())
+                        .map(|row| row.entry)
+                        .collect();
                 }
                 if ui
                     .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
@@ -1012,6 +1169,174 @@ impl App {
                 }
                 keep = false;
             }
+
+            Dialog::Editor(mut entry) => {
+                let mut close = false;
+                let mut save = false;
+
+                egui::Window::new(self.tr.editor_title)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_width(560.0);
+
+                        egui::Grid::new("editor-grid")
+                            .num_columns(2)
+                            .spacing([10.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label(self.tr.editor_category);
+                                egui::ComboBox::from_id_salt("editor-category")
+                                    .selected_text(category_label(&entry.category, self.tr))
+                                    .show_ui(ui, |ui| {
+                                        for candidate in Category::BASE {
+                                            let label = category_label(&candidate, self.tr);
+                                            ui.selectable_value(
+                                                &mut entry.category,
+                                                candidate,
+                                                label,
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+
+                                ui.label(self.tr.editor_display_name);
+                                let before = entry.display_name.clone();
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut entry.display_name)
+                                        .desired_width(400.0),
+                                );
+                                // The key name follows the display name until the
+                                // moment someone edits it by hand; after that it is
+                                // theirs and stays put.
+                                if entry.display_name != before
+                                    && (entry.key_name.is_empty()
+                                        || entry.key_name == create::suggest_key_name(&before))
+                                {
+                                    entry.key_name = create::suggest_key_name(&entry.display_name);
+                                }
+                                ui.end_row();
+
+                                ui.label(self.tr.editor_key_name);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut entry.key_name)
+                                        .desired_width(400.0),
+                                );
+                                ui.end_row();
+
+                                ui.label(self.tr.editor_command);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut entry.command)
+                                        .desired_width(400.0)
+                                        .hint_text(HINT_COMMAND),
+                                );
+                                ui.end_row();
+
+                                ui.label(self.tr.editor_icon);
+                                let mut icon = entry.icon.clone().unwrap_or_default();
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut icon)
+                                        .desired_width(400.0)
+                                        .hint_text(HINT_ICON),
+                                );
+                                entry.icon = (!icon.trim().is_empty()).then_some(icon);
+                                ui.end_row();
+
+                                ui.label(self.tr.editor_position);
+                                ui.horizontal(|ui| {
+                                    for (label, value) in [
+                                        (self.tr.pos_default, None),
+                                        (self.tr.pos_top, Some("Top")),
+                                        (self.tr.pos_bottom, Some("Bottom")),
+                                    ] {
+                                        let chosen = entry.position.as_deref() == value;
+                                        if ui.selectable_label(chosen, label).clicked() {
+                                            entry.position = value.map(str::to_string);
+                                        }
+                                    }
+                                });
+                                ui.end_row();
+
+                                ui.label(self.tr.editor_visibility);
+                                ui.checkbox(&mut entry.extended, self.tr.editor_extended);
+                                ui.end_row();
+                            });
+
+                        ui.add_space(6.0);
+                        match entry.target() {
+                            Ok(target) => {
+                                ui.small(format!("\u{2192} {}", target.full_path()));
+                            }
+                            Err(error) => {
+                                ui.small(format!("{error:#}"));
+                            }
+                        }
+
+                        // Live, because a warning after the fact is no use: the %1
+                        // trap costs an entry that looks right and does nothing.
+                        let problems = create::check(&entry);
+                        let blocked = problems.iter().any(Problem::is_error);
+                        if !problems.is_empty() {
+                            ui.add_space(4.0);
+                            for problem in &problems {
+                                let colour = match problem {
+                                    Problem::Error(_) => ui.visuals().error_fg_color,
+                                    Problem::Warning(_) => ui.visuals().warn_fg_color,
+                                };
+                                ui.colored_label(colour, problem.message());
+                            }
+                        }
+
+                        let recorded = create::recorded().unwrap_or_default();
+                        if !recorded.is_empty() {
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.label(self.tr.editor_created_before);
+                            egui::ScrollArea::vertical()
+                                .max_height(90.0)
+                                .show(ui, |ui| {
+                                    for existing in &recorded {
+                                        ui.small(format!(
+                                            "{}  \u{b7}  {}  \u{b7}  {}",
+                                            existing.display_name,
+                                            category_label(&existing.category, self.tr),
+                                            existing.key_name
+                                        ));
+                                    }
+                                });
+                        }
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(!blocked, egui::Button::new(self.tr.editor_create))
+                                .clicked()
+                            {
+                                save = true;
+                            }
+                            if ui.button(self.tr.btn_cancel).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+
+                if save {
+                    match create::create(&entry) {
+                        Ok(_) => {
+                            // Without this the entry exists but the running
+                            // Explorer keeps showing yesterday's menu.
+                            elevation::notify_shell();
+                            self.start_scan(ctx);
+                        }
+                        Err(error) => {
+                            self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                        }
+                    }
+                } else if !close {
+                    self.dialog = Some(Dialog::Editor(entry));
+                }
+                keep = false;
+            }
         }
         let _ = keep;
     }
@@ -1045,6 +1370,10 @@ impl App {
                         self.frame_times.live_fps(),
                         self.frame_times.recent_average_ms()
                     ));
+                    if let Some(ms) = self.first_list_ms {
+                        ui.separator();
+                        ui.label(format!("Start {ms:.0} ms"));
+                    }
                     ui.separator();
                     let (loaded, pending, failed) = self.icons.stats();
                     ui.label(format!("Icons {loaded}/{pending}/{failed}"));
@@ -1307,12 +1636,16 @@ impl App {
                 // few thousand entries this is the difference between a
                 // scrolling list and a slideshow (ToDo 4.5).
                 body.rows(26.0, visible_rows.len(), |mut row| {
-                    let entry = &scan.entries[visible_rows[row.index()]];
-                    let index = visible_rows[row.index()];
+                    let reference = &visible_rows[row.index()];
+                    let index = reference.entry;
+                    let Some(entry) = resolve(scan, reference) else {
+                        return;
+                    };
+                    let depth = reference.path.len();
 
                     // Must precede the first cell; it only affects cells added
-                    // after the call.
-                    row.set_selected(selected.contains(&index));
+                    // after the call. A child is never selected on its own.
+                    row.set_selected(reference.is_top() && selected.contains(&index));
 
                     row.col(|ui| {
                         if let Some(reference) = &entry.icon_ref {
@@ -1326,7 +1659,23 @@ impl App {
                         }
                     });
                     row.col(|ui| {
-                        ui.label(&entry.display_name);
+                        match depth {
+                            // The arrow that a cascading menu shows, in the
+                            // place the menu itself would show it.
+                            0 if children(entry).is_some() => {
+                                ui.label(format!("{}  \u{25b8}", entry.display_name));
+                            }
+                            0 => {
+                                ui.label(&entry.display_name);
+                            }
+                            _ => {
+                                ui.weak(format!(
+                                    "{}\u{21b3} {}",
+                                    "    ".repeat(depth),
+                                    entry.display_name
+                                ));
+                            }
+                        };
                     });
                     row.col(|ui| {
                         ui.label(match entry.kind {
@@ -1345,7 +1694,7 @@ impl App {
                     });
 
                     let response = row.response();
-                    if response.clicked() {
+                    if response.clicked() && reference.is_top() {
                         // Ctrl adds to the selection, a plain click replaces
                         // it — the convention every file manager uses.
                         if response.ctx.input(|i| i.modifiers.ctrl) {
@@ -1483,6 +1832,11 @@ impl App {
                                 format!("  {missing} (fehlte / missing)"),
                             );
                         }
+                        // What reg.exe said about the gaps, so an incomplete
+                        // backup can be judged instead of only noticed.
+                        for note in &manifest.notes {
+                            ui.small(format!("  {note}"));
+                        }
                     });
                 }
             });
@@ -1534,7 +1888,54 @@ fn category_label(category: &Category, tr: &'static Strings) -> &'static str {
     }
 }
 
+/// How long ago this process was created, in milliseconds.
+///
+/// `GetProcessTimes` hands back a FILETIME, which counts 100-nanosecond ticks
+/// from 1601; the wall clock comes from `SystemTime`, which counts from 1970.
+/// The constant between them is the number of seconds in those 369 years.
+fn milliseconds_since_process_start() -> f64 {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+
+    const UNIX_EPOCH_IN_FILETIME_SECONDS: u64 = 11_644_473_600;
+    let ticks = |time: FILETIME| ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64;
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok.is_err() {
+        return f64::NAN;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() / 100 + (UNIX_EPOCH_IN_FILETIME_SECONDS as u128) * 10_000_000)
+        .unwrap_or(0);
+
+    (now.saturating_sub(ticks(creation) as u128)) as f64 / 10_000.0
+}
+
 fn matches_search(entry: &ContextEntry, needle: &str) -> bool {
+    // A submenu child matches for its parent: searching for the child and
+    // being told there is no such entry would be a lie, since the right-click
+    // menu does offer it.
+    if let Some(kids) = children(entry)
+        && kids.iter().any(|child| matches_search(child, needle))
+    {
+        return true;
+    }
+
     entry.display_name.to_lowercase().contains(needle)
         || entry.key_name.to_lowercase().contains(needle)
         || entry.registry_path.to_lowercase().contains(needle)
@@ -1711,6 +2112,7 @@ pub fn run(
     synthetic: Option<usize>,
     bench_frames: Option<usize>,
     start_tab: Tab,
+    start_search: String,
 ) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1723,7 +2125,15 @@ pub fn run(
     eframe::run_native(
         "ctxmenu",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, synthetic, bench_frames, start_tab)))),
+        Box::new(move |cc| {
+            Ok(Box::new(App::new(
+                cc,
+                synthetic,
+                bench_frames,
+                start_tab,
+                start_search.clone(),
+            )))
+        }),
     )
 }
 
@@ -1741,6 +2151,80 @@ mod tests {
         assert!(matches_search(entry, "synthetic00000"));
         assert!(matches_search(entry, "hkcu\\software\\classes"));
         assert!(!matches_search(entry, "definitely not present"));
+    }
+
+    /// Builds a parent with one child and one grandchild.
+    #[cfg(test)]
+    fn cascading() -> ContextEntry {
+        fn leaf(name: &str, kids: Vec<ContextEntry>) -> ContextEntry {
+            let mut entry = synthetic::scan_result(1).entries.remove(0);
+            entry.display_name = name.to_string();
+            entry.key_name = name.to_string();
+            entry.kind = EntryKind::Verb {
+                command: None,
+                sub_commands: kids,
+            };
+            entry
+        }
+
+        leaf(
+            "Eltern",
+            vec![leaf("Kind", vec![leaf("Enkelkind", Vec::new())])],
+        )
+    }
+
+    #[test]
+    fn a_submenu_becomes_one_row_per_level() {
+        let parent = cascading();
+        let mut rows = Vec::new();
+        push_with_children(&mut rows, &parent, Row::top(7));
+
+        assert_eq!(rows.len(), 3, "parent, child and grandchild");
+        assert!(rows.iter().all(|r| r.entry == 7), "all belong to one entry");
+        assert_eq!(rows[0].path, Vec::<usize>::new());
+        assert_eq!(rows[1].path, vec![0]);
+        assert_eq!(rows[2].path, vec![0, 0]);
+
+        // Exactly one selectable row: a child key is not a RegTarget.
+        assert_eq!(rows.iter().filter(|r| r.is_top()).count(), 1);
+    }
+
+    #[test]
+    fn a_row_resolves_to_the_entry_it_names() {
+        let mut scan = synthetic::scan_result(3);
+        scan.entries[1] = cascading();
+
+        let mut rows = Vec::new();
+        push_with_children(&mut rows, &scan.entries[1], Row::top(1));
+
+        let names: Vec<&str> = rows
+            .iter()
+            .map(|row| resolve(&scan, row).expect("row fits").display_name.as_str())
+            .collect();
+        assert_eq!(names, ["Eltern", "Kind", "Enkelkind"]);
+
+        // A path that no longer fits must not panic; it is dropped for a frame.
+        assert!(
+            resolve(
+                &scan,
+                &Row {
+                    entry: 1,
+                    path: vec![9]
+                }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn searching_finds_an_entry_by_the_name_of_its_child() {
+        let parent = cascading();
+
+        // The user sees "Enkelkind" in the right-click menu, so searching for
+        // it must lead somewhere.
+        assert!(matches_search(&parent, "enkelkind"));
+        assert!(matches_search(&parent, "kind"));
+        assert!(!matches_search(&parent, "gibt es nicht"));
     }
 
     #[test]

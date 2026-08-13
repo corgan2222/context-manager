@@ -81,7 +81,7 @@ impl Scope {
 ///
 /// The file-type variants are unused until milestone 7 but exist already so
 /// that adding the file-type view does not force a change to this model.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, serde::Deserialize)]
 // The file-type variants are constructed from milestone 7 onwards.
 #[allow(dead_code)]
 pub enum Category {

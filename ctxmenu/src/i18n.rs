@@ -107,6 +107,23 @@ pub struct Strings {
     pub detail_position: &'static str,
     pub detail_applies_to: &'static str,
     pub detail_nothing_selected: &'static str,
+
+    // Editor for one's own entries
+    pub editor_new: &'static str,
+    pub editor_title: &'static str,
+    pub editor_category: &'static str,
+    pub editor_display_name: &'static str,
+    pub editor_key_name: &'static str,
+    pub editor_command: &'static str,
+    pub editor_icon: &'static str,
+    pub editor_position: &'static str,
+    pub editor_visibility: &'static str,
+    pub editor_extended: &'static str,
+    pub editor_created_before: &'static str,
+    pub editor_create: &'static str,
+    pub pos_default: &'static str,
+    pub pos_top: &'static str,
+    pub pos_bottom: &'static str,
 }
 
 pub static DE: Strings = Strings {
@@ -191,6 +208,22 @@ pub static DE: Strings = Strings {
     detail_position: "Position",
     detail_applies_to: "Gilt für",
     detail_nothing_selected: "Kein Eintrag ausgewählt.",
+
+    editor_new: "\u{ff0b} Neu",
+    editor_title: "Eigenen Eintrag anlegen",
+    editor_category: "Kategorie",
+    editor_display_name: "Anzeigename",
+    editor_key_name: "Schl\u{fc}sselname",
+    editor_command: "Befehl",
+    editor_icon: "Symbol",
+    editor_position: "Position",
+    editor_visibility: "Sichtbarkeit",
+    editor_extended: "nur mit gedr\u{fc}ckter Umschalttaste",
+    editor_created_before: "Bereits mit diesem Werkzeug angelegt:",
+    editor_create: "Anlegen",
+    pos_default: "keine",
+    pos_top: "oben",
+    pos_bottom: "unten",
 };
 
 pub static EN: Strings = Strings {
@@ -275,6 +308,22 @@ pub static EN: Strings = Strings {
     detail_position: "Position",
     detail_applies_to: "Applies to",
     detail_nothing_selected: "No entry selected.",
+
+    editor_new: "\u{ff0b} New",
+    editor_title: "Create your own entry",
+    editor_category: "Category",
+    editor_display_name: "Display name",
+    editor_key_name: "Key name",
+    editor_command: "Command",
+    editor_icon: "Icon",
+    editor_position: "Position",
+    editor_visibility: "Visibility",
+    editor_extended: "only while Shift is held",
+    editor_created_before: "Already created with this tool:",
+    editor_create: "Create",
+    pos_default: "none",
+    pos_top: "top",
+    pos_bottom: "bottom",
 };
 
 /// The two tables side by side, for checks that must cover both.
@@ -362,6 +411,21 @@ fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         detail_position,
         detail_applies_to,
         detail_nothing_selected,
+        editor_new,
+        editor_title,
+        editor_category,
+        editor_display_name,
+        editor_key_name,
+        editor_command,
+        editor_icon,
+        editor_position,
+        editor_visibility,
+        editor_extended,
+        editor_created_before,
+        editor_create,
+        pos_default,
+        pos_top,
+        pos_bottom,
     ]
 }
 

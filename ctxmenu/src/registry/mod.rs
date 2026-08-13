@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod clsid;
+pub mod create;
 pub mod filetypes;
 pub mod mui;
 pub mod paths;

@@ -61,6 +61,13 @@ pub struct BackupManifest {
     /// dropped: on restore this is the difference between "nothing to bring
     /// back" and "the export silently failed".
     pub missing: Vec<String>,
+    /// What `reg.exe` said about each entry in `missing`, one line each.
+    ///
+    /// A gap in a backup used to be visible but not explicable, which turned a
+    /// rare failure into guesswork. `serde(default)` so backups written before
+    /// this field still load.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 /// `%LOCALAPPDATA%\ctxmenu\backups`
@@ -98,21 +105,26 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
 
     let mut entries = Vec::new();
     let mut missing = Vec::new();
+    let mut notes = Vec::new();
     let mut covered = FxHashSet::default();
 
     for (index, full) in paths.iter().enumerate() {
         let file_name = format!("{:02}_{}.reg", index + 1, sanitize(full));
         let file = directory.join(&file_name);
 
-        if run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
-            covered.insert(full.to_lowercase());
-            entries.push(BackupEntry {
-                registry_path: full.clone(),
-                scope: hive_of(full).to_string(),
-                file: file_name,
-            });
-        } else {
-            missing.push(full.clone());
+        match run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
+            None => {
+                covered.insert(full.to_lowercase());
+                entries.push(BackupEntry {
+                    registry_path: full.clone(),
+                    scope: hive_of(full).to_string(),
+                    file: file_name,
+                });
+            }
+            Some(reason) => {
+                missing.push(full.clone());
+                notes.push(format!("{full}: {reason}"));
+            }
         }
     }
 
@@ -121,6 +133,7 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
         action: action.to_string(),
         entries,
         missing,
+        notes,
     };
     std::fs::write(
         directory.join("manifest.json"),
@@ -146,8 +159,7 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
 /// share a directory and quietly overwrite each other's `.reg` files —
 /// destroying the backup that the second action is about to rely on.
 fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
-    std::fs::create_dir_all(root)
-        .with_context(|| format!("Backup-Wurzel / backup root {root:?}"))?;
+    create_root(root)?;
 
     for suffix in 0..1000 {
         let candidate = if suffix == 0 {
@@ -157,7 +169,17 @@ fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
         };
         match std::fs::create_dir(&candidate) {
             Ok(()) => return Ok(candidate),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // Taken, or taken and being deleted right now: on Windows a
+            // directory whose last handle is still open keeps its name and
+            // answers ACCESS_DENIED. Either way the next name is the answer.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
             Err(error) => {
                 return Err(anyhow::Error::from(error).context(format!(
                     "Backup-Verzeichnis / backup directory {candidate:?}"
@@ -167,6 +189,30 @@ fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
     }
 
     bail!("Kein freier Backup-Verzeichnisname / no free backup directory name")
+}
+
+/// Creates the backup root, tolerating a deletion Windows has not finished.
+///
+/// Measured, not guessed: `create_dir_all` immediately after `remove_dir_all`
+/// of the same path fails with ACCESS_DENIED often enough to break a test run
+/// on this machine. Windows keeps a deleted directory's name until the last
+/// handle to anything inside it closes, and a virus scanner reading the freshly
+/// written `.reg` files is exactly such a handle. Waiting a few milliseconds
+/// costs nothing and turns a lost backup into a slightly later one.
+fn create_root(root: &Path) -> Result<()> {
+    let mut last = None;
+    for attempt in 0..20 {
+        match std::fs::create_dir_all(root) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1)));
+            }
+        }
+    }
+
+    Err(anyhow::Error::from(last.expect("at least one attempt"))
+        .context(format!("Backup-Wurzel / backup root {root:?}")))
 }
 
 /// Hive prefix of a full path, for the manifest.
@@ -196,10 +242,9 @@ pub fn restore(directory: &Path) -> Result<usize> {
         if !file.exists() {
             bail!("Backup unvollständig / backup incomplete: {file:?}");
         }
-        if run_reg(&["import", &file.to_string_lossy()])? {
-            restored += 1;
-        } else {
-            bail!("reg import fehlgeschlagen / failed for {file:?}");
+        match run_reg(&["import", &file.to_string_lossy()])? {
+            None => restored += 1,
+            Some(reason) => bail!("reg import fehlgeschlagen / failed for {file:?}: {reason}"),
         }
     }
 
@@ -228,7 +273,7 @@ pub fn list() -> Result<Vec<(PathBuf, BackupManifest)>> {
 ///
 /// Called by absolute path: relying on `PATH` would let a stray `reg.exe` in
 /// the working directory take over an operation that edits the registry.
-fn run_reg(args: &[&str]) -> Result<bool> {
+fn run_reg(args: &[&str]) -> Result<Option<String>> {
     #[cfg(windows)]
     use std::os::windows::process::CommandExt as _;
 
@@ -247,7 +292,25 @@ fn run_reg(args: &[&str]) -> Result<bool> {
         .output()
         .with_context(|| format!("{exe:?} konnte nicht gestartet werden / could not be started"))?;
 
-    Ok(output.status.success())
+    if output.status.success() {
+        return Ok(None);
+    }
+
+    // reg.exe writes its complaint to stdout on some Windows versions and to
+    // stderr on others, so both are consulted before falling back to the code.
+    let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().replace('\n', " ");
+    let message = match (said(&output.stdout), said(&output.stderr)) {
+        (out, err) if !err.is_empty() => {
+            if out.is_empty() {
+                err
+            } else {
+                format!("{err} {out}")
+            }
+        }
+        (out, _) if !out.is_empty() => out,
+        _ => format!("Exit-Code {:?}", output.status.code()),
+    };
+    Ok(Some(message))
 }
 
 /// Turns a registry path into something a file system accepts.
