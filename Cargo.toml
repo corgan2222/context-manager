@@ -16,6 +16,10 @@ eframe = { version = "0.36.1", default-features = false, features = [
     "glow",
 ] }
 egui = "0.36.1"
+# Ohne das "image"-Feature: die Icon-Extraktion aus ToDo 7 baut ihr ColorImage
+# selbst und lädt es über ctx.load_texture, ein image-Crate braucht es nicht.
+egui_extras = { version = "0.36.1", default-features = false }
+raw-window-handle = "0.6"
 windows-registry = "0.6.1"
 windows-result = "0.4.1"
 serde = { version = "1", features = ["derive"] }

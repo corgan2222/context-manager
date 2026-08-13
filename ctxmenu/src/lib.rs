@@ -5,6 +5,10 @@
 
 pub mod cli;
 pub mod console;
+pub mod i18n;
+pub mod icons;
 pub mod model;
 pub mod registry;
+pub mod settings;
 pub mod smoke;
+pub mod synthetic;
