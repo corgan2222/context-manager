@@ -651,12 +651,15 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
 
 /// Creates an entry and tells the shell about it.
 pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
-    use crate::registry::create::{self, Problem};
+    use crate::registry::create;
 
     for problem in create::check(entry) {
-        match problem {
-            Problem::Error(message) => crate::errln!("Fehler / error: {message}"),
-            Problem::Warning(message) => crate::errln!("Warnung / warning: {message}"),
+        // The console has no language setting, so it gets both halves.
+        let text = problem.message();
+        if problem.is_error() {
+            crate::errln!("Fehler / error: {text}");
+        } else {
+            crate::errln!("Warnung / warning: {text}");
         }
     }
 

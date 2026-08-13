@@ -34,13 +34,62 @@ pub struct NewEntry {
     pub extended: bool,
 }
 
+/// What is wrong, without saying it in any particular language.
+///
+/// This module cannot know which language the window is showing — it also
+/// feeds the command line and the log, where the message wants to stay put.
+/// So it reports the *cause*, and whoever displays it puts it into words.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fault {
+    MissingKeyName,
+    BackslashInKeyName,
+    MissingDisplayName,
+    MissingCommand,
+    /// `%1` in a background category, where it stays empty. The single most
+    /// common mistake in hand-written entries (ToDo 5.3).
+    PercentOneInBackground,
+    /// An `&` becomes an accelerator in the menu.
+    AmpersandInDisplayName,
+    /// A `Position` value other than Top or Bottom.
+    UnusualPosition(String),
+}
+
+impl Fault {
+    /// Both languages at once, for the console and the log.
+    pub fn bilingual(&self) -> String {
+        match self {
+            Fault::MissingKeyName => "Schlüsselname fehlt / key name is missing".into(),
+            Fault::BackslashInKeyName => {
+                "Schlüsselname darf keinen Backslash enthalten / no backslash in a key name".into()
+            }
+            Fault::MissingDisplayName => "Anzeigename fehlt / display name is missing".into(),
+            Fault::MissingCommand => "Befehl fehlt / command is missing".into(),
+            Fault::PercentOneInBackground => {
+                "In einer Hintergrund-Kategorie bleibt %1 leer — hier gehört %V hin. / \
+                 %1 stays empty in a background category; %V belongs here."
+                    .into()
+            }
+            Fault::AmpersandInDisplayName => {
+                "Ein & erzeugt im Menü einen Zugriffsbuchstaben; für ein echtes \
+                 Und-Zeichen && schreiben. / An & becomes an accelerator in the menu; \
+                 write && for a literal ampersand."
+                    .into()
+            }
+            Fault::UnusualPosition(value) => format!(
+                "Position {value:?} ist ungewöhnlich; belegt sind Top und Bottom. / \
+                 unusual Position; only Top and Bottom are verified."
+            ),
+        }
+    }
+}
+
 /// Something wrong enough to refuse, or worth saying out loud.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Problem {
     /// Refuses the write.
-    Error(String),
+    Error(Fault),
     /// Written anyway, but the user should know.
-    Warning(String),
+    Warning(Fault),
 }
 
 impl Problem {
@@ -48,10 +97,15 @@ impl Problem {
         matches!(self, Problem::Error(_))
     }
 
-    pub fn message(&self) -> &str {
+    pub fn fault(&self) -> &Fault {
         match self {
-            Problem::Error(m) | Problem::Warning(m) => m,
+            Problem::Error(f) | Problem::Warning(f) => f,
         }
+    }
+
+    /// Both languages, for anywhere without a language setting.
+    pub fn message(&self) -> String {
+        self.fault().bilingual()
     }
 }
 
@@ -73,23 +127,17 @@ pub fn check(entry: &NewEntry) -> Vec<Problem> {
 
     let name = entry.key_name.trim();
     if name.is_empty() {
-        problems.push(Problem::Error(
-            "Schlüsselname fehlt / key name is missing".into(),
-        ));
+        problems.push(Problem::Error(Fault::MissingKeyName));
     } else if name.contains(['\\', '/']) {
-        problems.push(Problem::Error(
-            "Schlüsselname darf keinen Backslash enthalten / no backslash in a key name".into(),
-        ));
+        problems.push(Problem::Error(Fault::BackslashInKeyName));
     }
 
     if entry.display_name.trim().is_empty() {
-        problems.push(Problem::Error(
-            "Anzeigename fehlt / display name is missing".into(),
-        ));
+        problems.push(Problem::Error(Fault::MissingDisplayName));
     }
 
     if entry.command.trim().is_empty() {
-        problems.push(Problem::Error("Befehl fehlt / command is missing".into()));
+        problems.push(Problem::Error(Fault::MissingCommand));
     }
 
     // The one that actually catches people out.
@@ -97,29 +145,17 @@ pub fn check(entry: &NewEntry) -> Vec<Problem> {
         && entry.command.contains("%1")
         && !entry.command.contains("%V")
     {
-        problems.push(Problem::Warning(
-            "In einer Hintergrund-Kategorie bleibt %1 leer — hier gehört %V hin. / \
-             %1 stays empty in a background category; %V belongs here."
-                .into(),
-        ));
+        problems.push(Problem::Warning(Fault::PercentOneInBackground));
     }
 
     if entry.display_name.contains('&') {
-        problems.push(Problem::Warning(
-            "Ein & erzeugt im Menü einen Zugriffsbuchstaben; für ein echtes \
-             Und-Zeichen && schreiben. / An & becomes an accelerator in the menu; \
-             write && for a literal ampersand."
-                .into(),
-        ));
+        problems.push(Problem::Warning(Fault::AmpersandInDisplayName));
     }
 
     if let Some(position) = &entry.position
         && !matches!(position.as_str(), "Top" | "Bottom")
     {
-        problems.push(Problem::Warning(format!(
-            "Position {position:?} ist ungewöhnlich; belegt sind Top und Bottom. / \
-             unusual Position; only Top and Bottom are verified."
-        )));
+        problems.push(Problem::Warning(Fault::UnusualPosition(position.clone())));
     }
 
     problems
@@ -357,7 +393,7 @@ mod tests {
             assert!(
                 problems
                     .iter()
-                    .any(|p| matches!(p, Problem::Warning(m) if m.contains("%V"))),
+                    .any(|p| matches!(p, Problem::Warning(Fault::PercentOneInBackground))),
                 "{category:?} did not warn about %1"
             );
         }
@@ -517,6 +553,10 @@ mod tests {
 
         let problems = check(&e);
         assert!(!problems.iter().any(Problem::is_error));
-        assert!(problems.iter().any(|p| p.message().contains("Last")));
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::UnusualPosition(value) if value == "Last"))
+        );
     }
 }

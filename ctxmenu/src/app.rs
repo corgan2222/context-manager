@@ -21,7 +21,7 @@ use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
 use crate::program::group::{self, ProgramGroup};
 use crate::program::identity::NameResolver;
 use crate::registry::backup::{self, BackupManifest};
-use crate::registry::create::{self, NewEntry, Problem};
+use crate::registry::create::{self, Fault, NewEntry, Problem};
 use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
 use crate::settings::{Language, Settings, ThemeChoice};
@@ -551,8 +551,18 @@ impl App {
         };
 
         let needle = self.search.trim().to_lowercase();
+        // Deduplicated while keeping the order. One entry legitimately belongs
+        // to several file types — a `SystemFileAssociations\image` handler is
+        // shared by every image extension — so a candidate list gathered
+        // across types holds the same index several times. Left in, the same
+        // row appears repeatedly, the count is wrong, a backup would export
+        // one key several times, and the keyboard cursor cannot get past the
+        // duplicate at all: the position lookup always finds the first copy,
+        // so the arrow key walks back to it every time.
+        let mut seen = rustc_hash::FxHashSet::default();
         let mut candidates: Vec<usize> = candidates
             .into_iter()
+            .filter(|index| seen.insert(*index))
             .filter(|index| needle.is_empty() || matches_search(&scan.entries[*index], &needle))
             .collect();
 
@@ -1671,7 +1681,7 @@ impl App {
                         Problem::Error(_) => ui.visuals().error_fg_color,
                         Problem::Warning(_) => ui.visuals().warn_fg_color,
                     };
-                    ui.colored_label(colour, problem.message());
+                    ui.colored_label(colour, fault_text(problem.fault(), self.tr));
                 }
 
                 ui.add_space(8.0);
@@ -1728,7 +1738,17 @@ impl App {
                 let mut start = false;
                 let mut cancel = false;
 
-                egui::Window::new(plan.label.clone())
+                // Not `plan.label`: that one is the internal name, German and
+                // fixed, because it also becomes the backup directory and must
+                // not change with the interface language. The title says the
+                // same thing in the language on screen.
+                let title = plan
+                    .operations
+                    .first()
+                    .map(|operation| action_label(&operation.action, self.tr))
+                    .unwrap_or(self.tr.detail_title);
+
+                egui::Window::new(title)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -2045,7 +2065,7 @@ impl App {
                                     Problem::Error(_) => ui.visuals().error_fg_color,
                                     Problem::Warning(_) => ui.visuals().warn_fg_color,
                                 };
-                                ui.colored_label(colour, problem.message());
+                                ui.colored_label(colour, fault_text(problem.fault(), self.tr));
                             }
                         }
 
@@ -3084,6 +3104,40 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
         category_label(&entry.category, tr).to_string()
     } else {
         applies
+    }
+}
+
+/// A check result, in the language on screen.
+///
+/// The checking modules report a cause rather than a sentence — they also feed
+/// the console, which has no language setting — so the sentence is built here.
+fn fault_text(fault: &Fault, tr: &'static Strings) -> String {
+    match fault {
+        Fault::MissingKeyName => tr.fault_key_name.to_string(),
+        Fault::BackslashInKeyName => tr.fault_backslash.to_string(),
+        Fault::MissingDisplayName => tr.fault_display_name.to_string(),
+        Fault::MissingCommand => tr.fault_command.to_string(),
+        Fault::PercentOneInBackground => tr.fault_percent_one.to_string(),
+        Fault::AmpersandInDisplayName => tr.fault_ampersand.to_string(),
+        Fault::UnusualPosition(value) => tr.fmt_fault_position.replace("{}", value),
+    }
+}
+
+/// The name of an action in the language on screen.
+///
+/// `Action::label` stays German on purpose — it names the backup directory,
+/// and a directory whose name changed with the interface language would be a
+/// small archaeology problem later.
+fn action_label(action: &Action, tr: &'static Strings) -> &'static str {
+    match action {
+        Action::Hide => tr.act_hide,
+        Action::Show => tr.act_show,
+        Action::ShiftOnly => tr.act_shift_only,
+        Action::AlwaysShow => tr.act_always_show,
+        Action::SetPosition(_) => tr.act_position,
+        Action::Block => tr.act_block,
+        Action::Unblock => tr.act_unblock,
+        Action::Delete => tr.act_delete,
     }
 }
 

@@ -221,6 +221,13 @@ pub struct Strings {
     pub status_no_dwm: &'static str,
     pub title_note: &'static str,
     pub btn_close: &'static str,
+    pub fault_key_name: &'static str,
+    pub fault_backslash: &'static str,
+    pub fault_display_name: &'static str,
+    pub fault_command: &'static str,
+    pub fault_percent_one: &'static str,
+    pub fault_ampersand: &'static str,
+    pub fmt_fault_position: &'static str,
 }
 
 pub static DE: Strings = Strings {
@@ -416,6 +423,13 @@ pub static DE: Strings = Strings {
     status_no_dwm: "Titelleiste: kein DWM-Attribut",
     title_note: "Erledigt",
     btn_close: "Schließen",
+    fault_key_name: "Schlüsselname fehlt",
+    fault_backslash: "Der Schlüsselname darf keinen Backslash enthalten",
+    fault_display_name: "Anzeigename fehlt",
+    fault_command: "Befehl fehlt",
+    fault_percent_one: "In einer Hintergrund-Kategorie bleibt %1 leer — hier gehört %V hin.",
+    fault_ampersand: "Ein & erzeugt im Menü einen Zugriffsbuchstaben; für ein echtes Und-Zeichen && schreiben.",
+    fmt_fault_position: "Position „{}“ ist ungewöhnlich; belegt sind oben und unten.",
 };
 
 pub static EN: Strings = Strings {
@@ -611,6 +625,13 @@ pub static EN: Strings = Strings {
     status_no_dwm: "Title bar: no DWM attribute",
     title_note: "Done",
     btn_close: "Close",
+    fault_key_name: "Key name is missing",
+    fault_backslash: "A key name cannot contain a backslash",
+    fault_display_name: "Display name is missing",
+    fault_command: "Command is missing",
+    fault_percent_one: "%1 stays empty in a background category; %V belongs here.",
+    fault_ampersand: "An & becomes an accelerator in the menu; write && for a literal ampersand.",
+    fmt_fault_position: "Position \"{}\" is unusual; only top and bottom are verified.",
 };
 
 /// The two tables side by side, for checks that must cover both.
@@ -806,6 +827,13 @@ fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         status_no_dwm,
         title_note,
         btn_close,
+        fault_key_name,
+        fault_backslash,
+        fault_display_name,
+        fault_command,
+        fault_percent_one,
+        fault_ampersand,
+        fmt_fault_position,
     ]
 }
 
