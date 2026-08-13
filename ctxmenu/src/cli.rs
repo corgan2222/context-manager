@@ -10,10 +10,15 @@
 use anyhow::{Context as _, Result, bail};
 
 use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, Scope};
+use crate::registry::paths::RegTarget;
 use crate::registry::scan::{self, ScanOptions};
+use crate::registry::{backup, write};
 
 pub enum Command {
     Scan(ScanArgs),
+    Backups,
+    Restore(String),
+    Delete { path: String, confirmed: bool },
     Smoke,
     Help,
 }
@@ -29,6 +34,11 @@ ctxmenu — Windows Context Menu Manager
 
 Verwendung / Usage:
   ctxmenu scan [Optionen]   Einträge auflisten / list context menu entries
+  ctxmenu backups           Backups auflisten / list backups
+  ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
+  ctxmenu delete <key> --yes
+                            Schlüssel sichern und löschen /
+                            back up and delete a key
   ctxmenu --smoke           Smoke-Test-Fenster / open the smoke test window
   ctxmenu --help            Diese Hilfe / this help
 
@@ -52,6 +62,22 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--smoke" => return Ok(Command::Smoke),
+        "backups" => return Ok(Command::Backups),
+        "restore" => {
+            let directory = args
+                .get(1)
+                .context("restore erwartet ein Verzeichnis / expects a directory")?;
+            return Ok(Command::Restore(directory.clone()));
+        }
+        "delete" => {
+            let path = args
+                .get(1)
+                .context("delete erwartet einen Registry-Pfad / expects a registry path")?;
+            return Ok(Command::Delete {
+                path: path.clone(),
+                confirmed: args.iter().any(|a| a == "--yes"),
+            });
+        }
         "scan" => {}
         other => bail!("Unbekannter Befehl / unknown command: {other}\n\n{HELP}"),
     }
@@ -145,6 +171,81 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     println!(
         "MUI-Cache: {} Treffer / {} Auflösungen, blockierte CLSIDs im System: {}",
         result.stats.mui_cache_hits, result.stats.mui_cache_misses, result.stats.blocked_clsids
+    );
+    Ok(())
+}
+
+pub fn run_backups() -> Result<()> {
+    let backups = backup::list()?;
+    if backups.is_empty() {
+        println!(
+            "Keine Backups unter {:?} / no backups yet",
+            backup::root_dir()?
+        );
+        return Ok(());
+    }
+
+    for (directory, manifest) in &backups {
+        println!(
+            "{}  {:<20} {} Schlüssel{}",
+            manifest.created_at.format("%Y-%m-%d %H:%M:%S"),
+            manifest.action,
+            manifest.entries.len(),
+            if manifest.missing.is_empty() {
+                String::new()
+            } else {
+                format!(", {} fehlten beim Export", manifest.missing.len())
+            }
+        );
+        println!("    {}", directory.display());
+        for entry in &manifest.entries {
+            println!("      {}", entry.registry_path);
+        }
+    }
+    Ok(())
+}
+
+pub fn run_restore(directory: &str) -> Result<()> {
+    let path = std::path::Path::new(directory);
+    let restored = backup::restore(path)?;
+    println!("{restored} Datei(en) zurückgespielt / restored from {directory}");
+    println!(
+        "Hinweis: reg import fügt hinzu und überschreibt, entfernt aber nichts. / \
+         note: reg import adds and overwrites, it never removes."
+    );
+    Ok(())
+}
+
+/// Backs a key up and then deletes it.
+///
+/// Requires `--yes`. There is deliberately no interactive prompt: this path
+/// exists to make milestone 3 reproducible by hand, and the real confirmation
+/// dialog belongs in the GUI.
+pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
+    let target = RegTarget::parse(path)?;
+
+    if !write::exists(&target) {
+        bail!(
+            "Schlüssel existiert nicht / key does not exist: {}",
+            target.full_path()
+        );
+    }
+
+    if !confirmed {
+        println!("Würde sichern und löschen / would back up and delete:");
+        println!("  {}", target.full_path());
+        println!("Zum Ausführen --yes anhängen / append --yes to execute.");
+        return Ok(());
+    }
+
+    let token = backup::export("delete", std::slice::from_ref(&target))?;
+    println!("Backup: {}", token.directory().display());
+
+    write::delete_tree(&target, &token)?;
+    println!("Gelöscht / deleted: {}", target.full_path());
+    println!(
+        "Zurückholen mit / restore with: ctxmenu restore \"{}\"",
+        token.directory().display()
     );
     Ok(())
 }

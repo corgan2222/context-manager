@@ -2,12 +2,9 @@
 // CLI and `println!` stay usable during development (ToDo 13.3).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod cli;
-mod model;
-mod registry;
-mod smoke;
-
 use std::process::ExitCode;
+
+use ctxmenu::{cli, smoke};
 
 fn main() -> ExitCode {
     // Argument handling happens before any window is created. The elevated job
@@ -27,6 +24,9 @@ fn main() -> ExitCode {
             Ok(())
         }
         cli::Command::Scan(args) => cli::run_scan(args),
+        cli::Command::Backups => cli::run_backups(),
+        cli::Command::Restore(directory) => cli::run_restore(&directory),
+        cli::Command::Delete { path, confirmed } => cli::run_delete(&path, confirmed),
         cli::Command::Smoke => smoke::run().map_err(|e| anyhow::anyhow!("eframe: {e}")),
     };
 

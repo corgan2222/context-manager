@@ -93,6 +93,82 @@ pub fn display_path(scope: Scope, relative: &str) -> String {
     format!("{}\\{}\\{}", scope.hive(), scope.classes_path(), relative)
 }
 
+/// A validated writable location.
+///
+/// Constructing one is the only way to name a key for backup or deletion, and
+/// it can only be constructed for a path below a classes root that points at
+/// an individual entry. Locations this tool must never touch — the
+/// `CommandStore`, anything outside `…\Classes`, or a container key such as
+/// `Directory\shell` itself — cannot be expressed, so they need no separate
+/// check further down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegTarget {
+    pub scope: Scope,
+    /// Path below the classes root, e.g. `Directory\shell\cmd`.
+    pub relative: String,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum TargetError {
+    #[error("kein bekannter Classes-Pfad / not a known classes path: {0}")]
+    NotAClassesPath(String),
+    #[error("Sammelschlüssel, kein einzelner Eintrag / container key, not an entry: {0}")]
+    ContainerKey(String),
+}
+
+/// Key names that hold other entries. Deleting one of these would remove every
+/// entry underneath it, which is never what a single delete should do.
+const CONTAINER_KEYS: [&str; 6] = [
+    "shell",
+    "shellex",
+    "contextmenuhandlers",
+    "command",
+    "background",
+    "classes",
+];
+
+impl RegTarget {
+    /// Parses a full path in `reg.exe` notation, rejecting anything unsafe.
+    pub fn parse(full: &str) -> Result<Self, TargetError> {
+        let normalised = full.trim().trim_end_matches('\\');
+        let lowered = normalised.to_lowercase();
+
+        // Registry paths are case-insensitive, so the prefix match has to be
+        // too — otherwise a hand-typed path is rejected for its capitalisation.
+        // Longest prefix first: the 32-bit root also starts with "HKLM\".
+        let candidates = [Scope::Machine32, Scope::Machine, Scope::User];
+
+        let (scope, relative) = candidates
+            .iter()
+            .find_map(|&scope| {
+                let prefix = format!("{}\\{}\\", scope.hive(), scope.classes_path()).to_lowercase();
+                lowered
+                    .starts_with(&prefix)
+                    .then(|| normalised[prefix.len()..].to_string())
+                    .filter(|rest| !rest.is_empty())
+                    .map(|rest| (scope, rest))
+            })
+            .ok_or_else(|| TargetError::NotAClassesPath(full.to_string()))?;
+
+        let last = relative.rsplit('\\').next().unwrap_or_default();
+        if CONTAINER_KEYS.contains(&last.to_lowercase().as_str()) {
+            return Err(TargetError::ContainerKey(full.to_string()));
+        }
+
+        Ok(Self { scope, relative })
+    }
+
+    /// Path in `reg.exe` notation.
+    pub fn full_path(&self) -> String {
+        display_path(self.scope, &self.relative)
+    }
+
+    /// Path relative to the predefined key.
+    pub fn key_path(&self) -> String {
+        key_path(self.scope, &self.relative)
+    }
+}
+
 /// Windows' own verbs. Owned by TrustedInstaller, read-only for this tool.
 #[allow(dead_code)] // scanned from milestone 2, guarded against in milestone 3
 pub const COMMAND_STORE: &str =
@@ -154,6 +230,60 @@ mod tests {
             key.keys().expect("enumerable").next().is_some(),
             "the 32-bit CLSID root should not be empty"
         );
+    }
+
+    #[test]
+    fn targets_round_trip_through_their_full_path() {
+        for scope in Scope::ALL {
+            let full = display_path(scope, r"Directory\shell\cmd");
+            let target = RegTarget::parse(&full).expect("valid target");
+            assert_eq!(target.scope, scope);
+            assert_eq!(target.relative, r"Directory\shell\cmd");
+            assert_eq!(target.full_path(), full);
+        }
+    }
+
+    #[test]
+    fn target_parsing_ignores_capitalisation() {
+        let target = RegTarget::parse(r"hkcu\software\classes\Directory\shell\cmd")
+            .expect("registry paths are case-insensitive");
+        assert_eq!(target.scope, Scope::User);
+        assert_eq!(target.relative, r"Directory\shell\cmd");
+    }
+
+    #[test]
+    fn paths_outside_the_classes_roots_are_refused() {
+        for path in [
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\CommandStore\shell\Windows.take",
+            r"HKLM\SYSTEM\CurrentControlSet\Services\Foo",
+            r"HKCU\Software\Microsoft\Windows",
+            r"HKCU\SOFTWARE\Classes",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    RegTarget::parse(path),
+                    Err(TargetError::NotAClassesPath(_) | TargetError::ContainerKey(_))
+                ),
+                "should have been refused: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn container_keys_cannot_be_targeted() {
+        for path in [
+            r"HKCU\SOFTWARE\Classes\Directory\shell",
+            r"HKLM\SOFTWARE\Classes\Directory\Background",
+            r"HKLM\SOFTWARE\Classes\*\shellex\ContextMenuHandlers",
+            r"HKCU\SOFTWARE\Classes\Directory\shell\cmd\command",
+        ] {
+            assert_eq!(
+                RegTarget::parse(path),
+                Err(TargetError::ContainerKey(path.to_string())),
+                "should have been refused as a container: {path}"
+            );
+        }
     }
 
     #[test]

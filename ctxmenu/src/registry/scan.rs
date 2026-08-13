@@ -5,6 +5,9 @@
 //! whether it can be removed without elevation — so every hive contributes its
 //! own entries and the scope travels with them.
 
+use windows::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+use windows::Win32::System::Registry::{HKEY, RegEnumKeyExW};
+use windows::core::PWSTR;
 use windows_registry::Key;
 
 use super::clsid::{ClsidInfo, ClsidResolver};
@@ -151,10 +154,57 @@ fn resolve_entries(
     }
 }
 
-fn collect(key: &Key, source: &CategorySource, scope: Scope, out: &mut Vec<ContextEntry>) {
-    let Ok(names) = key.keys() else { return };
+/// Enumerates subkey names, tolerating changes made while enumerating.
+///
+/// Deliberately not `Key::keys()` from `windows-registry`. That iterator sizes
+/// its buffer once from `RegQueryInfoKeyW` and treats any later error as the
+/// end of the enumeration. If a longer key name appears in between — an
+/// installer running during a scan is enough — `RegEnumKeyExW` answers
+/// `ERROR_MORE_DATA`, and the iterator silently stops early in release builds
+/// while tripping a `debug_assert` in debug ones. Silently returning fewer
+/// context menu entries than exist is the worst failure this tool could have,
+/// so the enumeration grows its buffer and carries on instead.
+fn subkey_names(key: &Key) -> Vec<String> {
+    // Documented maximum key name length is 255 characters.
+    const INITIAL: usize = 256;
 
-    for name in names {
+    let handle = HKEY(key.as_raw());
+    let mut buffer = vec![0u16; INITIAL + 1];
+    let mut names = Vec::new();
+    let mut index = 0u32;
+
+    loop {
+        let mut len = buffer.len() as u32;
+        let status = unsafe {
+            RegEnumKeyExW(
+                handle,
+                index,
+                Some(PWSTR(buffer.as_mut_ptr())),
+                &mut len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        match status {
+            ERROR_SUCCESS => {
+                names.push(String::from_utf16_lossy(&buffer[..len as usize]));
+                index += 1;
+            }
+            // Retry the same index with room to spare.
+            ERROR_MORE_DATA => buffer.resize(buffer.len() * 2, 0),
+            // ERROR_NO_MORE_ITEMS, or the key vanished mid-scan.
+            _ => break,
+        }
+    }
+
+    names
+}
+
+fn collect(key: &Key, source: &CategorySource, scope: Scope, out: &mut Vec<ContextEntry>) {
+    for name in subkey_names(key) {
         let relative = format!("{}\\{}", source.relative, name);
         let entry = match source.kind {
             SourceKind::Shell => read_verb(key, &name, &relative, scope, &source.category, 0),
@@ -238,11 +288,9 @@ fn read_sub_commands(
     let Ok(shell) = key.open("shell") else {
         return Vec::new();
     };
-    let Ok(names) = shell.keys() else {
-        return Vec::new();
-    };
 
-    names
+    subkey_names(&shell)
+        .into_iter()
         .filter_map(|name| {
             let child_relative = format!("{relative}\\shell\\{name}");
             read_verb(&shell, &name, &child_relative, scope, category, depth)
@@ -346,6 +394,33 @@ mod tests {
         assert_eq!(non_empty(Some(String::new())), None);
         assert_eq!(non_empty(Some("x".into())), Some("x".into()));
         assert_eq!(non_empty(None), None);
+    }
+
+    /// Long key names must survive enumeration.
+    ///
+    /// Regression guard for the buffer sizing described on `subkey_names`:
+    /// the previous implementation sized its buffer from a snapshot and
+    /// dropped everything from the first oversized name onwards.
+    #[test]
+    fn enumeration_survives_names_at_the_registry_limit() {
+        use windows_registry::CURRENT_USER;
+
+        let class = r"SOFTWARE\Classes\ctxmenu_selftest_enum";
+        let long = "l".repeat(255);
+        let root = CURRENT_USER.create(class).expect("HKCU is writable");
+        root.create("short").expect("short name");
+        root.create(&long).expect("255 character name");
+
+        let names = subkey_names(&root);
+
+        assert!(names.iter().any(|n| n == "short"));
+        assert!(
+            names.iter().any(|n| n == &long),
+            "the 255 character name must not be dropped"
+        );
+        assert_eq!(names.len(), 2, "and nothing may be lost either");
+
+        let _ = CURRENT_USER.remove_tree(class);
     }
 
     /// Reads a location that exists on every Windows installation. Guards
