@@ -2102,7 +2102,7 @@ impl App {
                     ui.label(format!("Icons {loaded}/{pending}/{failed}"));
                     if !self.titlebar_supported {
                         ui.separator();
-                        ui.label("Titelleiste: kein DWM-Attribut");
+                        ui.label(self.tr.status_no_dwm);
                     }
                 });
             });
@@ -3329,6 +3329,73 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::synthetic;
+
+    #[test]
+    fn sorting_ignores_capitalisation() {
+        // A list where WinRAR sorts before attrib because of a capital letter
+        // is a list nobody can find anything in.
+        let mut entries = synthetic::scan_result(3).entries;
+        entries[0].display_name = "WinRAR".into();
+        entries[1].display_name = "attrib".into();
+        entries[2].display_name = "Zip".into();
+
+        let mut order: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
+        order.sort_by_key(|name| {
+            entries
+                .iter()
+                .find(|e| e.display_name == *name)
+                .map(|e| sort_key(e, SortBy::Name))
+                .unwrap_or_default()
+        });
+
+        assert_eq!(order, ["attrib", "WinRAR", "Zip"]);
+    }
+
+    #[test]
+    fn rows_with_nothing_to_say_sort_last() {
+        // The scope column is empty for the base categories. Those rows are
+        // not what somebody ordering by that column is looking for, so they
+        // belong at the end rather than in front of the answer.
+        let mut entries = synthetic::scan_result(2).entries;
+        entries[0].category = Category::Directory;
+        entries[1].category = Category::ExtAssoc(".zip".into());
+
+        assert!(
+            sort_key(&entries[1], SortBy::AppliesTo) < sort_key(&entries[0], SortBy::AppliesTo)
+        );
+    }
+
+    #[test]
+    fn the_location_is_said_in_words() {
+        let mut entries = synthetic::scan_result(2).entries;
+        entries[0].category = Category::AllFiles;
+        entries[1].category = Category::ExtAssoc(".zip".into());
+
+        // `*` means nothing to anyone who has not read the documentation.
+        assert_eq!(appears_on(&entries[0], &i18n::DE), "Alle Dateien");
+        assert_eq!(appears_on(&entries[0], &i18n::EN), "All Files");
+        // A file type says itself, in both languages.
+        assert_eq!(appears_on(&entries[1], &i18n::DE), ".zip");
+        assert_eq!(appears_on(&entries[1], &i18n::EN), ".zip");
+    }
+
+    #[test]
+    fn every_row_of_a_submenu_can_be_resolved_and_labelled() {
+        // Guards the table's row closure: it resolves a row and then reads
+        // four fields off it. A path that no longer fits must not panic.
+        let parent = cascading();
+        let mut rows = Vec::new();
+        push_with_children(&mut rows, &parent, Row::top(0));
+
+        let mut scan = synthetic::scan_result(1);
+        scan.entries[0] = parent;
+
+        for row in &rows {
+            let entry = resolve(&scan, row).expect("row fits");
+            assert!(!appears_on(entry, &i18n::DE).is_empty());
+            assert!(!sort_key(entry, SortBy::Name).is_empty());
+        }
+    }
 
     #[test]
     fn search_covers_name_command_and_path() {

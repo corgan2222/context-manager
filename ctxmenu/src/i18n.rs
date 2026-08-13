@@ -218,6 +218,7 @@ pub struct Strings {
     pub tip_execute: &'static str,
     pub tip_cancel: &'static str,
     pub tip_position: &'static str,
+    pub status_no_dwm: &'static str,
 }
 
 pub static DE: Strings = Strings {
@@ -410,6 +411,7 @@ pub static DE: Strings = Strings {
     tip_execute: "Führt aus, was oben steht. Vorher wird gesichert.",
     tip_cancel: "Schließt ohne Änderung.",
     tip_position: "Windows sortiert Menüeinträge alphabetisch; nur oben und unten lassen sich beeinflussen.",
+    status_no_dwm: "Titelleiste: kein DWM-Attribut",
 };
 
 pub static EN: Strings = Strings {
@@ -602,6 +604,7 @@ pub static EN: Strings = Strings {
     tip_execute: "Runs what is listed above. A backup is taken first.",
     tip_cancel: "Closes without changing anything.",
     tip_position: "Windows sorts menu entries alphabetically; only top and bottom can be influenced.",
+    status_no_dwm: "Title bar: no DWM attribute",
 };
 
 /// The two tables side by side, for checks that must cover both.
@@ -794,6 +797,7 @@ fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         tip_execute,
         tip_cancel,
         tip_position,
+        status_no_dwm,
     ]
 }
 
