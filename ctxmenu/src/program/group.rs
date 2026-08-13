@@ -47,11 +47,17 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
     let mut by_key: FxHashMap<String, ProgramGroup> = FxHashMap::default();
 
     for (index, entry) in scan.entries.iter().enumerate() {
-        let Some(key) = &entry.program_key else {
+        let Some(raw_key) = &entry.program_key else {
             // No command line and no server DLL — a submenu parent, for
             // instance. Attributing it to a program would be a guess.
             continue;
         };
+
+        // Resolved before grouping, not after: one entry says `cmd.exe` and
+        // the next `C:\Windows\System32\cmd.exe`, and grouping on the raw
+        // string made that one program appear twice under one name. Measured
+        // on this machine: three such pairs out of 98 keys.
+        let key = &identity::absolute_path(raw_key).to_lowercase();
 
         let group = by_key.entry(key.clone()).or_insert_with(|| ProgramGroup {
             key: key.clone(),
@@ -97,6 +103,7 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
         group.scopes.sort();
         group.locations.sort();
     }
+    disambiguate(&mut groups);
     groups.sort_by(|a, b| {
         b.entry_count().cmp(&a.entry_count()).then_with(|| {
             a.display_name
@@ -105,6 +112,35 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
         })
     });
     groups
+}
+
+/// Makes names that collide tell each other apart.
+///
+/// A version resource is free vendor text and is not unique: on this machine
+/// `bitlockerwizard.exe` and `bitlockerwizardelev.exe` both call themselves
+/// "Assistent für die BitLocker-Laufwerkverschlüsselung", and in System32 the
+/// product name "Microsoft (R) Windows (R) Operating System" is shared by 25
+/// binaries. Two identical rows in a list of programs are worse than a longer
+/// caption, so the file name is appended — but only where it is needed, since
+/// most names are fine as they are.
+fn disambiguate(groups: &mut [ProgramGroup]) {
+    let mut seen: FxHashMap<String, usize> = FxHashMap::default();
+    for group in groups.iter() {
+        *seen.entry(group.display_name.to_lowercase()).or_insert(0) += 1;
+    }
+
+    for group in groups.iter_mut() {
+        if seen
+            .get(&group.display_name.to_lowercase())
+            .is_some_and(|count| *count > 1)
+        {
+            let file = std::path::Path::new(&group.key)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| group.key.clone());
+            group.display_name = format!("{} ({file})", group.display_name);
+        }
+    }
 }
 
 /// Short, readable origin of an entry, for the group summary.

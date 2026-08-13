@@ -142,6 +142,27 @@ impl Category {
         let s = s.to_ascii_lowercase();
         Category::BASE.iter().find(|c| c.slug() == s).cloned()
     }
+
+    /// What this entry applies to, in the shortest form that still says it.
+    ///
+    /// The column a user actually needs when one program registers itself
+    /// twenty times: 7-Zip's entries differ only in *which* file type they
+    /// hang on, and that difference is otherwise buried in the middle of a
+    /// long registry path. Empty for the base categories, whose own name
+    /// already says it — the scope column is not the place to repeat the
+    /// category column.
+    pub fn applies_to_label(&self) -> String {
+        match self {
+            Category::PerceivedType(kind) => kind.clone(),
+            // `.zip`, `.rar` — the whole point of the column.
+            Category::ExtAssoc(ext) | Category::ExtDirect(ext) => ext.clone(),
+            // The ProgID is what several extensions share, so naming the
+            // extension it was reached from would suggest an exclusivity that
+            // is not there.
+            Category::ProgId { prog_id, .. } => prog_id.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// What kind of context menu entry this is.
@@ -319,6 +340,37 @@ pub fn stable_id(scope: Scope, registry_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scope_column_names_the_file_type_and_nothing_else() {
+        // The case this column exists for: one program, many rows, and the
+        // only difference is the type.
+        assert_eq!(Category::ExtAssoc(".zip".into()).applies_to_label(), ".zip");
+        assert_eq!(
+            Category::ExtDirect(".rar".into()).applies_to_label(),
+            ".rar"
+        );
+        assert_eq!(
+            Category::PerceivedType("image".into()).applies_to_label(),
+            "image"
+        );
+        assert_eq!(
+            Category::ProgId {
+                prog_id: "7-Zip.zip".into(),
+                from_ext: ".zip".into(),
+            }
+            .applies_to_label(),
+            "7-Zip.zip"
+        );
+
+        // A base category already says what it applies to in its own column.
+        for category in Category::BASE {
+            assert!(
+                category.applies_to_label().is_empty(),
+                "{category:?} would repeat the category column"
+            );
+        }
+    }
 
     #[test]
     fn id_is_stable_and_case_insensitive() {

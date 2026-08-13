@@ -97,6 +97,16 @@ enum Dialog {
     },
 }
 
+/// Which column the table is ordered by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortBy {
+    Name,
+    Kind,
+    Scope,
+    AppliesTo,
+    Command,
+}
+
 /// One line of the table.
 ///
 /// A cascading menu is one registry key with its children nested underneath,
@@ -186,6 +196,9 @@ pub struct App {
     /// sorting are evaluated here once, not per frame (ToDo 4.3).
     visible_rows: Vec<Row>,
     filter_dirty: bool,
+    /// Column and direction the list is ordered by. Applied when the rows are
+    /// rebuilt, never per frame.
+    sort: (SortBy, bool),
 
     tab: Tab,
     selected_category: Option<Category>,
@@ -270,6 +283,16 @@ impl App {
         let settings = Settings::load_or_default(theme::system_language());
         cc.egui_ctx.set_theme(settings.theme.to_preference());
 
+        // Why a table row sometimes ignored a click: egui makes every label
+        // selectable by default, a selectable label senses click-and-drag, and
+        // the label is registered *above* the cell that contains it. On a tie
+        // the topmost widget wins, so clicking the text hit the label and the
+        // row never heard about it — the more text, the worse. Nothing here
+        // wants text selection; the rows want clicks.
+        cc.egui_ctx.all_styles_mut(|style| {
+            style.interaction.selectable_labels = false;
+        });
+
         let tr = strings_for(settings.language);
         let hwnd = theme::window_handle(cc);
 
@@ -277,6 +300,7 @@ impl App {
             scan: None,
             visible_rows: Vec::new(),
             filter_dirty: true,
+            sort: (SortBy::Name, true),
             tab: start_tab,
             selected_category: None,
             selected_ext: None,
@@ -480,16 +504,110 @@ impl App {
         };
 
         let needle = self.search.trim().to_lowercase();
+        let mut candidates: Vec<usize> = candidates
+            .into_iter()
+            .filter(|index| needle.is_empty() || matches_search(&scan.entries[*index], &needle))
+            .collect();
+
+        // Sorted here, once per change, not per frame. Children keep their
+        // place under the parent they belong to: a cascading menu that sorted
+        // itself apart would stop being a menu.
+        let (column, ascending) = self.sort;
+        candidates.sort_by(|a, b| {
+            let (a, b) = (&scan.entries[*a], &scan.entries[*b]);
+            let ordering = sort_key(a, column).cmp(&sort_key(b, column));
+            if ascending {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        });
+
         for index in candidates {
             let entry = &scan.entries[index];
-            if !needle.is_empty() && !matches_search(entry, &needle) {
-                continue;
-            }
             // Children come with their parent rather than being filtered
             // separately: a submenu entry without the menu it hangs in would
             // say nothing about where it appears.
             push_with_children(&mut self.visible_rows, entry, Row::top(index));
         }
+
+        // Somebody who picks a program wants to see what it does, not an empty
+        // panel and a second click. Only when nothing is selected: an existing
+        // selection is the user's and must survive a search or a re-sort.
+        if self.focused.is_none()
+            && let Some(first) = self.visible_rows.iter().find(|row| row.is_top())
+        {
+            self.focused = Some(first.entry);
+        }
+    }
+
+    /// Moves the cursor with the keyboard.
+    ///
+    /// Runs before the table is drawn, because the table consumes what it
+    /// scrolls to. Only top-level rows are stops: a submenu child cannot be
+    /// acted on, so a cursor that landed on one would be a dead end.
+    fn handle_keys(&mut self, ctx: &egui::Context) -> Option<usize> {
+        // Not while a dialog is up: arrow keys belong to whatever is asking.
+        if self.dialog.is_some() {
+            return None;
+        }
+
+        let stops: Vec<usize> = self
+            .visible_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_top())
+            .map(|(position, _)| position)
+            .collect();
+        if stops.is_empty() {
+            return None;
+        }
+
+        let current = self
+            .focused
+            .and_then(|entry| {
+                self.visible_rows
+                    .iter()
+                    .position(|row| row.is_top() && row.entry == entry)
+            })
+            .and_then(|position| stops.iter().position(|p| *p == position));
+
+        let (down, up, home, end, extend) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    || i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    || i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::End),
+                i.modifiers.shift,
+            )
+        });
+
+        let next = match (down, up, home, end) {
+            (true, _, _, _) => Some(match current {
+                Some(index) => (index + 1).min(stops.len() - 1),
+                None => 0,
+            }),
+            (_, true, _, _) => Some(match current {
+                Some(index) => index.saturating_sub(1),
+                None => 0,
+            }),
+            (_, _, true, _) => Some(0),
+            (_, _, _, true) => Some(stops.len() - 1),
+            _ => None,
+        }?;
+
+        let row = &self.visible_rows[stops[next]];
+        let entry = row.entry;
+        self.focused = Some(entry);
+        if !extend {
+            self.selected.clear();
+        }
+        self.selected.insert(entry);
+
+        // The row to scroll to, in table coordinates.
+        Some(stops[next])
     }
 
     /// Keeps the DWM title bar in step with the interface.
@@ -643,6 +761,48 @@ impl App {
         });
     }
 
+    /// Backs up without changing anything.
+    ///
+    /// The selection, or everything currently listed when nothing is selected.
+    /// Until now a backup only ever happened as a by-product of a change,
+    /// which meant "let me keep this state before I start poking" had no
+    /// button at all.
+    fn backup_now(&mut self) {
+        let Some(scan) = &self.scan else { return };
+
+        let indices: Vec<usize> = if self.selected.is_empty() {
+            self.visible_rows
+                .iter()
+                .filter(|row| row.is_top())
+                .map(|row| row.entry)
+                .collect()
+        } else {
+            self.selected.iter().copied().collect()
+        };
+
+        let paths: Vec<String> = indices
+            .iter()
+            .filter_map(|i| scan.entries.get(*i))
+            .map(|entry| entry.registry_path.clone())
+            .collect();
+
+        if paths.is_empty() {
+            self.dialog = Some(Dialog::Error(self.tr.msg_no_selection.to_string()));
+            return;
+        }
+
+        match backup::export("manuell", &paths) {
+            Ok(token) => {
+                let directory = token.directory().display().to_string();
+                self.reload_backups();
+                self.dialog = Some(Dialog::Error(
+                    self.tr.fmt_backup_created.replace("{}", &directory),
+                ));
+            }
+            Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
+        }
+    }
+
     /// Applies a plan on a worker thread.
     ///
     /// On a thread because it takes a backup through `reg.exe` and may wait
@@ -651,6 +811,9 @@ impl App {
     fn apply(&mut self, plan: Plan, ctx: &egui::Context) {
         let (tx, rx) = channel();
         let ctx = ctx.clone();
+        // Copied out before the thread starts: `&'static Strings` is fine to
+        // move, and the worker must not reach into `self`.
+        let tr = self.tr;
 
         std::thread::Builder::new()
             .name("apply-plan".into())
@@ -677,7 +840,7 @@ impl App {
                                 // not a failure of the whole operation.
                                 Ok(mut report) => {
                                     report.results.push(crate::registry::plan::OperationResult {
-                                        display_name: "Erhöhter Teil / elevated part".into(),
+                                        display_name: tr.elevated_part.to_string(),
                                         registry_path: String::new(),
                                         action: Action::Hide,
                                         error: Some(message),
@@ -755,6 +918,8 @@ impl eframe::App for App {
             self.filter_dirty = false;
         }
 
+        let scroll_to = self.handle_keys(&ctx);
+
         self.report_theme_once(ui);
         self.drive_bench(&ctx);
         self.poll_action(&ctx);
@@ -768,7 +933,7 @@ impl eframe::App for App {
             Tab::Categories => {
                 self.category_tree(ui);
                 self.detail_panel(ui);
-                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui));
+                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui, scroll_to));
             }
             Tab::Backups => {
                 egui::CentralPanel::default().show(ui, |ui| self.backup_list(ui));
@@ -779,12 +944,12 @@ impl eframe::App for App {
             Tab::FileTypes => {
                 self.file_type_tree(ui);
                 self.detail_panel(ui);
-                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui));
+                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui, scroll_to));
             }
             Tab::Programs => {
                 self.program_list(ui);
                 self.detail_panel(ui);
-                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui));
+                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui, scroll_to));
             }
         }
 
@@ -927,7 +1092,11 @@ impl App {
                 // Creating one's own entry does not act on the selection, so
                 // it sits before the selection controls rather than among the
                 // actions that do.
-                if ui.button(self.tr.editor_new).clicked() {
+                if ui
+                    .button(self.tr.editor_new)
+                    .on_hover_text(self.tr.tip_editor_new)
+                    .clicked()
+                {
                     self.dialog = Some(Dialog::Editor {
                         entry: Box::new(NewEntry {
                             category: self
@@ -946,7 +1115,11 @@ impl App {
                 }
                 ui.separator();
 
-                if ui.button(self.tr.btn_select_all).clicked() {
+                if ui
+                    .button(self.tr.btn_select_all)
+                    .on_hover_text(self.tr.tip_select_all)
+                    .clicked()
+                {
                     self.selected = self
                         .visible_rows
                         .iter()
@@ -956,6 +1129,7 @@ impl App {
                 }
                 if ui
                     .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
+                    .on_hover_text(self.tr.tip_select_none)
                     .clicked()
                 {
                     self.clear_selection();
@@ -963,12 +1137,34 @@ impl App {
 
                 ui.separator();
 
-                for (label, action) in [
-                    (self.tr.btn_disable, Action::Hide),
-                    (self.tr.btn_shift_only, Action::ShiftOnly),
-                    (self.tr.btn_block, Action::Block),
+                // Backing up without changing anything. Its own button because
+                // "look first, decide later" is a legitimate way to use this
+                // program, and until now a backup only ever happened as a side
+                // effect of changing something.
+                if ui
+                    .button(self.tr.btn_backup_now)
+                    .on_hover_text(self.tr.tip_backup_now)
+                    .clicked()
+                {
+                    self.backup_now();
+                }
+
+                ui.separator();
+
+                for (label, tip, action) in [
+                    (self.tr.btn_disable, self.tr.tip_disable, Action::Hide),
+                    (
+                        self.tr.btn_shift_only,
+                        self.tr.tip_shift_only,
+                        Action::ShiftOnly,
+                    ),
+                    (self.tr.btn_block, self.tr.tip_block, Action::Block),
                 ] {
-                    if ui.add_enabled(any, egui::Button::new(label)).clicked() {
+                    if ui
+                        .add_enabled(any, egui::Button::new(label))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
                         self.propose(action);
                     }
                 }
@@ -980,7 +1176,11 @@ impl App {
                 let delete = egui::Button::new(
                     egui::RichText::new(self.tr.btn_delete).color(ui.visuals().error_fg_color),
                 );
-                if ui.add_enabled(any, delete).clicked() {
+                if ui
+                    .add_enabled(any, delete)
+                    .on_hover_text(self.tr.tip_delete)
+                    .clicked()
+                {
                     self.propose(Action::Delete);
                 }
 
@@ -1006,9 +1206,9 @@ impl App {
                 // The inverses, deliberately smaller: undoing is a normal
                 // thing to want, but it is not what the bar is for.
                 for (label, action) in [
-                    ("Einblenden / show", Action::Show),
-                    ("Immer zeigen / always show", Action::AlwaysShow),
-                    ("Freigeben / unblock", Action::Unblock),
+                    (self.tr.act_show, Action::Show),
+                    (self.tr.act_always_show, Action::AlwaysShow),
+                    (self.tr.act_unblock, Action::Unblock),
                 ] {
                     if ui.small_button(label).clicked() {
                         self.propose(action);
@@ -1023,11 +1223,15 @@ impl App {
                 // on offer, which is all Windows actually gives.
                 ui.small(format!("{}:", self.tr.detail_position));
                 for (label, value) in [
-                    ("oben / top", Some("Top")),
-                    ("unten / bottom", Some("Bottom")),
-                    ("keine / none", None),
+                    (self.tr.pos_top, Some("Top")),
+                    (self.tr.pos_bottom, Some("Bottom")),
+                    (self.tr.pos_default, None),
                 ] {
-                    if ui.small_button(label).clicked() {
+                    if ui
+                        .small_button(label)
+                        .on_hover_text(self.tr.tip_position)
+                        .clicked()
+                    {
                         self.propose(Action::SetPosition(value.map(str::to_string)));
                     }
                 }
@@ -1087,10 +1291,18 @@ impl App {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button(self.tr.fav_remove).clicked() {
+                            if ui
+                                .small_button(self.tr.fav_remove)
+                                .on_hover_text(self.tr.tip_fav_remove)
+                                .clicked()
+                            {
                                 remove = Some(favourite.id.clone());
                             }
-                            if ui.small_button(self.tr.fav_edit).clicked() {
+                            if ui
+                                .small_button(self.tr.fav_edit)
+                                .on_hover_text(self.tr.tip_fav_edit)
+                                .clicked()
+                            {
                                 edit = Some(favourite.clone());
                             }
                             if ui
@@ -1098,12 +1310,14 @@ impl App {
                                     index + 1 < count,
                                     egui::Button::new("\u{2193}").small(),
                                 )
+                                .on_hover_text(self.tr.tip_fav_down)
                                 .clicked()
                             {
                                 shift = Some((favourite.id.clone(), false));
                             }
                             if ui
                                 .add_enabled(index > 0, egui::Button::new("\u{2191}").small())
+                                .on_hover_text(self.tr.tip_fav_up)
                                 .clicked()
                             {
                                 shift = Some((favourite.id.clone(), true));
@@ -1111,7 +1325,11 @@ impl App {
                             ui.separator();
                             // The whole point of the list: putting a tool
                             // where it can be reached.
-                            if ui.button(self.tr.fav_place).clicked() {
+                            if ui
+                                .button(self.tr.fav_place)
+                                .on_hover_text(self.tr.tip_fav_place)
+                                .clicked()
+                            {
                                 place = Some(favourite.clone());
                             }
                         });
@@ -1489,11 +1707,12 @@ impl App {
                     .resizable(true)
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ui.ctx(), |ui| {
-                        ui.label(format!(
-                            "{} ok, {} Fehler / failed",
-                            report.succeeded(),
-                            report.failed()
-                        ));
+                        ui.label(
+                            self.tr
+                                .fmt_report_counts
+                                .replacen("{}", &report.succeeded().to_string(), 1)
+                                .replacen("{}", &report.failed().to_string(), 1),
+                        );
 
                         if let Some(directory) = &report.backup_directory {
                             ui.add_space(4.0);
@@ -1501,7 +1720,11 @@ impl App {
                             // Offered right here, because a partial failure is
                             // exactly when someone wants to go back and is
                             // least inclined to go hunting for the path.
-                            if ui.button(self.tr.btn_restore).clicked() {
+                            if ui
+                                .button(self.tr.btn_restore)
+                                .on_hover_text(self.tr.tip_restore)
+                                .clicked()
+                            {
                                 restore = Some(directory.clone());
                             }
                         }
@@ -1553,7 +1776,7 @@ impl App {
 
             Dialog::Error(message) => {
                 let mut close = false;
-                egui::Window::new("Fehler / error")
+                egui::Window::new(self.tr.title_error)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -1775,7 +1998,11 @@ impl App {
                             .replace("{}", &self.total_entry_count().to_string()),
                     );
                     ui.separator();
-                    ui.label(format!("{} sichtbar / shown", self.visible_rows.len()));
+                    ui.label(
+                        self.tr
+                            .fmt_shown
+                            .replace("{}", &self.visible_rows.len().to_string()),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1877,6 +2104,7 @@ impl App {
                 };
 
                 let hide_empty = self.settings.hide_empty_types;
+                let tr = self.tr;
                 let mut clicked: Option<String> = None;
 
                 egui::ScrollArea::vertical()
@@ -1896,7 +2124,7 @@ impl App {
                             let total: usize = types.iter().map(|f| f.own_entry_count()).sum();
                             egui::CollapsingHeader::new(format!(
                                 "{}  ({total})",
-                                type_group_label(group)
+                                type_group_label(group, tr)
                             ))
                             .id_salt(group)
                             .default_open(group == crate::registry::filetypes::TypeGroup::Images)
@@ -2005,7 +2233,7 @@ impl App {
             });
     }
 
-    fn entry_table(&mut self, ui: &mut Ui) {
+    fn entry_table(&mut self, ui: &mut Ui, scroll_to: Option<usize>) {
         // Destructured up front: the row closure needs the entries and the
         // icon cache at the same time, which a plain `&mut self` capture
         // would not allow.
@@ -2017,8 +2245,10 @@ impl App {
             focused,
             tr,
             bench,
+            sort,
             ..
         } = self;
+        let mut new_sort: Option<SortBy> = None;
 
         let Some(scan) = scan else {
             ui.centered_and_justified(|ui| {
@@ -2045,6 +2275,12 @@ impl App {
             table = table.scroll_to_row(bench.scroll % visible_rows.len(), None);
         }
 
+        // Keeps the keyboard cursor on screen. Without it the selection walks
+        // out of view and the list looks frozen.
+        if let Some(row) = scroll_to {
+            table = table.scroll_to_row(row, None);
+        }
+
         table
             .id_salt("entries")
             .striped(true)
@@ -2056,28 +2292,50 @@ impl App {
             .min_scrolled_height(0.0)
             .auto_shrink([false, false])
             .column(Column::exact(26.0))
-            .column(Column::initial(260.0).at_least(120.0).clip(true))
+            .column(Column::initial(240.0).at_least(120.0).clip(true))
             .column(Column::initial(90.0).at_least(70.0).clip(true))
             .column(Column::initial(80.0).at_least(60.0).clip(true))
+            // What this entry hangs on: .zip, .rar, image. The column that
+            // tells twenty rows of one program apart.
+            .column(Column::initial(110.0).at_least(70.0).clip(true))
             .column(Column::initial(110.0).at_least(70.0).clip(true))
             .column(Column::remainder().at_least(140.0).clip(true))
             .header(24.0, |mut header| {
                 header.col(|_ui| {});
-                header.col(|ui| {
-                    ui.strong(tr.col_name);
-                });
-                header.col(|ui| {
-                    ui.strong(tr.col_type);
-                });
-                header.col(|ui| {
-                    ui.strong(tr.col_scope);
-                });
-                header.col(|ui| {
-                    ui.strong(tr.col_flags);
-                });
-                header.col(|ui| {
-                    ui.strong(tr.col_command);
-                });
+                for (label, column) in [
+                    (tr.col_name, Some(SortBy::Name)),
+                    (tr.col_type, Some(SortBy::Kind)),
+                    (tr.col_scope, Some(SortBy::Scope)),
+                    (tr.col_applies_to, Some(SortBy::AppliesTo)),
+                    (tr.col_flags, None),
+                    (tr.col_command, Some(SortBy::Command)),
+                ] {
+                    header.col(|ui| {
+                        let Some(column) = column else {
+                            ui.strong(label);
+                            return;
+                        };
+
+                        // The arrow is the whole feedback: without it nobody
+                        // can tell which of five columns the order comes from.
+                        let caption = if sort.0 == column {
+                            format!("{label} {}", if sort.1 { "\u{25b4}" } else { "\u{25be}" })
+                        } else {
+                            label.to_string()
+                        };
+
+                        if ui
+                            .add(
+                                egui::Label::new(egui::RichText::new(caption).strong())
+                                    .sense(Sense::click()),
+                            )
+                            .on_hover_text(tr.btn_sort_hint)
+                            .clicked()
+                        {
+                            new_sort = Some(column);
+                        }
+                    });
+                }
             })
             .body(|body| {
                 // The virtualized variant: only visible rows are built. At a
@@ -2135,6 +2393,14 @@ impl App {
                         ui.label(entry.scope.label());
                     });
                     row.col(|ui| {
+                        // Plain words, because `*` and `Folder` are registry
+                        // shorthand that says nothing to the person deciding
+                        // whether to delete a row. The real location is one
+                        // hover away for anyone who wants it.
+                        ui.label(appears_on(entry, tr))
+                            .on_hover_text(&entry.registry_path);
+                    });
+                    row.col(|ui| {
                         badges(ui, entry, tr);
                     });
                     row.col(|ui| {
@@ -2142,7 +2408,10 @@ impl App {
                     });
 
                     let response = row.response();
-                    if response.clicked() && reference.is_top() {
+                    // A click on a submenu child selects its parent rather
+                    // than nothing: the child cannot be acted on by itself,
+                    // but a row that swallows every click looks broken.
+                    if response.clicked() {
                         // Ctrl adds to the selection, a plain click replaces
                         // it — the convention every file manager uses.
                         if response.ctx.input(|i| i.modifiers.ctrl) {
@@ -2157,6 +2426,17 @@ impl App {
                     }
                 });
             });
+
+        if let Some(column) = new_sort {
+            // Clicking the column that is already active turns the order
+            // around, which is what every file list does.
+            self.sort = if self.sort.0 == column {
+                (column, !self.sort.1)
+            } else {
+                (column, true)
+            };
+            self.filter_dirty = true;
+        }
     }
 
     fn detail_panel(&mut self, ui: &mut Ui) {
@@ -2191,8 +2471,15 @@ impl App {
                         if let Some(position) = &entry.position {
                             field(ui, self.tr.detail_position, position);
                         }
+                        // Always shown, not only when the registry says
+                        // something: "where does this thing actually turn up"
+                        // is the first question about any entry.
+                        field(ui, self.tr.detail_applies_to, &appears_on(entry, self.tr));
                         if let Some(applies) = &entry.applies_to {
-                            field(ui, self.tr.detail_applies_to, applies);
+                            // The raw AppliesTo query, when there is one. It is
+                            // a structured filter Windows evaluates per item,
+                            // so it narrows things further than the location.
+                            field(ui, "AppliesTo", applies);
                         }
 
                         match &entry.kind {
@@ -2277,7 +2564,7 @@ impl App {
                         for missing in &manifest.missing {
                             ui.colored_label(
                                 ui.visuals().weak_text_color(),
-                                format!("  {missing} (fehlte / missing)"),
+                                format!("  {missing} ({})", self.tr.badge_missing),
                             );
                         }
                         // What reg.exe said about the gaps, so an incomplete
@@ -2638,21 +2925,42 @@ fn strings_for(language: Language) -> &'static Strings {
 
 /// Human label for a file type group.
 ///
-/// Not in the i18n table: these are the eight fixed buckets of the curated
-/// list, and adding sixteen more fields for them would bury the strings that
-/// actually vary.
-fn type_group_label(group: crate::registry::filetypes::TypeGroup) -> &'static str {
+/// Four of the nine differ between the languages and live in the table; the
+/// rest are the same word twice. Mixing both languages into one label, which
+/// is how this started, means every user reads half a caption they did not
+/// ask for.
+fn type_group_label(
+    group: crate::registry::filetypes::TypeGroup,
+    tr: &'static Strings,
+) -> &'static str {
     use crate::registry::filetypes::TypeGroup as G;
     match group {
-        G::Documents => "Dokumente / Documents",
-        G::Images => "Bilder / Images",
+        G::Documents => tr.grp_documents,
+        G::Images => tr.grp_images,
+        G::Archives => tr.grp_archives,
+        G::Other => tr.grp_other,
+        // The rest are the same word in both languages, and translating
+        // "Audio" into "Audio" would only add a way to get them out of step.
         G::Raw => "RAW",
         G::Audio => "Audio",
         G::Video => "Video",
-        G::Archives => "Archive / Archives",
         G::Code => "Code",
         G::System => "System",
-        G::Other => "Sonstige / Other",
+    }
+}
+
+/// Where an entry turns up, in words rather than registry shorthand.
+///
+/// `*` means "on every file" and `Folder` means "on folders"; neither says so
+/// to anyone who has not read the documentation. For a file type entry the
+/// answer is the type itself, which is the difference that matters when one
+/// program registers itself twenty times.
+fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
+    let applies = entry.category.applies_to_label();
+    if applies.is_empty() {
+        category_label(&entry.category, tr).to_string()
+    } else {
+        applies
     }
 }
 
@@ -2706,6 +3014,25 @@ fn milliseconds_since_process_start() -> f64 {
         .unwrap_or(0);
 
     (now.saturating_sub(ticks(creation) as u128)) as f64 / 10_000.0
+}
+
+/// The value a column is ordered by.
+///
+/// Lowercased throughout: a list where `WinRAR` sorts before `attrib` because
+/// of capitalisation is a list nobody can find anything in.
+fn sort_key(entry: &ContextEntry, column: SortBy) -> String {
+    match column {
+        SortBy::Name => entry.display_name.to_lowercase(),
+        SortBy::Kind => entry.kind.type_label().to_string(),
+        SortBy::Scope => entry.scope.label().to_string(),
+        // Empty last rather than first: the rows that have nothing to say in
+        // this column are the ones the reader is not looking for here.
+        SortBy::AppliesTo => match entry.category.applies_to_label() {
+            label if label.is_empty() => "\u{ffff}".to_string(),
+            label => label.to_lowercase(),
+        },
+        SortBy::Command => detail_text(entry).to_lowercase(),
+    }
 }
 
 fn matches_search(entry: &ContextEntry, needle: &str) -> bool {

@@ -166,7 +166,12 @@ pub fn file_description(path: &str) -> Option<String> {
 ///
 /// Registry commands frequently say just `powershell.exe`, which is not a path
 /// and carries no version resource until it is one.
-fn absolute_path(path: &str) -> String {
+///
+/// Public because grouping needs the same answer: one command says `cmd.exe`
+/// and another `C:\Windows\System32\cmd.exe`, and without resolving both to
+/// the same string they become two groups with one name — which is exactly
+/// what "why does this program appear twice" looks like from the outside.
+pub fn absolute_path(path: &str) -> String {
     let candidate = Path::new(path);
     if candidate.is_absolute() || path.contains('\\') || path.contains('/') {
         return path.to_string();
