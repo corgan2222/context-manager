@@ -570,10 +570,11 @@ impl App {
         // place under the parent they belong to: a cascading menu that sorted
         // itself apart would stop being a menu.
         let (column, ascending) = self.sort;
+        let tr = self.tr;
         if column != SortBy::Natural {
             candidates.sort_by(|a, b| {
                 let (a, b) = (&scan.entries[*a], &scan.entries[*b]);
-                let ordering = sort_key(a, column).cmp(&sort_key(b, column));
+                let ordering = sort_key(a, column, tr).cmp(&sort_key(b, column, tr));
                 if ascending {
                     ordering
                 } else {
@@ -1189,121 +1190,129 @@ impl App {
             return;
         }
 
+        // While a dialog is up its answer is the only thing that matters.
+        // These are `egui::Window`s, not modals, so without this the buttons
+        // behind them stay live — and pressing one would replace the dialog
+        // and throw away the plan waiting inside it.
+        let idle = self.dialog.is_none();
+
         egui::Panel::top("actions").show(ui, |ui| {
             ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                let count = self.selected.len();
-                let any = count > 0;
+            ui.add_enabled_ui(idle, |ui| {
+                ui.horizontal(|ui| {
+                    let count = self.selected.len();
+                    let any = count > 0;
 
-                ui.label(self.tr.fmt_selected_count.replace("{}", &count.to_string()));
-                ui.separator();
+                    ui.label(self.tr.fmt_selected_count.replace("{}", &count.to_string()));
+                    ui.separator();
 
-                // Creating one's own entry does not act on the selection, so
-                // it sits before the selection controls rather than among the
-                // actions that do.
-                if ui
-                    .button(self.tr.editor_new)
-                    .on_hover_text(self.tr.tip_editor_new)
-                    .clicked()
-                {
-                    self.dialog = Some(Dialog::Editor {
-                        entry: Box::new(NewEntry {
-                            category: self
-                                .selected_category
-                                .clone()
-                                .unwrap_or(Category::Directory),
-                            key_name: String::new(),
-                            display_name: String::new(),
-                            command: String::new(),
-                            icon: None,
-                            position: None,
-                            extended: false,
-                        }),
-                        recorded: create::recorded().unwrap_or_default(),
-                    });
-                }
-                ui.separator();
-
-                if ui
-                    .button(self.tr.btn_select_all)
-                    .on_hover_text(self.tr.tip_select_all)
-                    .clicked()
-                {
-                    self.selected = self
-                        .visible_rows
-                        .iter()
-                        .filter(|row| row.is_top())
-                        .map(|row| row.entry)
-                        .collect();
-                }
-                if ui
-                    .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
-                    .on_hover_text(self.tr.tip_select_none)
-                    .on_disabled_hover_text(self.tr.tip_select_none)
-                    .clicked()
-                {
-                    self.clear_selection();
-                }
-
-                ui.separator();
-
-                // Backing up without changing anything. Its own button because
-                // "look first, decide later" is a legitimate way to use this
-                // program, and until now a backup only ever happened as a side
-                // effect of changing something.
-                if ui
-                    .button(self.tr.btn_backup_now)
-                    .on_hover_text(self.tr.tip_backup_now)
-                    .clicked()
-                {
-                    self.backup_now();
-                }
-
-                ui.separator();
-
-                for (label, tip, action) in [
-                    (self.tr.btn_disable, self.tr.tip_disable, Action::Hide),
-                    (
-                        self.tr.btn_shift_only,
-                        self.tr.tip_shift_only,
-                        Action::ShiftOnly,
-                    ),
-                    (self.tr.btn_block, self.tr.tip_block, Action::Block),
-                ] {
+                    // Creating one's own entry does not act on the selection, so
+                    // it sits before the selection controls rather than among the
+                    // actions that do.
                     if ui
-                        .add_enabled(any, egui::Button::new(label))
-                        .on_hover_text(tip)
-                        // Without this a greyed-out button explains nothing —
-                        // and "why can I not press this" is exactly the moment
-                        // somebody reaches for a tooltip.
-                        .on_disabled_hover_text(tip)
+                        .button(self.tr.editor_new)
+                        .on_hover_text(self.tr.tip_editor_new)
                         .clicked()
                     {
-                        self.propose(action);
+                        self.dialog = Some(Dialog::Editor {
+                            entry: Box::new(NewEntry {
+                                category: self
+                                    .selected_category
+                                    .clone()
+                                    .unwrap_or(Category::Directory),
+                                key_name: String::new(),
+                                display_name: String::new(),
+                                command: String::new(),
+                                icon: None,
+                                position: None,
+                                extended: false,
+                            }),
+                            recorded: create::recorded().unwrap_or_default(),
+                        });
                     }
-                }
+                    ui.separator();
 
-                ui.separator();
+                    if ui
+                        .button(self.tr.btn_select_all)
+                        .on_hover_text(self.tr.tip_select_all)
+                        .clicked()
+                    {
+                        self.selected = self
+                            .visible_rows
+                            .iter()
+                            .filter(|row| row.is_top())
+                            .map(|row| row.entry)
+                            .collect();
+                    }
+                    if ui
+                        .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
+                        .on_hover_text(self.tr.tip_select_none)
+                        .on_disabled_hover_text(self.tr.tip_select_none)
+                        .clicked()
+                    {
+                        self.clear_selection();
+                    }
 
-                // Visually set apart: this is the one action a backup cannot
-                // be shrugged off for.
-                let delete = egui::Button::new(
-                    egui::RichText::new(self.tr.btn_delete).color(ui.visuals().error_fg_color),
-                );
-                if ui
-                    .add_enabled(any, delete)
-                    .on_hover_text(self.tr.tip_delete)
-                    .on_disabled_hover_text(self.tr.tip_delete)
-                    .clicked()
-                {
-                    self.propose(Action::Delete);
-                }
+                    ui.separator();
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(if elevation::is_elevated() {
-                        self.tr.status_elevated
-                    } else {
-                        self.tr.status_not_elevated
+                    // Backing up without changing anything. Its own button because
+                    // "look first, decide later" is a legitimate way to use this
+                    // program, and until now a backup only ever happened as a side
+                    // effect of changing something.
+                    if ui
+                        .button(self.tr.btn_backup_now)
+                        .on_hover_text(self.tr.tip_backup_now)
+                        .clicked()
+                    {
+                        self.backup_now();
+                    }
+
+                    ui.separator();
+
+                    for (label, tip, action) in [
+                        (self.tr.btn_disable, self.tr.tip_disable, Action::Hide),
+                        (
+                            self.tr.btn_shift_only,
+                            self.tr.tip_shift_only,
+                            Action::ShiftOnly,
+                        ),
+                        (self.tr.btn_block, self.tr.tip_block, Action::Block),
+                    ] {
+                        if ui
+                            .add_enabled(any, egui::Button::new(label))
+                            .on_hover_text(tip)
+                            // Without this a greyed-out button explains nothing —
+                            // and "why can I not press this" is exactly the moment
+                            // somebody reaches for a tooltip.
+                            .on_disabled_hover_text(tip)
+                            .clicked()
+                        {
+                            self.propose(action);
+                        }
+                    }
+
+                    ui.separator();
+
+                    // Visually set apart: this is the one action a backup cannot
+                    // be shrugged off for.
+                    let delete = egui::Button::new(
+                        egui::RichText::new(self.tr.btn_delete).color(ui.visuals().error_fg_color),
+                    );
+                    if ui
+                        .add_enabled(any, delete)
+                        .on_hover_text(self.tr.tip_delete)
+                        .on_disabled_hover_text(self.tr.tip_delete)
+                        .clicked()
+                    {
+                        self.propose(Action::Delete);
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(if elevation::is_elevated() {
+                            self.tr.status_elevated
+                        } else {
+                            self.tr.status_not_elevated
+                        });
                     });
                 });
             });
@@ -1315,7 +1324,7 @@ impl App {
         // of every panel after it, and egui resolves clicks against the
         // previous frame's rectangles — so the frame right after a selection
         // change could drop a click on the tree.
-        let any_selected = !self.selected.is_empty();
+        let any_selected = !self.selected.is_empty() && idle;
         egui::Panel::top("actions_undo").show(ui, |ui| {
             ui.add_enabled_ui(any_selected, |ui| {
                 ui.horizontal(|ui| {
@@ -2573,10 +2582,14 @@ impl App {
         if let Some(column) = new_sort {
             // Clicking the column that is already active turns the order
             // around, which is what every file list does.
-            self.sort = if self.sort.0 == column {
-                (column, !self.sort.1)
-            } else {
-                (column, true)
+            // Ascending, descending, and back to the order the rows were
+            // collected in. Without the third step the natural order — which
+            // carries meaning in the file type tab — would be gone for the
+            // rest of the session after one curious click.
+            self.sort = match self.sort {
+                (active, true) if active == column => (column, false),
+                (active, false) if active == column => (SortBy::Natural, true),
+                _ => (column, true),
             };
             self.filter_dirty = true;
         }
@@ -3197,19 +3210,17 @@ fn milliseconds_since_process_start() -> f64 {
 ///
 /// Lowercased throughout: a list where `WinRAR` sorts before `attrib` because
 /// of capitalisation is a list nobody can find anything in.
-fn sort_key(entry: &ContextEntry, column: SortBy) -> String {
+fn sort_key(entry: &ContextEntry, column: SortBy, tr: &'static Strings) -> String {
     match column {
         // Never asked for: `rebuild_visible` skips sorting entirely for it.
         SortBy::Natural => String::new(),
         SortBy::Name => entry.display_name.to_lowercase(),
         SortBy::Kind => entry.kind.type_label().to_string(),
         SortBy::Scope => entry.scope.label().to_string(),
-        // Empty last rather than first: the rows that have nothing to say in
-        // this column are the ones the reader is not looking for here.
-        SortBy::AppliesTo => match entry.category.applies_to_label() {
-            label if label.is_empty() => "\u{ffff}".to_string(),
-            label => label.to_lowercase(),
-        },
+        // By what the column actually shows. Sorting by a hidden value is
+        // the kind of thing that makes a list look broken: the reader sees
+        // "Alle Dateien" and an order that has nothing to do with it.
+        SortBy::AppliesTo => appears_on(entry, tr).to_lowercase(),
         SortBy::Command => detail_text(entry).to_lowercase(),
     }
 }
@@ -3446,7 +3457,7 @@ mod tests {
             entries
                 .iter()
                 .find(|e| e.display_name == *name)
-                .map(|e| sort_key(e, SortBy::Name))
+                .map(|e| sort_key(e, SortBy::Name, &i18n::DE))
                 .unwrap_or_default()
         });
 
@@ -3463,7 +3474,8 @@ mod tests {
         entries[1].category = Category::ExtAssoc(".zip".into());
 
         assert!(
-            sort_key(&entries[1], SortBy::AppliesTo) < sort_key(&entries[0], SortBy::AppliesTo)
+            sort_key(&entries[1], SortBy::AppliesTo, &i18n::DE)
+                < sort_key(&entries[0], SortBy::AppliesTo, &i18n::DE)
         );
     }
 
@@ -3495,7 +3507,7 @@ mod tests {
         for row in &rows {
             let entry = resolve(&scan, row).expect("row fits");
             assert!(!appears_on(entry, &i18n::DE).is_empty());
-            assert!(!sort_key(entry, SortBy::Name).is_empty());
+            assert!(!sort_key(entry, SortBy::Name, &i18n::DE).is_empty());
         }
     }
 
