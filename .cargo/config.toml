@@ -1,0 +1,20 @@
+# Static CRT, so the shipped .exe needs no Visual C++ redistributable.
+#
+# Contrary to what ToDo section 2.3 assumes, `crt-static` is NOT the default
+# for x86_64-pc-windows-msvc: `rustc --print cfg` lists no `crt-static`, and a
+# default release build links VCRUNTIME140.dll plus the api-ms-win-crt-*
+# forwarders. That breaks the "single .exe, no runtime dependency" requirement
+# on any machine without the redistributable installed.
+#
+# `[build] target` is not cosmetic. With an explicit target, cargo builds build
+# scripts and proc-macro crates for the host *without* these rustflags. Without
+# it, the flag would also hit those, and a proc-macro dylib cannot be linked
+# against a static CRT — the build fails outright.
+#
+# Cost of this: artefacts move to target/x86_64-pc-windows-msvc/.
+
+[build]
+target = "x86_64-pc-windows-msvc"
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

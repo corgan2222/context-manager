@@ -6,6 +6,7 @@
 
 struct SmokeApp {
     started: std::time::Instant,
+    reported: bool,
 }
 
 impl eframe::App for SmokeApp {
@@ -13,6 +14,19 @@ impl eframe::App for SmokeApp {
     // ui, frame)`, and panels now take a `&mut Ui` instead of a `&Context`.
     // The ToDo was written against 0.31 and still shows the old shape.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Reported once to stderr as well, so point 4 of the ToDo 2.11 check
+        // list can be verified from a script instead of by squinting at the
+        // window. Release builds have no console, hence stderr and not stdout.
+        if !self.reported {
+            self.reported = true;
+            eprintln!(
+                "smoke: system_theme={:?} active_theme={:?} dark_mode={}",
+                ui.ctx().system_theme(),
+                ui.ctx().theme(),
+                ui.visuals().dark_mode
+            );
+        }
+
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("ctxmenu — Smoke-Test");
             ui.separator();
@@ -60,6 +74,7 @@ pub fn run() -> eframe::Result<()> {
             cc.egui_ctx.set_theme(egui::ThemePreference::System);
             Ok(Box::new(SmokeApp {
                 started: std::time::Instant::now(),
+                reported: false,
             }))
         }),
     )
