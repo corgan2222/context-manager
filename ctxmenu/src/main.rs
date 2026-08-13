@@ -4,23 +4,28 @@
 
 use std::process::ExitCode;
 
-use ctxmenu::{cli, smoke};
+use ctxmenu::{cli, console, errln, smoke};
 
 fn main() -> ExitCode {
+    // Before the first write: a GUI-subsystem binary starts without standard
+    // handles, and attaching later would come too late (see console.rs).
+    console::attach_to_parent();
+
     // Argument handling happens before any window is created. The elevated job
     // mode from ToDo 13.2 will hook in here for the same reason: an elevated
     // instance must not open a second window.
     let command = match cli::parse(std::env::args().skip(1)) {
         Ok(command) => command,
         Err(error) => {
-            eprintln!("{error}");
+            errln!("{error}");
+            console::flush();
             return ExitCode::FAILURE;
         }
     };
 
     let result = match command {
         cli::Command::Help => {
-            println!("{}", cli::HELP);
+            ctxmenu::outln!("{}", cli::HELP);
             Ok(())
         }
         cli::Command::Scan(args) => cli::run_scan(args),
@@ -30,11 +35,14 @@ fn main() -> ExitCode {
         cli::Command::Smoke => smoke::run().map_err(|e| anyhow::anyhow!("eframe: {e}")),
     };
 
-    match result {
+    let code = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Fehler / error: {error:#}");
+            errln!("Fehler / error: {error:#}");
             ExitCode::FAILURE
         }
-    }
+    };
+
+    console::flush();
+    code
 }

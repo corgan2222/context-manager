@@ -129,22 +129,25 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     // Progress goes to stderr so that --json keeps stdout parseable.
     let result = scan::scan(&args.options, |p: ScanProgress| {
         if !args.quiet {
-            eprintln!(
+            crate::errln!(
                 "[{:>2}/{:>2}] {:<60} {:>4} Einträge",
-                p.done, p.total, p.label, p.found
+                p.done,
+                p.total,
+                p.label,
+                p.found
             );
         }
     });
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        crate::outln!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
 
     let elapsed = started.elapsed();
     let nested = count_all(&result.entries) - result.entries.len();
-    println!();
-    println!(
+    crate::outln!();
+    crate::outln!(
         "{} Einträge (+{nested} in Untermenüs) in {:.2} s ({} Scopes, {})",
         result.entries.len(),
         elapsed.as_secs_f32(),
@@ -154,23 +157,29 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
             None => "alle Kategorien".to_string(),
         }
     );
-    println!();
+    crate::outln!();
 
-    println!(
+    crate::outln!(
         "{:<7} {:<8} {:<22} {:<34} {:<7} Befehl / CLSID",
-        "Scope", "Typ", "Schlüssel", "Anzeigename", "Flags"
+        "Scope",
+        "Typ",
+        "Schlüssel",
+        "Anzeigename",
+        "Flags"
     );
     let rule = "-".repeat(120);
-    println!("{rule}");
+    crate::outln!("{rule}");
 
     for entry in &result.entries {
         print_entry(entry, 0);
     }
 
     print_summary(&result.entries, &args.options.scopes);
-    println!(
+    crate::outln!(
         "MUI-Cache: {} Treffer / {} Auflösungen, blockierte CLSIDs im System: {}",
-        result.stats.mui_cache_hits, result.stats.mui_cache_misses, result.stats.blocked_clsids
+        result.stats.mui_cache_hits,
+        result.stats.mui_cache_misses,
+        result.stats.blocked_clsids
     );
     Ok(())
 }
@@ -178,7 +187,7 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
 pub fn run_backups() -> Result<()> {
     let backups = backup::list()?;
     if backups.is_empty() {
-        println!(
+        crate::outln!(
             "Keine Backups unter {:?} / no backups yet",
             backup::root_dir()?
         );
@@ -186,7 +195,7 @@ pub fn run_backups() -> Result<()> {
     }
 
     for (directory, manifest) in &backups {
-        println!(
+        crate::outln!(
             "{}  {:<20} {} Schlüssel{}",
             manifest.created_at.format("%Y-%m-%d %H:%M:%S"),
             manifest.action,
@@ -197,9 +206,9 @@ pub fn run_backups() -> Result<()> {
                 format!(", {} fehlten beim Export", manifest.missing.len())
             }
         );
-        println!("    {}", directory.display());
+        crate::outln!("    {}", directory.display());
         for entry in &manifest.entries {
-            println!("      {}", entry.registry_path);
+            crate::outln!("      {}", entry.registry_path);
         }
     }
     Ok(())
@@ -208,8 +217,8 @@ pub fn run_backups() -> Result<()> {
 pub fn run_restore(directory: &str) -> Result<()> {
     let path = std::path::Path::new(directory);
     let restored = backup::restore(path)?;
-    println!("{restored} Datei(en) zurückgespielt / restored from {directory}");
-    println!(
+    crate::outln!("{restored} Datei(en) zurückgespielt / restored from {directory}");
+    crate::outln!(
         "Hinweis: reg import fügt hinzu und überschreibt, entfernt aber nichts. / \
          note: reg import adds and overwrites, it never removes."
     );
@@ -232,18 +241,18 @@ pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
     }
 
     if !confirmed {
-        println!("Würde sichern und löschen / would back up and delete:");
-        println!("  {}", target.full_path());
-        println!("Zum Ausführen --yes anhängen / append --yes to execute.");
+        crate::outln!("Würde sichern und löschen / would back up and delete:");
+        crate::outln!("  {}", target.full_path());
+        crate::outln!("Zum Ausführen --yes anhängen / append --yes to execute.");
         return Ok(());
     }
 
     let token = backup::export("delete", std::slice::from_ref(&target))?;
-    println!("Backup: {}", token.directory().display());
+    crate::outln!("Backup: {}", token.directory().display());
 
     write::delete_tree(&target, &token)?;
-    println!("Gelöscht / deleted: {}", target.full_path());
-    println!(
+    crate::outln!("Gelöscht / deleted: {}", target.full_path());
+    crate::outln!(
         "Zurückholen mit / restore with: ctxmenu restore \"{}\"",
         token.directory().display()
     );
@@ -268,7 +277,7 @@ fn print_entry(entry: &ContextEntry, indent: usize) {
         EntryKind::ShellEx { clsid, .. } => clsid.clone(),
     };
 
-    println!(
+    crate::outln!(
         "{:<7} {:<8} {pad}{:<22} {:<34} {:<7} {}",
         entry.scope.label(),
         entry.kind.type_label(),
@@ -325,10 +334,10 @@ fn print_summary(entries: &[ContextEntry], requested: &[Scope]) {
         }
     }
 
-    println!();
-    println!("Nach Scope:     {per_scope:?}");
-    println!("Nach Kategorie: {per_category:?}");
-    println!(
+    crate::outln!();
+    crate::outln!("Nach Scope:     {per_scope:?}");
+    crate::outln!("Nach Kategorie: {per_category:?}");
+    crate::outln!(
         "Davon COM-Handler: {shellex}, statische Verben: {}",
         entries.len() - shellex
     );

@@ -4,6 +4,7 @@
 //! can drive the registry code directly.
 
 pub mod cli;
+pub mod console;
 pub mod model;
 pub mod registry;
 pub mod smoke;
