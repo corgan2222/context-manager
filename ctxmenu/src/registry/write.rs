@@ -110,8 +110,14 @@ pub fn clear_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result
 
 /// Sets or clears `Position`.
 ///
-/// `Top` and `Bottom` are the only values Windows acts on; anything else is
-/// ignored, so the caller is expected to have validated already.
+/// Takes the value as an opaque string on purpose. `Top` and `Bottom` are what
+/// this tool offers and both are confirmed to work — verified by writing probe
+/// verbs in the test VM and photographing a real right-click — but they are
+/// not the only values Windows uses. `Windows.newfolder` in the CommandStore
+/// carries `Position=Last`, and `Windows.playmusic` carries `Position=After`
+/// together with a `PositionCompare` GUID naming another verb. Validating
+/// against an enum of two would reject or silently mangle real, shipping
+/// Microsoft keys.
 pub fn set_position(target: &RegTarget, value: Option<&str>, token: &BackupToken) -> Result<()> {
     match value {
         Some(value) => {

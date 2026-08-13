@@ -33,6 +33,10 @@ pub enum Action {
     ShiftOnly,
     AlwaysShow,
     /// `Position` = Top or Bottom, or cleared.
+    ///
+    /// Carried as a free string rather than an enum: values beyond those two
+    /// exist in the wild (`Last`, `After` with a `PositionCompare` GUID), and
+    /// an unknown one must survive a read-modify-write untouched.
     SetPosition(Option<String>),
     /// CLSID onto the machine-wide blocked list. Always needs elevation.
     Block,

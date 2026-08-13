@@ -803,6 +803,23 @@ impl App {
                         self.propose(action);
                     }
                 }
+
+                ui.separator();
+                // Both values verified on Windows 10 by writing probe verbs
+                // and photographing a real right-click: an entry with Top
+                // rises above alphabetically earlier siblings, one with
+                // Bottom sinks below everything. Only three coarse blocks are
+                // on offer, which is all Windows actually gives.
+                ui.small(format!("{}:", self.tr.detail_position));
+                for (label, value) in [
+                    ("oben / top", Some("Top")),
+                    ("unten / bottom", Some("Bottom")),
+                    ("keine / none", None),
+                ] {
+                    if ui.small_button(label).clicked() {
+                        self.propose(Action::SetPosition(value.map(str::to_string)));
+                    }
+                }
             });
         });
         let _ = ctx;
