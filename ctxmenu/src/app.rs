@@ -11,12 +11,14 @@ use egui::{Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use windows::Win32::Foundation::HWND;
 
+use crate::elevation;
 use crate::i18n::{self, Strings};
 use crate::icons::cache::IconCache;
 use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
 use crate::program::group::{self, ProgramGroup};
 use crate::program::identity::NameResolver;
 use crate::registry::backup::{self, BackupManifest};
+use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
 use crate::settings::{Language, Settings, ThemeChoice};
 use crate::theme;
@@ -41,6 +43,19 @@ impl Tab {
             _ => None,
         }
     }
+}
+
+/// A modal question or report.
+enum Dialog {
+    /// Drawn up but not yet applied. Holds everything the user needs to
+    /// decide: how much, how reversible, and whether Windows will ask.
+    Confirm {
+        plan: Plan,
+        needs_elevation: bool,
+    },
+    Running,
+    Done(Report),
+    Error(String),
 }
 
 /// What the scan thread reports back.
@@ -69,8 +84,16 @@ pub struct App {
     selected_group: Option<usize>,
     /// Built once after each scan; never in the frame path.
     groups: Vec<ProgramGroup>,
-    selection: Option<usize>,
+    /// Indices into `scan.entries`. Multi-select, because the whole point of
+    /// the program view is acting on twenty entries at once.
+    selected: rustc_hash::FxHashSet<usize>,
+    /// The row whose details are shown — the last one clicked.
+    focused: Option<usize>,
     search: String,
+
+    dialog: Option<Dialog>,
+    /// Receives the report from the worker that applies a plan.
+    action_rx: Option<Receiver<Result<Report, String>>>,
 
     scan_rx: Option<Receiver<ScanMessage>>,
     scanning: bool,
@@ -135,8 +158,11 @@ impl App {
             selected_ext: None,
             selected_group: None,
             groups: Vec::new(),
-            selection: None,
+            selected: rustc_hash::FxHashSet::default(),
+            focused: None,
             search: String::new(),
+            dialog: None,
+            action_rx: None,
             scan_rx: None,
             scanning: false,
             progress: (0, 0),
@@ -201,7 +227,7 @@ impl App {
 
         self.scan_rx = Some(rx);
         self.scanning = true;
-        self.selection = None;
+        self.clear_selection();
     }
 
     /// Drains the scan channel. Never blocks.
@@ -387,6 +413,143 @@ impl App {
         }
     }
 
+    fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.focused = None;
+    }
+
+    /// Builds a plan from the current selection.
+    ///
+    /// Read-only entries are dropped rather than attempted: offering an action
+    /// that is certain to fail wastes a backup and a UAC prompt on nothing.
+    /// For COM handlers the block action needs the CLSID, so an entry without
+    /// one is skipped too.
+    fn plan_for_selection(&self, action: Action) -> Plan {
+        let Some(scan) = &self.scan else {
+            return Plan::new("leer", Vec::new());
+        };
+
+        let mut operations = Vec::new();
+        for &index in &self.selected {
+            let Some(entry) = scan.entries.get(index) else {
+                continue;
+            };
+            let Ok(target) = crate::registry::paths::RegTarget::parse(&entry.registry_path) else {
+                continue;
+            };
+
+            let clsid = match &entry.kind {
+                EntryKind::ShellEx { clsid, .. } if !clsid.is_empty() => Some(clsid.clone()),
+                _ => None,
+            };
+            // Blocking is a COM-handler mechanism; a static verb has no CLSID
+            // and no equivalent, which is why ToDo 11.3 offers LegacyDisable
+            // there instead.
+            if matches!(action, Action::Block | Action::Unblock) && clsid.is_none() {
+                continue;
+            }
+
+            operations.push(Operation {
+                target,
+                action: action.clone(),
+                clsid,
+                display_name: entry.display_name.clone(),
+            });
+        }
+
+        Plan::new(action.label(), operations)
+    }
+
+    /// Opens the confirmation dialog for an action on the selection.
+    fn propose(&mut self, action: Action) {
+        let plan = self.plan_for_selection(action);
+        if plan.is_empty() {
+            self.dialog = Some(Dialog::Error(self.tr.msg_no_selection.to_string()));
+            return;
+        }
+        // Probing writability touches the registry, so it happens here on the
+        // click and not while drawing the dialog.
+        let needs_elevation = plan.needs_elevation();
+        self.dialog = Some(Dialog::Confirm {
+            plan,
+            needs_elevation,
+        });
+    }
+
+    /// Applies a plan on a worker thread.
+    ///
+    /// On a thread because it takes a backup through `reg.exe` and may wait
+    /// for a UAC prompt — both of which would freeze the window if they ran
+    /// in the frame path.
+    fn apply(&mut self, plan: Plan, ctx: &egui::Context) {
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+
+        std::thread::Builder::new()
+            .name("apply-plan".into())
+            .spawn(move || {
+                let (direct, elevated) = plan.partition();
+
+                // The unelevated half first: if the user then declines the
+                // UAC prompt, they still keep the changes that never needed
+                // it, and the report says exactly which those were.
+                let mut outcome =
+                    crate::registry::plan::execute(&direct).map_err(|e| format!("{e:#}"));
+
+                if !elevated.is_empty() {
+                    match elevation::run_elevated(&elevated) {
+                        Ok(second) => {
+                            if let Ok(first) = &mut outcome {
+                                first.merge(second);
+                            }
+                        }
+                        Err(error) => {
+                            let message = format!("{error:#}");
+                            outcome = match outcome {
+                                // Partial success plus a declined prompt is
+                                // not a failure of the whole operation.
+                                Ok(mut report) => {
+                                    report.results.push(crate::registry::plan::OperationResult {
+                                        display_name: "Erhöhter Teil / elevated part".into(),
+                                        registry_path: String::new(),
+                                        action: Action::Hide,
+                                        error: Some(message),
+                                    });
+                                    Ok(report)
+                                }
+                                Err(_) => Err(message),
+                            };
+                        }
+                    }
+                }
+
+                let _ = tx.send(outcome);
+                ctx.request_repaint();
+            })
+            .expect("apply thread");
+
+        self.action_rx = Some(rx);
+        self.dialog = Some(Dialog::Running);
+    }
+
+    /// Picks up the worker's report. Never blocks.
+    fn poll_action(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.action_rx else { return };
+        let Ok(outcome) = rx.try_recv() else { return };
+
+        self.action_rx = None;
+        self.dialog = Some(match outcome {
+            Ok(report) => Dialog::Done(report),
+            Err(message) => Dialog::Error(message),
+        });
+
+        // From the unelevated parent: a notification sent by the elevated
+        // child would reach the wrong session.
+        elevation::notify_shell();
+        self.clear_selection();
+        self.start_scan(ctx);
+    }
+
     /// Entries in the base categories — what the category tree covers.
     fn entry_count(&self) -> usize {
         self.scan.as_ref().map_or(0, |s| {
@@ -427,9 +590,12 @@ impl eframe::App for App {
 
         self.report_theme_once(ui);
         self.drive_bench(&ctx);
+        self.poll_action(&ctx);
 
         self.top_bar(ui, &ctx);
+        self.action_bar(ui, &ctx);
         self.status_bar(ui);
+        self.dialogs(ui, &ctx);
 
         match self.tab {
             Tab::Categories => {
@@ -473,7 +639,7 @@ impl App {
                         self.tab = tab;
                         // Each tab draws from a different candidate set.
                         self.filter_dirty = true;
-                        self.selection = None;
+                        self.clear_selection();
                         if tab == Tab::Backups {
                             self.reload_backups();
                         }
@@ -556,6 +722,283 @@ impl App {
         }
     }
 
+    /// The actions, offered from gentle to harsh (ToDo 11.3).
+    ///
+    /// Delete sits at the far end behind a separator, and never as the first
+    /// thing under the cursor.
+    fn action_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        if self.tab == Tab::Backups {
+            return;
+        }
+
+        egui::Panel::top("actions").show(ui, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                let count = self.selected.len();
+                let any = count > 0;
+
+                ui.label(self.tr.fmt_selected_count.replace("{}", &count.to_string()));
+                ui.separator();
+
+                if ui.button(self.tr.btn_select_all).clicked() {
+                    self.selected = self.visible_rows.iter().copied().collect();
+                }
+                if ui
+                    .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
+                    .clicked()
+                {
+                    self.clear_selection();
+                }
+
+                ui.separator();
+
+                for (label, action) in [
+                    (self.tr.btn_disable, Action::Hide),
+                    (self.tr.btn_shift_only, Action::ShiftOnly),
+                    (self.tr.btn_block, Action::Block),
+                ] {
+                    if ui.add_enabled(any, egui::Button::new(label)).clicked() {
+                        self.propose(action);
+                    }
+                }
+
+                ui.separator();
+
+                // Visually set apart: this is the one action a backup cannot
+                // be shrugged off for.
+                let delete = egui::Button::new(
+                    egui::RichText::new(self.tr.btn_delete).color(ui.visuals().error_fg_color),
+                );
+                if ui.add_enabled(any, delete).clicked() {
+                    self.propose(Action::Delete);
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(if elevation::is_elevated() {
+                        self.tr.status_elevated
+                    } else {
+                        self.tr.status_not_elevated
+                    });
+                });
+            });
+            ui.add_space(2.0);
+        });
+
+        // Undo actions live behind the same bar but are less prominent.
+        if self.selected.is_empty() {
+            return;
+        }
+        egui::Panel::top("actions_undo").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.small(self.tr.msg_backup_first);
+                ui.separator();
+                // The inverses, deliberately smaller: undoing is a normal
+                // thing to want, but it is not what the bar is for.
+                for (label, action) in [
+                    ("Einblenden / show", Action::Show),
+                    ("Immer zeigen / always show", Action::AlwaysShow),
+                    ("Freigeben / unblock", Action::Unblock),
+                ] {
+                    if ui.small_button(label).clicked() {
+                        self.propose(action);
+                    }
+                }
+            });
+        });
+        let _ = ctx;
+    }
+
+    /// The confirmation, progress and result dialogs.
+    fn dialogs(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let Some(dialog) = self.dialog.take() else {
+            return;
+        };
+
+        let mut keep = true;
+        match dialog {
+            Dialog::Confirm {
+                plan,
+                needs_elevation,
+            } => {
+                let mut start = false;
+                let mut cancel = false;
+
+                egui::Window::new(plan.label.clone())
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.label(
+                            self.tr
+                                .fmt_selected_count
+                                .replace("{}", &plan.operations.len().to_string()),
+                        );
+
+                        let irreversible =
+                            plan.operations.iter().any(|o| !o.action.is_reversible());
+                        if irreversible {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                self.tr.msg_confirm_delete,
+                            );
+                        } else {
+                            ui.label(self.tr.msg_backup_first);
+                        }
+
+                        if needs_elevation {
+                            ui.add_space(4.0);
+                            ui.colored_label(ui.visuals().warn_fg_color, self.tr.msg_needs_admin);
+                        }
+
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                for operation in plan.operations.iter().take(40) {
+                                    ui.small(format!(
+                                        "{}  ·  {}",
+                                        operation.display_name,
+                                        operation.target.full_path()
+                                    ));
+                                }
+                                if plan.operations.len() > 40 {
+                                    ui.small(format!("… {}", plan.operations.len() - 40));
+                                }
+                            });
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(self.tr.btn_execute).clicked() {
+                                start = true;
+                            }
+                            if ui.button(self.tr.btn_cancel).clicked() {
+                                cancel = true;
+                            }
+                        });
+                    });
+
+                if start {
+                    self.apply(plan, ctx);
+                    keep = false;
+                } else if cancel {
+                    keep = false;
+                } else {
+                    self.dialog = Some(Dialog::Confirm {
+                        plan,
+                        needs_elevation,
+                    });
+                    keep = false;
+                }
+            }
+
+            Dialog::Running => {
+                egui::Window::new(self.tr.btn_execute)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(self.tr.status_scanning);
+                        });
+                    });
+                self.dialog = Some(Dialog::Running);
+                keep = false;
+            }
+
+            Dialog::Done(report) => {
+                let mut close = false;
+                let mut restore: Option<String> = None;
+
+                egui::Window::new(self.tr.detail_title)
+                    .collapsible(false)
+                    .resizable(true)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!(
+                            "{} ok, {} Fehler / failed",
+                            report.succeeded(),
+                            report.failed()
+                        ));
+
+                        if let Some(directory) = &report.backup_directory {
+                            ui.add_space(4.0);
+                            ui.label(self.tr.fmt_backup_created.replace("{}", directory));
+                            // Offered right here, because a partial failure is
+                            // exactly when someone wants to go back and is
+                            // least inclined to go hunting for the path.
+                            if ui.button(self.tr.btn_restore).clicked() {
+                                restore = Some(directory.clone());
+                            }
+                        }
+
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(260.0)
+                            .show(ui, |ui| {
+                                for result in &report.results {
+                                    match &result.error {
+                                        None => {
+                                            ui.small(format!("✓  {}", result.display_name));
+                                        }
+                                        Some(error) => {
+                                            ui.colored_label(
+                                                ui.visuals().error_fg_color,
+                                                format!("✗  {}  —  {error}", result.display_name),
+                                            );
+                                        }
+                                    }
+                                }
+                            });
+
+                        ui.add_space(6.0);
+                        ui.small(self.tr.msg_restart_explorer);
+                        ui.add_space(6.0);
+                        if ui.button(self.tr.btn_cancel).clicked() {
+                            close = true;
+                        }
+                    });
+
+                if let Some(directory) = restore {
+                    match backup::restore(std::path::Path::new(&directory)) {
+                        Ok(_) => {
+                            self.start_scan(ctx);
+                            close = true;
+                        }
+                        Err(error) => {
+                            self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                            keep = false;
+                        }
+                    }
+                }
+                if !close && keep {
+                    self.dialog = Some(Dialog::Done(report));
+                }
+                keep = false;
+            }
+
+            Dialog::Error(message) => {
+                let mut close = false;
+                egui::Window::new("Fehler / error")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.colored_label(ui.visuals().error_fg_color, &message);
+                        ui.add_space(6.0);
+                        if ui.button(self.tr.btn_cancel).clicked() {
+                            close = true;
+                        }
+                    });
+                if !close {
+                    self.dialog = Some(Dialog::Error(message));
+                }
+                keep = false;
+            }
+        }
+        let _ = keep;
+    }
+
     fn status_bar(&mut self, ui: &mut Ui) {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -616,7 +1059,7 @@ impl App {
                             .clicked()
                         {
                             self.selected_category = None;
-                            self.selection = None;
+                            self.clear_selection();
                             self.filter_dirty = true;
                         }
 
@@ -640,7 +1083,7 @@ impl App {
 
                             if response.clicked() {
                                 self.selected_category = Some(category.clone());
-                                self.selection = None;
+                                self.clear_selection();
                                 self.filter_dirty = true;
                             }
                         }
@@ -710,7 +1153,7 @@ impl App {
 
                 if let Some(ext) = clicked {
                     self.selected_ext = Some(ext);
-                    self.selection = None;
+                    self.clear_selection();
                     self.filter_dirty = true;
                 }
             });
@@ -762,7 +1205,7 @@ impl App {
 
                 if let Some(index) = clicked {
                     self.selected_group = Some(index);
-                    self.selection = None;
+                    self.clear_selection();
                     self.filter_dirty = true;
                 }
             });
@@ -776,7 +1219,8 @@ impl App {
             scan,
             visible_rows,
             icons,
-            selection,
+            selected,
+            focused,
             tr,
             bench,
             ..
@@ -851,7 +1295,7 @@ impl App {
 
                     // Must precede the first cell; it only affects cells added
                     // after the call.
-                    row.set_selected(*selection == Some(index));
+                    row.set_selected(selected.contains(&index));
 
                     row.col(|ui| {
                         if let Some(reference) = &entry.icon_ref {
@@ -883,8 +1327,19 @@ impl App {
                         ui.label(detail_text(entry));
                     });
 
-                    if row.response().clicked() {
-                        *selection = Some(index);
+                    let response = row.response();
+                    if response.clicked() {
+                        // Ctrl adds to the selection, a plain click replaces
+                        // it — the convention every file manager uses.
+                        if response.ctx.input(|i| i.modifiers.ctrl) {
+                            if !selected.remove(&index) {
+                                selected.insert(index);
+                            }
+                        } else {
+                            selected.clear();
+                            selected.insert(index);
+                        }
+                        *focused = Some(index);
                     }
                 });
             });
@@ -901,7 +1356,7 @@ impl App {
                 ui.separator();
 
                 let Some(entry) = self
-                    .selection
+                    .focused
                     .and_then(|i| self.scan.as_ref().and_then(|s| s.entries.get(i)))
                 else {
                     ui.label(self.tr.detail_nothing_selected);

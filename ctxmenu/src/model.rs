@@ -12,7 +12,9 @@ use serde::Serialize;
 /// `HKCR` is a merged view, not a hive of its own, so the scanner reads the
 /// contributing hives separately. Without that split we could show neither
 /// where an entry comes from nor whether it can be removed without elevation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, serde::Deserialize,
+)]
 pub enum Scope {
     /// `HKCU\SOFTWARE\Classes` — writable without elevation.
     User,

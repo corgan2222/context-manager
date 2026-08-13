@@ -119,7 +119,7 @@ fn a_deleted_key_comes_back_from_its_backup() {
     assert!(write::exists(&target), "fixture should exist to begin with");
 
     // 1. Back up before touching anything.
-    let token = backup::export("selftest", std::slice::from_ref(&target))
+    let token = backup::export_targets("selftest", std::slice::from_ref(&target))
         .expect("export of an existing key");
     let directory = token.directory().to_path_buf();
 
@@ -173,7 +173,7 @@ fn exporting_a_missing_key_is_reported_rather_than_silently_succeeding() {
     // Nothing exportable at all must fail loudly: a token handed out here
     // would authorise a delete with no way back.
     let before = backup::list().expect("listable").len();
-    assert!(backup::export("selftest_missing", std::slice::from_ref(&target)).is_err());
+    assert!(backup::export_targets("selftest_missing", std::slice::from_ref(&target)).is_err());
     assert_eq!(
         backup::list().expect("listable").len(),
         before,

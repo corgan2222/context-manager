@@ -39,6 +39,7 @@ features = [
     "Win32_Graphics_Gdi",              # icon extraction: DIB, DC, bitmaps
     "Win32_UI_Shell",                  # SHLoadIndirectString, SHDefExtractIconW
     "Win32_UI_WindowsAndMessaging",    # HICON, ICONINFO, DrawIconEx, SetWindowPos
+    "Win32_Security",                  # token elevation check
     "Win32_Storage_FileSystem",        # version resource: FileDescription
     "Win32_System_Console",
     "Win32_System_Registry",

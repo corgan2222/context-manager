@@ -105,7 +105,7 @@ pub fn display_path(scope: Scope, relative: &str) -> String {
 /// `CommandStore`, anything outside `…\Classes`, or a container key such as
 /// `Directory\shell` itself — cannot be expressed, so they need no separate
 /// check further down.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RegTarget {
     pub scope: Scope,
     /// Path below the classes root, e.g. `Directory\shell\cmd`.
@@ -180,9 +180,17 @@ pub const COMMAND_STORE: &str =
 
 /// The blocked-CLSID list. One value here disables a handler everywhere,
 /// which beats deleting the same handler under twenty classes.
-#[allow(dead_code)] // used by the block action in milestone 9
 pub const SHELL_EXTENSIONS_BLOCKED: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked";
+
+/// The blocked list in `reg.exe` notation, for backup and restore.
+///
+/// It sits outside the classes tree, so it cannot be a [`RegTarget`] — which
+/// is deliberate: nothing that walks entries should be able to reach it by
+/// accident.
+pub fn blocked_list_display_path() -> String {
+    format!("HKLM\\{SHELL_EXTENSIONS_BLOCKED}")
+}
 
 #[cfg(test)]
 mod tests {

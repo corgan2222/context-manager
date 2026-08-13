@@ -29,6 +29,12 @@ pub enum Command {
     Programs,
     /// Walk the full resolution chain for one extension (milestone 7).
     FileType(String),
+    /// Apply one action to one key, through the full plan and elevation path.
+    Apply {
+        action: crate::registry::plan::Action,
+        path: String,
+        confirmed: bool,
+    },
     Backups,
     Restore(String),
     Delete {
@@ -60,6 +66,10 @@ Verwendung / Usage:
   ctxmenu programs          Nach Programm gruppieren / group by program
   ctxmenu filetype <ext>    Auflösungskette eines Dateityps /
                             resolution chain of one file type
+  ctxmenu hide|show|shift-only|always-show <key> --yes
+                            Merkmal setzen oder entfernen, mit Backup und
+                            nötigenfalls Rechteerhöhung / set or clear a flag,
+                            with a backup and elevation if needed
   ctxmenu backups           Backups auflisten / list backups
   ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
   ctxmenu delete <key> --yes
@@ -136,6 +146,23 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 .get(1)
                 .context("filetype erwartet eine Erweiterung / expects an extension")?;
             return Ok(Command::FileType(ext.clone()));
+        }
+        "hide" | "show" | "shift-only" | "always-show" => {
+            use crate::registry::plan::Action;
+            let action = match args[0].as_str() {
+                "hide" => Action::Hide,
+                "show" => Action::Show,
+                "shift-only" => Action::ShiftOnly,
+                _ => Action::AlwaysShow,
+            };
+            let path = args
+                .get(1)
+                .with_context(|| format!("{} erwartet einen Registry-Pfad", args[0]))?;
+            return Ok(Command::Apply {
+                action,
+                path: path.clone(),
+                confirmed: args.iter().any(|a| a == "--yes"),
+            });
         }
         "backups" => return Ok(Command::Backups),
         "restore" => {
@@ -430,6 +457,77 @@ fn level_label(category: &Category) -> String {
     }
 }
 
+/// Applies one action, taking the same route the window does.
+///
+/// Deliberately the same code path rather than a shortcut: this is how the
+/// elevation handover gets exercised on a machine with no toolchain, and a
+/// separate simplified path would prove nothing about the real one.
+pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: bool) -> Result<()> {
+    use crate::registry::plan::{Operation, Plan};
+
+    let target = RegTarget::parse(path)?;
+    if !write::exists(&target) {
+        bail!(
+            "Schlüssel existiert nicht / key does not exist: {}",
+            target.full_path()
+        );
+    }
+
+    let plan = Plan::new(
+        action.label(),
+        vec![Operation {
+            display_name: target.relative.clone(),
+            target: target.clone(),
+            action,
+            clsid: None,
+        }],
+    );
+
+    let (direct, elevated) = plan.partition();
+    let needs_elevation = !elevated.is_empty();
+
+    if !confirmed {
+        crate::outln!("Würde ausführen / would apply: {}", plan.label);
+        crate::outln!("  {}", target.full_path());
+        crate::outln!(
+            "  Rechteerhöhung nötig / elevation required: {}",
+            if needs_elevation {
+                "ja / yes"
+            } else {
+                "nein / no"
+            }
+        );
+        crate::outln!("Zum Ausführen --yes anhängen / append --yes to execute.");
+        return Ok(());
+    }
+
+    let mut report = crate::registry::plan::execute(&direct)?;
+    if needs_elevation {
+        crate::outln!("Starte erhöhten Vorgang / starting elevated run …");
+        report.merge(crate::elevation::run_elevated(&elevated)?);
+    }
+
+    // From the unelevated side, after the child is done.
+    crate::elevation::notify_shell();
+
+    crate::outln!(
+        "{} erfolgreich / succeeded, {} fehlgeschlagen / failed",
+        report.succeeded(),
+        report.failed()
+    );
+    if let Some(directory) = &report.backup_directory {
+        crate::outln!("Backup: {directory}");
+    }
+    for result in &report.results {
+        match &result.error {
+            None => crate::outln!("  ok   {}", result.registry_path),
+            Some(error) => crate::outln!("  FEHL {}  —  {error}", result.registry_path),
+        }
+    }
+
+    Ok(())
+}
+
 pub fn run_backups() -> Result<()> {
     let backups = backup::list()?;
     if backups.is_empty() {
@@ -493,7 +591,7 @@ pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
         return Ok(());
     }
 
-    let token = backup::export("delete", std::slice::from_ref(&target))?;
+    let token = backup::export_targets("delete", std::slice::from_ref(&target))?;
     crate::outln!("Backup: {}", token.directory().display());
 
     write::delete_tree(&target, &token)?;

@@ -35,7 +35,13 @@ impl BackupToken {
     }
 
     pub fn covers(&self, target: &RegTarget) -> bool {
-        self.covered.contains(&target.full_path().to_lowercase())
+        self.covers_path(target.full_path())
+    }
+
+    /// For locations outside the classes tree — the blocked list lives under
+    /// `HKLM\SOFTWARE\Microsoft\…` and deliberately cannot be a `RegTarget`.
+    pub fn covers_path(&self, path: impl AsRef<str>) -> bool {
+        self.covered.contains(&path.as_ref().to_lowercase())
     }
 }
 
@@ -68,36 +74,45 @@ pub fn root_dir() -> Result<PathBuf> {
 /// Fails only if nothing at all could be exported — a partially existing
 /// selection still yields a usable backup, with the gaps written into the
 /// manifest.
-pub fn export(action: &str, targets: &[RegTarget]) -> Result<BackupToken> {
-    if targets.is_empty() {
+pub fn export_targets(action: &str, targets: &[RegTarget]) -> Result<BackupToken> {
+    let paths: Vec<String> = targets.iter().map(RegTarget::full_path).collect();
+    export(action, &paths)
+}
+
+/// Exports arbitrary registry paths in `reg.exe` notation.
+///
+/// Takes plain paths rather than [`RegTarget`]s because the blocked list sits
+/// outside the classes tree. The safety property is unchanged: the token
+/// still records exactly which paths were captured, and the write functions
+/// still refuse anything the token does not name.
+pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
+    if paths.is_empty() {
         bail!("Backup ohne Ziele / backup with no targets");
     }
 
-    let stamp = chrono::Local::now().format("%Y%m%dT%H%M%S");
     // Colons are legal in ISO 8601 and illegal in Windows file names, hence
-    // the compact form rather than the one the ToDo sketches.
-    let directory = root_dir()?.join(format!("{stamp}_{}", sanitize(action)));
-    std::fs::create_dir_all(&directory)
-        .with_context(|| format!("Backup-Verzeichnis / backup directory {directory:?}"))?;
+    // the compact form rather than the one the ToDo sketches. Milliseconds
+    // because two actions a second apart is entirely normal.
+    let stamp = chrono::Local::now().format("%Y%m%dT%H%M%S%3f");
+    let directory = unique_directory(&root_dir()?, &format!("{stamp}_{}", sanitize(action)))?;
 
     let mut entries = Vec::new();
     let mut missing = Vec::new();
     let mut covered = FxHashSet::default();
 
-    for (index, target) in targets.iter().enumerate() {
-        let full = target.full_path();
-        let file_name = format!("{:02}_{}.reg", index + 1, sanitize(&full));
+    for (index, full) in paths.iter().enumerate() {
+        let file_name = format!("{:02}_{}.reg", index + 1, sanitize(full));
         let file = directory.join(&file_name);
 
-        if run_reg(&["export", &full, &file.to_string_lossy(), "/y"])? {
+        if run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
             covered.insert(full.to_lowercase());
             entries.push(BackupEntry {
-                registry_path: full,
-                scope: target.scope.label().to_string(),
+                registry_path: full.clone(),
+                scope: hive_of(full).to_string(),
                 file: file_name,
             });
         } else {
-            missing.push(full);
+            missing.push(full.clone());
         }
     }
 
@@ -121,6 +136,42 @@ pub fn export(action: &str, targets: &[RegTarget]) -> Result<BackupToken> {
     }
 
     Ok(BackupToken { directory, covered })
+}
+
+/// Claims a directory nobody else holds.
+///
+/// Uses `create_dir` rather than `create_dir_all` on purpose: the former fails
+/// when the directory already exists, which is exactly the collision that has
+/// to be detected. Two group actions in the same millisecond would otherwise
+/// share a directory and quietly overwrite each other's `.reg` files —
+/// destroying the backup that the second action is about to rely on.
+fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("Backup-Wurzel / backup root {root:?}"))?;
+
+    for suffix in 0..1000 {
+        let candidate = if suffix == 0 {
+            root.join(base)
+        } else {
+            root.join(format!("{base}_{suffix}"))
+        };
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "Backup-Verzeichnis / backup directory {candidate:?}"
+                )));
+            }
+        }
+    }
+
+    bail!("Kein freier Backup-Verzeichnisname / no free backup directory name")
+}
+
+/// Hive prefix of a full path, for the manifest.
+fn hive_of(path: &str) -> &str {
+    path.split('\\').next().unwrap_or("?")
 }
 
 /// Reads the manifest of a backup directory.
@@ -244,6 +295,25 @@ mod tests {
         let name = sanitize(&long);
         assert!(name.len() <= 120, "got {} characters", name.len());
         assert!(name.ends_with('a'), "the tail is the distinguishing part");
+    }
+
+    /// Regression guard: the directory name used to be second-resolution plus
+    /// the action label, so two group actions in the same second shared a
+    /// directory and the second overwrote the first one's backup.
+    #[test]
+    fn two_backups_of_the_same_action_never_share_a_directory() {
+        let root = std::env::temp_dir().join("ctxmenu_backup_name_test");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let a = unique_directory(&root, "stamp_aktion").expect("first");
+        let b = unique_directory(&root, "stamp_aktion").expect("second");
+        let c = unique_directory(&root, "stamp_aktion").expect("third");
+
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert!(a.is_dir() && b.is_dir() && c.is_dir());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
