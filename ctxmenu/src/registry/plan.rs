@@ -259,7 +259,15 @@ fn apply(operation: &Operation, token: &BackupToken) -> Result<()> {
             Some(clsid) => write::unblock_clsid(clsid, token),
             None => anyhow::bail!("Freigeben ohne CLSID / unblock without a CLSID"),
         },
-        Action::Delete => write::delete_tree(&operation.target, token),
+        Action::Delete => {
+            write::delete_tree(&operation.target, token)?;
+            // The key is gone, so the record of having created it must go
+            // too. Best effort: the deletion already happened and succeeded,
+            // and a failure to tidy the bookkeeping is not worth reporting as
+            // a failed deletion.
+            let _ = super::create::forget_target(&operation.target);
+            Ok(())
+        }
     }
 }
 

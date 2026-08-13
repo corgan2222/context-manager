@@ -278,6 +278,30 @@ fn record(entry: &NewEntry) -> Result<()> {
     Ok(())
 }
 
+/// Forgets whatever was recorded for this registry key.
+///
+/// Called after a successful delete. Without it `entries.json` keeps naming an
+/// entry the user has removed — and that file is the input for the Windows 11
+/// handler of ToDo 14, so a stale line there would eventually put the deleted
+/// item back in the menu.
+pub fn forget_target(target: &RegTarget) -> Result<()> {
+    let wanted = target.full_path().to_lowercase();
+    let mut list = recorded()?;
+    let before = list.len();
+
+    list.retain(|entry| {
+        entry
+            .target()
+            .map(|t| t.full_path().to_lowercase() != wanted)
+            .unwrap_or(true)
+    });
+
+    if list.len() != before {
+        std::fs::write(entries_path()?, serde_json::to_string_pretty(&list)?)?;
+    }
+    Ok(())
+}
+
 /// Forgets an entry in `entries.json`. The registry key is removed elsewhere,
 /// through the ordinary plan path with its backup.
 pub fn forget(category: &Category, key_name: &str) -> Result<()> {
@@ -439,6 +463,41 @@ mod tests {
         );
         e.key_name = "ctxmenu_x".into();
         assert!(e.target().is_err());
+    }
+
+    #[test]
+    fn deleting_a_key_forgets_what_was_recorded_for_it() {
+        // The record and the key have to disappear together: entries.json is
+        // the input for the Windows 11 handler, so a line that outlives its
+        // key would put a deleted item back into the menu.
+        let mut e = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        e.key_name = "ctxmenu_forget_selftest".into();
+        let target = e.target().expect("creatable");
+
+        // Recorded without touching the registry: this is about the file.
+        let mut list = recorded().expect("readable");
+        let before = list.len();
+        list.push(e.clone());
+        std::fs::write(
+            entries_path().expect("path"),
+            serde_json::to_string_pretty(&list).expect("json"),
+        )
+        .expect("write");
+
+        forget_target(&target).expect("forgets");
+
+        // Checked on the entry itself, not on the total: this file belongs to
+        // the machine and holds whatever the user created. A count assertion
+        // would fail for reasons that have nothing to do with forgetting.
+        let after = recorded().expect("readable");
+        assert!(
+            !after.iter().any(|f| f.key_name == e.key_name),
+            "the deleted entry is still listed"
+        );
+        assert!(
+            after.len() < before + 1,
+            "forgetting must remove exactly the one entry"
+        );
     }
 
     #[test]
