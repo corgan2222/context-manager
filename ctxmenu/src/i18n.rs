@@ -219,6 +219,8 @@ pub struct Strings {
     pub tip_cancel: &'static str,
     pub tip_position: &'static str,
     pub status_no_dwm: &'static str,
+    pub title_note: &'static str,
+    pub btn_close: &'static str,
 }
 
 pub static DE: Strings = Strings {
@@ -412,6 +414,8 @@ pub static DE: Strings = Strings {
     tip_cancel: "Schließt ohne Änderung.",
     tip_position: "Windows sortiert Menüeinträge alphabetisch; nur oben und unten lassen sich beeinflussen.",
     status_no_dwm: "Titelleiste: kein DWM-Attribut",
+    title_note: "Erledigt",
+    btn_close: "Schließen",
 };
 
 pub static EN: Strings = Strings {
@@ -605,6 +609,8 @@ pub static EN: Strings = Strings {
     tip_cancel: "Closes without changing anything.",
     tip_position: "Windows sorts menu entries alphabetically; only top and bottom can be influenced.",
     status_no_dwm: "Title bar: no DWM attribute",
+    title_note: "Done",
+    btn_close: "Close",
 };
 
 /// The two tables side by side, for checks that must cover both.
@@ -798,6 +804,8 @@ fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         tip_cancel,
         tip_position,
         status_no_dwm,
+        title_note,
+        btn_close,
     ]
 }
 

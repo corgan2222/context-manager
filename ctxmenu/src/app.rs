@@ -1089,16 +1089,20 @@ impl App {
 
                 if ui
                     .add_enabled(!self.scanning, egui::Button::new(self.tr.btn_rescan))
+                    .on_hover_text(self.tr.tip_rescan)
+                    .on_disabled_hover_text(self.tr.tip_rescan)
                     .clicked()
                 {
                     self.start_scan(ctx);
                 }
 
-                let search = ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text(self.tr.search_hint)
-                        .desired_width(260.0),
-                );
+                let search = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text(self.tr.search_hint)
+                            .desired_width(260.0),
+                    )
+                    .on_hover_text(self.tr.tip_search);
                 // Rebuilding on `changed()` instead of every frame is what
                 // keeps typing responsive at a few thousand rows (ToDo 11.5).
                 if search.changed() {
@@ -1116,7 +1120,7 @@ impl App {
     fn settings_controls(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut changed = false;
 
-        egui::ComboBox::from_id_salt("theme")
+        let theme = egui::ComboBox::from_id_salt("theme")
             .selected_text(match self.settings.theme {
                 ThemeChoice::System => self.tr.theme_system,
                 ThemeChoice::Light => self.tr.theme_light,
@@ -1136,8 +1140,9 @@ impl App {
                     }
                 }
             });
+        theme.response.on_hover_text(self.tr.tip_theme);
 
-        egui::ComboBox::from_id_salt("language")
+        let language_box = egui::ComboBox::from_id_salt("language")
             .selected_text(self.settings.language.label())
             .show_ui(ui, |ui| {
                 for language in [Language::German, Language::English] {
@@ -1149,6 +1154,7 @@ impl App {
                     }
                 }
             });
+        language_box.response.on_hover_text(self.tr.tip_language);
 
         if changed {
             // Language switching is a single assignment; it takes effect on
@@ -1223,6 +1229,7 @@ impl App {
                 if ui
                     .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
                     .on_hover_text(self.tr.tip_select_none)
+                    .on_disabled_hover_text(self.tr.tip_select_none)
                     .clicked()
                 {
                     self.clear_selection();
@@ -1256,6 +1263,10 @@ impl App {
                     if ui
                         .add_enabled(any, egui::Button::new(label))
                         .on_hover_text(tip)
+                        // Without this a greyed-out button explains nothing —
+                        // and "why can I not press this" is exactly the moment
+                        // somebody reaches for a tooltip.
+                        .on_disabled_hover_text(tip)
                         .clicked()
                     {
                         self.propose(action);
@@ -1272,6 +1283,7 @@ impl App {
                 if ui
                     .add_enabled(any, delete)
                     .on_hover_text(self.tr.tip_delete)
+                    .on_disabled_hover_text(self.tr.tip_delete)
                     .clicked()
                 {
                     self.propose(Action::Delete);
@@ -1347,7 +1359,11 @@ impl App {
         ui.horizontal(|ui| {
             ui.heading(self.tr.tab_favourites);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(self.tr.fav_new).clicked() {
+                if ui
+                    .button(self.tr.fav_new)
+                    .on_hover_text(self.tr.tip_fav_new)
+                    .clicked()
+                {
                     self.dialog = Some(Dialog::Favourite {
                         draft: Box::new(blank_favourite()),
                         fresh: true,
@@ -1757,10 +1773,18 @@ impl App {
 
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            if ui.button(self.tr.btn_execute).clicked() {
+                            if ui
+                                .button(self.tr.btn_execute)
+                                .on_hover_text(self.tr.tip_execute)
+                                .clicked()
+                            {
                                 start = true;
                             }
-                            if ui.button(self.tr.btn_cancel).clicked() {
+                            if ui
+                                .button(self.tr.btn_cancel)
+                                .on_hover_text(self.tr.tip_cancel)
+                                .clicked()
+                            {
                                 cancel = true;
                             }
                         });
@@ -2272,6 +2296,8 @@ impl App {
                             usable,
                             egui::Button::new(self.tr.fav_add_from_program).small(),
                         )
+                        .on_hover_text(self.tr.tip_fav_add_from_program)
+                        .on_disabled_hover_text(self.tr.tip_fav_add_from_program)
                         .clicked()
                         && let Some(group) = group
                     {
@@ -3119,7 +3145,7 @@ fn milliseconds_since_process_start() -> f64 {
 /// of capitalisation is a list nobody can find anything in.
 fn sort_key(entry: &ContextEntry, column: SortBy) -> String {
     match column {
-        // Never asked for: ebuild_visible skips sorting entirely for it.
+        // Never asked for: `rebuild_visible` skips sorting entirely for it.
         SortBy::Natural => String::new(),
         SortBy::Name => entry.display_name.to_lowercase(),
         SortBy::Kind => entry.kind.type_label().to_string(),

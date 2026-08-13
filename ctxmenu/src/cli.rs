@@ -934,9 +934,11 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
 pub fn run_backups() -> Result<()> {
     let backups = backup::list()?;
     if backups.is_empty() {
+        // `display()`, not `{:?}`: the debug form doubles every backslash, so
+        // the path it prints is one nobody can paste anywhere.
         crate::outln!(
-            "Keine Backups unter {:?} / no backups yet",
-            backup::root_dir()?
+            "Keine Backups unter {} / no backups yet",
+            backup::root_dir()?.display()
         );
         return Ok(());
     }
