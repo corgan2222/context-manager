@@ -107,15 +107,27 @@ fn resolve_entries(
     clsids: &mut ClsidResolver,
 ) {
     enum Resolved {
-        Verb(Option<String>),
-        ShellEx { info: ClsidInfo, blocked: bool },
+        Verb {
+            display: Option<String>,
+            program_key: Option<String>,
+        },
+        ShellEx {
+            info: ClsidInfo,
+            blocked: bool,
+        },
     }
 
     for entry in entries.iter_mut() {
         let resolved = match &entry.kind {
-            EntryKind::Verb { .. } => {
-                Resolved::Verb(entry.raw_display.as_deref().map(|raw| mui.resolve(raw)))
-            }
+            EntryKind::Verb { command, .. } => Resolved::Verb {
+                display: entry.raw_display.as_deref().map(|raw| mui.resolve(raw)),
+                // Which program this entry belongs to. Costs a few file
+                // system probes per entry, which is why it runs here in the
+                // scan worker and never in the frame path.
+                program_key: command
+                    .as_deref()
+                    .and_then(crate::program::cmdline::program_key),
+            },
             EntryKind::ShellEx { clsid, .. } => Resolved::ShellEx {
                 info: clsids.resolve(clsid),
                 blocked: clsids.is_blocked(clsid),
@@ -123,8 +135,15 @@ fn resolve_entries(
         };
 
         match resolved {
-            Resolved::Verb(Some(display)) => entry.display_name = display,
-            Resolved::Verb(None) => {}
+            Resolved::Verb {
+                display,
+                program_key,
+            } => {
+                if let Some(display) = display {
+                    entry.display_name = display;
+                }
+                entry.program_key = program_key;
+            }
             Resolved::ShellEx { info, blocked } => {
                 // Falls back to the subkey name set while reading. That is
                 // still the best available label for a handler whose CLSID is

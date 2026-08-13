@@ -23,6 +23,8 @@ pub enum Command {
         bench: Option<usize>,
     },
     Scan(ScanArgs),
+    /// Group every entry by the program behind it (milestone 8).
+    Programs,
     Backups,
     Restore(String),
     Delete {
@@ -49,6 +51,7 @@ Verwendung / Usage:
                             Messlauf / window with n generated rows,
                             optionally as a measured run
   ctxmenu scan [Optionen]   Einträge auflisten / list context menu entries
+  ctxmenu programs          Nach Programm gruppieren / group by program
   ctxmenu backups           Backups auflisten / list backups
   ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
   ctxmenu delete <key> --yes
@@ -104,6 +107,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
 
             return Ok(Command::Gui { synthetic, bench });
         }
+        "programs" => return Ok(Command::Programs),
         "backups" => return Ok(Command::Backups),
         "restore" => {
             let directory = args
@@ -223,6 +227,54 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
         result.stats.mui_cache_misses,
         result.stats.blocked_clsids
     );
+    Ok(())
+}
+
+pub fn run_programs() -> Result<()> {
+    let started = std::time::Instant::now();
+    let result = scan::scan(&ScanOptions::default(), |_| {});
+
+    let mut names = crate::program::identity::NameResolver::new();
+    let groups = crate::program::group::build(&result, &mut names);
+    let elapsed = started.elapsed();
+
+    let grouped: usize = groups.iter().map(|g| g.entry_count()).sum();
+    crate::outln!(
+        "{} Programme aus {} Einträgen in {:.2} s ({} ohne zuordenbares Programm)",
+        groups.len(),
+        result.entries.len(),
+        elapsed.as_secs_f32(),
+        result.entries.len() - grouped
+    );
+    let (hits, lookups) = names.stats();
+    crate::outln!("Namens-Cache: {hits} Treffer / {lookups} Auflösungen");
+    crate::outln!();
+
+    for group in &groups {
+        let marks = [
+            group.is_system.then_some("System"),
+            group.read_only.then_some("schreibgeschützt"),
+            (!group.clsids.is_empty()).then_some("COM"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
+
+        crate::outln!(
+            "{:>3}x  {:<42} {}",
+            group.entry_count(),
+            truncate(&group.display_name, 42),
+            if marks.is_empty() {
+                String::new()
+            } else {
+                format!("[{marks}]")
+            }
+        );
+        crate::outln!("      {}", group.key);
+        crate::outln!("      {}", group.locations.join("  "));
+    }
+
     Ok(())
 }
 
