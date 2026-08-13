@@ -88,6 +88,14 @@ nur für diesen einen Schritt.
 Das Suchfeld greift auf jedem Reiter und durchsucht Anzeigename, Befehl und
 Registry-Pfad; auch dann, wenn links noch nichts ausgewählt ist.
 
+**In der Liste:** Pfeiltasten bewegen die Auswahl, Pos1 und Ende springen an
+Anfang und Ende, mit gedrückter Umschalttaste wächst die Auswahl. Ein Klick auf
+eine Spaltenüberschrift sortiert danach, ein zweiter dreht die Richtung um. Die
+Spalte **Erscheint bei** sagt in Worten, wo ein Eintrag auftaucht — „Alle
+Dateien" statt `*`, „.zip" statt eines Pfads mit `SystemFileAssociations` in der
+Mitte; der echte Registry-Pfad steht im Tooltip. Jeder Knopf hat einen, der
+erklärt, was er anfasst und ob es sich rückgängig machen lässt.
+
 ### Eine typische Runde
 
 1. Reiter **Programme**, das Programm anklicken, das stört.
