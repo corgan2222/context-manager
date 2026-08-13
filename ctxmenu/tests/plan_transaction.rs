@@ -78,23 +78,40 @@ fn discard(report: &ctxmenu::registry::plan::Report) {
     }
 }
 
-/// Every failed step with its reason.
+/// Every failed step with its reason, plus what the backup made of it.
 ///
 /// A bare count in an assertion says "two of three" and nothing about which one
-/// or why; that turned a rare failure into a guessing game once already.
+/// or why; that turned a rare failure into a guessing game once already. The
+/// manifest belongs in the same message because the usual suspect is a key that
+/// never made it into the backup — a step whose backup is missing is refused,
+/// and then only the refusal is visible, not the cause.
 fn failures(report: &ctxmenu::registry::plan::Report) -> String {
-    report
-        .results
-        .iter()
-        .filter(|r| !r.succeeded())
-        .map(|r| {
-            format!(
-                "\n  {} -> {}",
-                r.registry_path,
-                r.error.as_deref().unwrap_or("?")
-            )
-        })
-        .collect::<String>()
+    let mut text = String::new();
+
+    for result in report.results.iter().filter(|r| !r.succeeded()) {
+        text.push_str(&format!(
+            "\n  {} -> {}",
+            result.registry_path,
+            result.error.as_deref().unwrap_or("?")
+        ));
+    }
+
+    if let Some(directory) = &report.backup_directory {
+        match backup::read_manifest(std::path::Path::new(directory)) {
+            Ok(manifest) => {
+                text.push_str(&format!(
+                    "\n  Backup {}: {} gesichert, fehlend {:?}, Meldungen {:?}",
+                    directory,
+                    manifest.entries.len(),
+                    manifest.missing,
+                    manifest.notes
+                ));
+            }
+            Err(error) => text.push_str(&format!("\n  Backup {directory}: {error:#}")),
+        }
+    }
+
+    text
 }
 
 fn flag_present(target: &RegTarget, name: &str) -> bool {
@@ -129,7 +146,7 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
 
     // And back again — the whole point of offering this before delete.
     let report = execute(&fixture.plan(Action::Show)).expect("plan runs");
-    assert_eq!(report.succeeded(), 5);
+    assert_eq!(report.succeeded(), 5, "{}", failures(&report));
     for target in &fixture.targets {
         assert!(!flag_present(target, "LegacyDisable"));
     }
@@ -153,8 +170,9 @@ fn one_backup_covers_the_whole_group_rather_than_one_per_entry() {
     assert_eq!(
         manifest.entries.len(),
         3,
-        "all three keys must be in it, missing: {:?}",
-        manifest.missing
+        "all three keys must be in it, missing {:?}, notes {:?}",
+        manifest.missing,
+        manifest.notes
     );
     assert!(manifest.missing.is_empty());
 
@@ -191,7 +209,12 @@ fn a_failing_step_does_not_stop_the_others() {
 
     let report = execute(&plan).expect("plan runs despite a bad step");
     assert_eq!(report.results.len(), 5, "every step must be reported");
-    assert_eq!(report.succeeded(), 4);
+    assert_eq!(
+        report.succeeded(),
+        4,
+        "only the invented key may fail{}",
+        failures(&report)
+    );
     assert_eq!(report.failed(), 1);
 
     for target in &fixture.targets {
