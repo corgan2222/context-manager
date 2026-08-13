@@ -15,10 +15,20 @@ use crate::registry::scan::{self, ScanOptions};
 use crate::registry::{backup, write};
 
 pub enum Command {
+    /// The product itself. `synthetic` fills the table with generated rows
+    /// instead of scanning, for the performance target of milestone 4.
+    Gui {
+        synthetic: Option<usize>,
+        /// Run this many measured frames, report and exit.
+        bench: Option<usize>,
+    },
     Scan(ScanArgs),
     Backups,
     Restore(String),
-    Delete { path: String, confirmed: bool },
+    Delete {
+        path: String,
+        confirmed: bool,
+    },
     Smoke,
     Help,
 }
@@ -33,6 +43,11 @@ pub const HELP: &str = "\
 ctxmenu — Windows Context Menu Manager
 
 Verwendung / Usage:
+  ctxmenu                   Fenster öffnen / open the window
+  ctxmenu --synthetic <n> [--bench <frames>]
+                            Fenster mit n erzeugten Zeilen, optional als
+                            Messlauf / window with n generated rows,
+                            optionally as a measured run
   ctxmenu scan [Optionen]   Einträge auflisten / list context menu entries
   ctxmenu backups           Backups auflisten / list backups
   ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
@@ -55,13 +70,40 @@ Optionen / Options:
 pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<String> = args.collect();
 
+    // No arguments means the product: a window, not a usage message.
     if args.is_empty() {
-        return Ok(Command::Help);
+        return Ok(Command::Gui {
+            synthetic: None,
+            bench: None,
+        });
     }
 
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--smoke" => return Ok(Command::Smoke),
+        "--synthetic" | "--bench" => {
+            let mut synthetic = None;
+            let mut bench = None;
+            let mut rest = args.iter();
+
+            while let Some(flag) = rest.next() {
+                let target = match flag.as_str() {
+                    "--synthetic" => &mut synthetic,
+                    "--bench" => &mut bench,
+                    other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
+                };
+                let value = rest
+                    .next()
+                    .with_context(|| format!("{flag} erwartet eine Zahl / expects a number"))?;
+                *target = Some(
+                    value
+                        .parse::<usize>()
+                        .with_context(|| format!("Keine Zahl / not a number: {value}"))?,
+                );
+            }
+
+            return Ok(Command::Gui { synthetic, bench });
+        }
         "backups" => return Ok(Command::Backups),
         "restore" => {
             let directory = args
@@ -362,8 +404,37 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_shows_help() {
-        assert!(matches!(parse_args(&[]).unwrap(), Command::Help));
+    fn no_arguments_opens_the_window() {
+        // This is a GUI application that happens to have a command line, not
+        // the other way round: a bare double-click must show the product.
+        assert!(matches!(
+            parse_args(&[]).unwrap(),
+            Command::Gui {
+                synthetic: None,
+                bench: None
+            }
+        ));
+        assert!(matches!(parse_args(&["--help"]).unwrap(), Command::Help));
+    }
+
+    #[test]
+    fn the_synthetic_row_count_is_parsed() {
+        assert!(matches!(
+            parse_args(&["--synthetic", "2000"]).unwrap(),
+            Command::Gui {
+                synthetic: Some(2000),
+                bench: None
+            }
+        ));
+        assert!(matches!(
+            parse_args(&["--synthetic", "2000", "--bench", "600"]).unwrap(),
+            Command::Gui {
+                synthetic: Some(2000),
+                bench: Some(600)
+            }
+        ));
+        assert!(parse_args(&["--synthetic"]).is_err());
+        assert!(parse_args(&["--synthetic", "viele"]).is_err());
     }
 
     #[test]

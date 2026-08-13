@@ -3,6 +3,7 @@
 //! The binary is a thin shell around this library so that integration tests
 //! can drive the registry code directly.
 
+pub mod app;
 pub mod cli;
 pub mod console;
 pub mod i18n;
@@ -12,3 +13,4 @@ pub mod registry;
 pub mod settings;
 pub mod smoke;
 pub mod synthetic;
+pub mod theme;

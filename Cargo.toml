@@ -34,10 +34,16 @@ rustc-hash = "2"
 version = "0.62.2"
 features = [
     "Win32_Foundation",
-    "Win32_UI_Shell",
+    "Win32_Globalization",             # GetUserDefaultUILanguage
+    "Win32_Graphics_Dwm",              # dark title bar
+    "Win32_Graphics_Gdi",              # icon extraction: DIB, DC, bitmaps
+    "Win32_UI_Shell",                  # SHLoadIndirectString, SHDefExtractIconW
+    "Win32_UI_WindowsAndMessaging",    # HICON, ICONINFO, DrawIconEx, SetWindowPos
     "Win32_System_Console",
     "Win32_System_Registry",
     "Win32_System_Environment",
+    "Win32_System_SystemServices",     # LANG_GERMAN
+    "Win32_System_Threading",          # GetGuiResources, for the GDI leak test
 ]
 
 [profile.release]

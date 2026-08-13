@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use ctxmenu::{cli, console, errln, smoke};
+use ctxmenu::{app, cli, console, errln, smoke};
 
 fn main() -> ExitCode {
     // Before the first write: a GUI-subsystem binary starts without standard
@@ -27,6 +27,9 @@ fn main() -> ExitCode {
         cli::Command::Help => {
             ctxmenu::outln!("{}", cli::HELP);
             Ok(())
+        }
+        cli::Command::Gui { synthetic, bench } => {
+            app::run(synthetic, bench).map_err(|e| anyhow::anyhow!("eframe: {e}"))
         }
         cli::Command::Scan(args) => cli::run_scan(args),
         cli::Command::Backups => cli::run_backups(),
