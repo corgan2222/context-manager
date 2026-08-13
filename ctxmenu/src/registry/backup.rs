@@ -112,7 +112,7 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
         let file_name = format!("{:02}_{}.reg", index + 1, sanitize(full));
         let file = directory.join(&file_name);
 
-        match run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
+        match export_one(full, &file)? {
             None => {
                 covered.insert(full.to_lowercase());
                 entries.push(BackupEntry {
@@ -189,6 +189,63 @@ fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
     }
 
     bail!("Kein freier Backup-Verzeichnisname / no free backup directory name")
+}
+
+/// Exports one key, trying again when the *file* could not be written.
+///
+/// Measured, not assumed. In a long test series `reg.exe` failed for one key
+/// out of five while the other four in the same directory went through, with
+/// "Die Datei kann nicht geschrieben werden. Es ist möglicherweise ein
+/// Datenträger- bzw. Dateisystemfehler aufgetreten." — the registry key was
+/// fine, the freshly created file was not. A virus scanner reading the
+/// directory that was created microseconds earlier is the obvious candidate.
+///
+/// Why this matters beyond a flaky test: the missing key gets no backup, and
+/// a step without a backup is refused. A group action would silently do
+/// nine of ten things. That is precisely what the backup exists to prevent.
+///
+/// A key that genuinely does not exist is answered before the first attempt,
+/// so the retries do not delay the case they cannot help.
+fn export_one(full: &str, file: &Path) -> Result<Option<String>> {
+    if key_is_absent(full) {
+        return Ok(Some(
+            "Schlüssel existiert nicht / key does not exist".to_string(),
+        ));
+    }
+
+    let mut last = None;
+    for attempt in 0..3 {
+        match run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
+            None => return Ok(None),
+            Some(reason) => {
+                last = Some(reason);
+                std::thread::sleep(std::time::Duration::from_millis(40 * (attempt + 1)));
+            }
+        }
+    }
+
+    Ok(last)
+}
+
+/// Whether this path is *known* to name no key.
+///
+/// Deliberately conservative: an unknown hive prefix answers `false`, so the
+/// export is attempted rather than skipped. Getting this wrong in that
+/// direction costs one `reg.exe` call; the other direction would quietly drop
+/// a key from a backup.
+fn key_is_absent(full: &str) -> bool {
+    let Some((hive, rest)) = full.split_once('\\') else {
+        return false;
+    };
+
+    let root = match hive.to_ascii_uppercase().as_str() {
+        "HKCU" | "HKEY_CURRENT_USER" => windows_registry::CURRENT_USER,
+        "HKLM" | "HKEY_LOCAL_MACHINE" => windows_registry::LOCAL_MACHINE,
+        "HKCR" | "HKEY_CLASSES_ROOT" => windows_registry::CLASSES_ROOT,
+        _ => return false,
+    };
+
+    root.open(rest).is_err()
 }
 
 /// Creates the backup root, tolerating a deletion Windows has not finished.
@@ -377,6 +434,20 @@ mod tests {
         assert!(a.is_dir() && b.is_dir() && c.is_dir());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_absent_key_is_recognised_without_asking_reg_exe() {
+        assert!(!key_is_absent(r"HKCU\SOFTWARE"), "this one exists");
+        assert!(key_is_absent(
+            r"HKCU\SOFTWARE\ctxmenu_gibt_es_ganz_sicher_nicht"
+        ));
+
+        // Unknown prefixes must fall through to the export attempt: answering
+        // "absent" for something merely unrecognised would drop a key from a
+        // backup without anyone noticing.
+        assert!(!key_is_absent("HKXX\\irgendwas"));
+        assert!(!key_is_absent("ohne_backslash"));
     }
 
     #[test]
