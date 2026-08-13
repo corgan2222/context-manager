@@ -601,6 +601,13 @@ impl App {
             return None;
         }
 
+        // And not while a text field has the keyboard. Home, End and the
+        // arrows are editing keys in the search box, and consuming them there
+        // would break typing to fix the very list this moves through.
+        if ctx.memory(|memory| memory.focused()).is_some() {
+            return None;
+        }
+
         let stops: Vec<usize> = self
             .visible_rows
             .iter()
