@@ -199,6 +199,10 @@ pub struct App {
     /// Column and direction the list is ordered by. Applied when the rows are
     /// rebuilt, never per frame.
     sort: (SortBy, bool),
+    /// Set when the list is about to show something else entirely. The table
+    /// keeps its scroll offset otherwise, and a list that changed under a
+    /// screenful of unchanged rows looks like a list that did not change.
+    scroll_to_top: bool,
 
     tab: Tab,
     selected_category: Option<Category>,
@@ -265,6 +269,13 @@ struct Bench {
     warmup: usize,
     remaining: usize,
     scroll: usize,
+    /// How many arrow-key presses were fed in, and how far the cursor
+    /// actually walked. Reported together: a keyboard handler that quietly
+    /// does nothing looks exactly like one that works until somebody tries
+    /// it, which is how this feature was found missing in the first place.
+    keys_sent: usize,
+    cursor_walked: usize,
+    last_focus: Option<usize>,
 }
 
 impl App {
@@ -301,6 +312,7 @@ impl App {
             visible_rows: Vec::new(),
             filter_dirty: true,
             sort: (SortBy::Name, true),
+            scroll_to_top: false,
             tab: start_tab,
             selected_category: None,
             selected_ext: None,
@@ -334,6 +346,9 @@ impl App {
                 warmup: 120,
                 remaining: frames,
                 scroll: 0,
+                keys_sent: 0,
+                cursor_walked: 0,
+                last_focus: None,
             }),
         };
 
@@ -386,13 +401,15 @@ impl App {
         let Some(rx) = &self.scan_rx else { return };
 
         let mut finished = false;
-        for message in rx.try_iter() {
-            match message {
-                ScanMessage::Progress(progress) => {
+        let mut died = false;
+
+        loop {
+            match rx.try_recv() {
+                Ok(ScanMessage::Progress(progress)) => {
                     self.progress = (progress.done, progress.total);
                     self.progress_label = progress.label;
                 }
-                ScanMessage::Done(result) => {
+                Ok(ScanMessage::Done(result)) => {
                     let result = *result;
                     // Version resource lookups hit the disk, so the grouping
                     // is built once here and never per frame.
@@ -402,12 +419,28 @@ impl App {
                     self.filter_dirty = true;
                     finished = true;
                 }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                // The worker died without sending a result. Without noticing,
+                // the spinner would turn for ever and "Rescan" would stay
+                // disabled — which looks exactly like a hung program.
+                //
+                // Detected here rather than by a separate probe: `try_recv`
+                // *takes* a message when there is one, and a probe outside
+                // this loop swallowed the finished scan. Measured, by the
+                // benchmark reporting zero rows.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    died = !finished;
+                    break;
+                }
             }
         }
 
-        if finished {
+        if finished || died {
             self.scanning = false;
             self.scan_rx = None;
+        }
+        if died {
+            crate::errln!("scan thread ended without a result");
         }
     }
 
@@ -470,25 +503,30 @@ impl App {
 
             Tab::FileTypes => match &self.selected_ext {
                 Some(ext) => {
+                    // What belongs to *this* type comes first. The other way
+                    // round — which is how this started — put 39 rows that are
+                    // identical for every extension above the 19 that are not,
+                    // so switching from .jpg to .mp3 changed only what was
+                    // already below the fold and the tab looked dead after the
+                    // first click.
+                    let mut rows: Vec<usize> = scan
+                        .file_types
+                        .iter()
+                        .find(|f| f.ext() == ext)
+                        .map(|info| info.entry_indices.clone())
+                        .unwrap_or_default();
+
                     // Levels 1 and 2 apply to every file, so they belong in
                     // the list for this type even though they are not stored
                     // under it (ToDo 10.4). Showing only levels 3 to 7 would
                     // understate what a right-click actually offers.
-                    let mut rows: Vec<usize> = scan
-                        .entries
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, e)| {
-                            matches!(
-                                e.category,
-                                Category::AllFiles | Category::AllFilesystemObjects
-                            )
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    if let Some(info) = scan.file_types.iter().find(|f| f.ext() == ext) {
-                        rows.extend(info.entry_indices.iter().copied());
-                    }
+                    rows.extend(scan.entries.iter().enumerate().filter_map(|(i, e)| {
+                        matches!(
+                            e.category,
+                            Category::AllFiles | Category::AllFilesystemObjects
+                        )
+                        .then_some(i)
+                    }));
                     rows
                 }
                 None => Vec::new(),
@@ -683,24 +721,55 @@ impl App {
         bench.scroll += 7;
         bench.remaining -= 1;
 
+        // Every tenth frame, press the down arrow — through the same event
+        // queue the window manager uses, so this exercises the real handler
+        // rather than calling it directly.
+        if bench.remaining % 10 == 0 {
+            bench.keys_sent += 1;
+            ctx.input_mut(|input| {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::ArrowDown,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            });
+        }
+
+        if self.focused != bench.last_focus {
+            if bench.last_focus.is_some() {
+                bench.cursor_walked += 1;
+            }
+            bench.last_focus = self.focused;
+        }
+
         if bench.remaining == 0 {
             let rows = self.visible_rows.len();
+            let bench = self.bench.as_ref().expect("bench is running");
             crate::errln!(
-                "bench: rows={rows} frames_measured={} avg={:.3}ms p95={:.3}ms worst={:.3}ms fps={:.1}",
+                "bench: rows={rows} frames_measured={} avg={:.3}ms p95={:.3}ms worst={:.3}ms fps={:.1} keys_sent={} cursor_walked={}",
                 self.frame_times.count(),
                 self.frame_times.average_ms(),
                 self.frame_times.percentile_ms(0.95),
                 self.frame_times.worst_ms(),
-                self.frame_times.fps()
+                self.frame_times.fps(),
+                bench.keys_sent,
+                bench.cursor_walked
             );
             crate::console::flush();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
+    /// Clears the selection and takes the view back to the top.
+    ///
+    /// Called whenever the list is about to show a different set — another
+    /// category, extension or program.
     fn clear_selection(&mut self) {
         self.selected.clear();
         self.focused = None;
+        self.scroll_to_top = true;
     }
 
     /// Builds a plan from the current selection.
@@ -918,10 +987,16 @@ impl eframe::App for App {
             self.filter_dirty = false;
         }
 
-        let scroll_to = self.handle_keys(&ctx);
+        // Before the keyboard is read, not after: the benchmark feeds
+        // synthetic key presses into this frame's event queue, and a check
+        // that runs first would always measure nothing.
+        self.drive_bench(&ctx);
+        let scroll_to = match std::mem::take(&mut self.scroll_to_top) {
+            true => Some(0),
+            false => self.handle_keys(&ctx),
+        };
 
         self.report_theme_once(ui);
-        self.drive_bench(&ctx);
         self.poll_action(&ctx);
 
         self.top_bar(ui, &ctx);
@@ -1195,46 +1270,50 @@ impl App {
             ui.add_space(2.0);
         });
 
-        // Undo actions live behind the same bar but are less prominent.
-        if self.selected.is_empty() {
-            return;
-        }
+        // Always created, even with nothing selected, and greyed out
+        // instead. A panel that comes and goes shifts the automatic widget ids
+        // of every panel after it, and egui resolves clicks against the
+        // previous frame's rectangles — so the frame right after a selection
+        // change could drop a click on the tree.
+        let any_selected = !self.selected.is_empty();
         egui::Panel::top("actions_undo").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.small(self.tr.msg_backup_first);
-                ui.separator();
-                // The inverses, deliberately smaller: undoing is a normal
-                // thing to want, but it is not what the bar is for.
-                for (label, action) in [
-                    (self.tr.act_show, Action::Show),
-                    (self.tr.act_always_show, Action::AlwaysShow),
-                    (self.tr.act_unblock, Action::Unblock),
-                ] {
-                    if ui.small_button(label).clicked() {
-                        self.propose(action);
+            ui.add_enabled_ui(any_selected, |ui| {
+                ui.horizontal(|ui| {
+                    ui.small(self.tr.msg_backup_first);
+                    ui.separator();
+                    // The inverses, deliberately smaller: undoing is a normal
+                    // thing to want, but it is not what the bar is for.
+                    for (label, action) in [
+                        (self.tr.act_show, Action::Show),
+                        (self.tr.act_always_show, Action::AlwaysShow),
+                        (self.tr.act_unblock, Action::Unblock),
+                    ] {
+                        if ui.small_button(label).clicked() {
+                            self.propose(action);
+                        }
                     }
-                }
 
-                ui.separator();
-                // Both values verified on Windows 10 by writing probe verbs
-                // and photographing a real right-click: an entry with Top
-                // rises above alphabetically earlier siblings, one with
-                // Bottom sinks below everything. Only three coarse blocks are
-                // on offer, which is all Windows actually gives.
-                ui.small(format!("{}:", self.tr.detail_position));
-                for (label, value) in [
-                    (self.tr.pos_top, Some("Top")),
-                    (self.tr.pos_bottom, Some("Bottom")),
-                    (self.tr.pos_default, None),
-                ] {
-                    if ui
-                        .small_button(label)
-                        .on_hover_text(self.tr.tip_position)
-                        .clicked()
-                    {
-                        self.propose(Action::SetPosition(value.map(str::to_string)));
+                    ui.separator();
+                    // Both values verified on Windows 10 by writing probe verbs
+                    // and photographing a real right-click: an entry with Top
+                    // rises above alphabetically earlier siblings, one with
+                    // Bottom sinks below everything. Only three coarse blocks are
+                    // on offer, which is all Windows actually gives.
+                    ui.small(format!("{}:", self.tr.detail_position));
+                    for (label, value) in [
+                        (self.tr.pos_top, Some("Top")),
+                        (self.tr.pos_bottom, Some("Bottom")),
+                        (self.tr.pos_default, None),
+                    ] {
+                        if ui
+                            .small_button(label)
+                            .on_hover_text(self.tr.tip_position)
+                            .clicked()
+                        {
+                            self.propose(Action::SetPosition(value.map(str::to_string)));
+                        }
                     }
-                }
+                });
             });
         });
         let _ = ctx;
