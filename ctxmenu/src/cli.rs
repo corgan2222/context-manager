@@ -26,6 +26,8 @@ pub enum Command {
         /// Text to put in the search box before the first frame. Exists so a
         /// search can be photographed and checked, not only tried by hand.
         search: String,
+        /// Extension to preselect in the file type tab.
+        ext: Option<String>,
     },
     Scan(ScanArgs),
     /// Group every entry by the program behind it (milestone 8).
@@ -89,6 +91,8 @@ Verwendung / Usage:
                             backups
   ctxmenu --search <text>   Fenster mit gesetzter Suche oeffnen /
                             open the window with the search box filled
+  ctxmenu --ext .png        Fenster auf dem Dateityp-Reiter, Endung gewaehlt /
+                            file type tab with that extension selected
   ctxmenu --synthetic <n> [--bench <frames>]
                             Fenster mit n erzeugten Zeilen, optional als
                             Messlauf / window with n generated rows,
@@ -151,17 +155,19 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             bench: None,
             tab: crate::app::Tab::Categories,
             search: String::new(),
+            ext: None,
         });
     }
 
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--smoke" => return Ok(Command::Smoke),
-        "--synthetic" | "--bench" | "--tab" | "--search" => {
+        "--synthetic" | "--bench" | "--tab" | "--search" | "--ext" => {
             let mut synthetic = None;
             let mut bench = None;
             let mut tab = crate::app::Tab::Categories;
             let mut search = String::new();
+            let mut ext = None;
             let mut rest = args.iter();
 
             while let Some(flag) = rest.next() {
@@ -170,6 +176,10 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     .with_context(|| format!("{flag} erwartet einen Wert / expects a value"))?;
                 match flag.as_str() {
                     "--search" => search = value.clone(),
+                    "--ext" => {
+                        ext = Some(value.to_lowercase());
+                        tab = crate::app::Tab::FileTypes;
+                    }
                     "--tab" => {
                         tab = crate::app::Tab::from_slug(value).with_context(|| {
                             format!("Unbekannter Reiter / unknown tab: {value}")
@@ -194,6 +204,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 bench,
                 tab,
                 search,
+                ext,
             });
         }
         "programs" => return Ok(Command::Programs),

@@ -100,6 +100,11 @@ enum Dialog {
 /// Which column the table is ordered by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
+    /// The order the rows were collected in, which carries meaning of its
+    /// own: in the file type tab the entries belonging to the chosen
+    /// extension come first and the ones that apply to every file follow.
+    /// Sorting by name would shuffle those back together.
+    Natural,
     Name,
     Kind,
     Scope,
@@ -288,6 +293,10 @@ impl App {
         bench_frames: Option<usize>,
         start_tab: Tab,
         start_search: String,
+        // `start_ext` preselects an extension in the file type tab. It exists
+        // so that tab can be measured at all: without a selection it shows
+        // nothing, and its one real fault was invisible from outside.
+        start_ext: Option<String>,
     ) -> Self {
         install_fonts(&cc.egui_ctx);
 
@@ -311,11 +320,11 @@ impl App {
             scan: None,
             visible_rows: Vec::new(),
             filter_dirty: true,
-            sort: (SortBy::Name, true),
+            sort: (SortBy::Natural, true),
             scroll_to_top: false,
             tab: start_tab,
             selected_category: None,
-            selected_ext: None,
+            selected_ext: start_ext,
             selected_group: None,
             groups: Vec::new(),
             selected: rustc_hash::FxHashSet::default(),
@@ -551,15 +560,17 @@ impl App {
         // place under the parent they belong to: a cascading menu that sorted
         // itself apart would stop being a menu.
         let (column, ascending) = self.sort;
-        candidates.sort_by(|a, b| {
-            let (a, b) = (&scan.entries[*a], &scan.entries[*b]);
-            let ordering = sort_key(a, column).cmp(&sort_key(b, column));
-            if ascending {
-                ordering
-            } else {
-                ordering.reverse()
-            }
-        });
+        if column != SortBy::Natural {
+            candidates.sort_by(|a, b| {
+                let (a, b) = (&scan.entries[*a], &scan.entries[*b]);
+                let ordering = sort_key(a, column).cmp(&sort_key(b, column));
+                if ascending {
+                    ordering
+                } else {
+                    ordering.reverse()
+                }
+            });
+        }
 
         for index in candidates {
             let entry = &scan.entries[index];
@@ -3101,6 +3112,8 @@ fn milliseconds_since_process_start() -> f64 {
 /// of capitalisation is a list nobody can find anything in.
 fn sort_key(entry: &ContextEntry, column: SortBy) -> String {
     match column {
+        // Never asked for: ebuild_visible skips sorting entirely for it.
+        SortBy::Natural => String::new(),
         SortBy::Name => entry.display_name.to_lowercase(),
         SortBy::Kind => entry.kind.type_label().to_string(),
         SortBy::Scope => entry.scope.label().to_string(),
@@ -3301,6 +3314,7 @@ pub fn run(
     bench_frames: Option<usize>,
     start_tab: Tab,
     start_search: String,
+    start_ext: Option<String>,
 ) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -3320,6 +3334,7 @@ pub fn run(
                 bench_frames,
                 start_tab,
                 start_search.clone(),
+                start_ext.clone(),
             )))
         }),
     )

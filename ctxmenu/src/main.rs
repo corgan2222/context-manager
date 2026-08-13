@@ -91,7 +91,10 @@ fn main() -> ExitCode {
             bench,
             tab,
             search,
-        } => app::run(synthetic, bench, tab, search).map_err(|e| anyhow::anyhow!("eframe: {e}")),
+            ext,
+        } => {
+            app::run(synthetic, bench, tab, search, ext).map_err(|e| anyhow::anyhow!("eframe: {e}"))
+        }
         cli::Command::Scan(args) => cli::run_scan(args),
         cli::Command::Programs => cli::run_programs(),
         cli::Command::FileType(ext) => cli::run_file_type(&ext),
