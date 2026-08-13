@@ -137,20 +137,60 @@ impl NewEntry {
     }
 }
 
-/// The `…\shell` path of a base category.
-fn category_relative(category: &Category) -> Result<&'static str> {
+/// The `…\shell` path of a category.
+///
+/// The file type cases are how an entry is limited to one kind of file. Not
+/// `AppliesTo`: that value takes a structured query, and of the 27 instances
+/// on this machine not one uses the `System.ItemType:.txt` shape the ToDo
+/// sketches — they filter by BitLocker state and storage provider. Placing the
+/// key under `SystemFileAssociations` is the documented mechanism, is what
+/// every image tool on this machine actually does, and has the side benefit
+/// that the entry then appears in this program's own file type view.
+fn category_relative(category: &Category) -> Result<String> {
     Ok(match category {
-        Category::AllFiles => r"*\shell",
-        Category::AllFilesystemObjects => r"AllFilesystemObjects\shell",
-        Category::Directory => r"Directory\shell",
-        Category::DirectoryBackground => r"Directory\Background\shell",
-        Category::Folder => r"Folder\shell",
-        Category::DesktopBackground => r"DesktopBackground\Shell",
-        Category::Drive => r"Drive\shell",
+        Category::AllFiles => r"*\shell".into(),
+        Category::AllFilesystemObjects => r"AllFilesystemObjects\shell".into(),
+        Category::Directory => r"Directory\shell".into(),
+        Category::DirectoryBackground => r"Directory\Background\shell".into(),
+        Category::Folder => r"Folder\shell".into(),
+        Category::DesktopBackground => r"DesktopBackground\Shell".into(),
+        Category::Drive => r"Drive\shell".into(),
+
+        // One extension: `.png` only.
+        Category::ExtAssoc(ext) => {
+            let ext = check_ext(ext)?;
+            format!(r"SystemFileAssociations\{ext}\shell")
+        }
+        // A whole class of file: `image` covers every extension Windows
+        // considers a picture, which is usually what somebody adding an image
+        // tool means.
+        Category::PerceivedType(kind) => {
+            let kind = kind.trim().to_lowercase();
+            if kind.is_empty() || kind.contains('\\') || kind.contains('/') {
+                bail!("Ungültiger wahrgenommener Typ / invalid perceived type: {kind:?}");
+            }
+            format!(r"SystemFileAssociations\{kind}\shell")
+        }
+
         other => bail!(
             "Für diese Kategorie können keine Einträge angelegt werden / cannot create entries for {other:?}"
         ),
     })
+}
+
+/// An extension in the form the registry keeps it: leading dot, lowercase.
+fn check_ext(ext: &str) -> Result<String> {
+    let trimmed = ext.trim().to_lowercase();
+    let with_dot = if trimmed.starts_with('.') {
+        trimmed
+    } else {
+        format!(".{trimmed}")
+    };
+
+    if with_dot.len() < 2 || with_dot[1..].contains('.') || with_dot.contains(['\\', '/', ' ']) {
+        bail!("Keine gültige Dateiendung / not a valid extension: {ext:?}");
+    }
+    Ok(with_dot)
 }
 
 /// Writes the entry into HKCU and records it in `entries.json`.
@@ -347,8 +387,56 @@ mod tests {
     }
 
     #[test]
-    fn file_type_categories_are_refused_for_now() {
-        let mut e = entry(Category::ExtAssoc(".jpg".into()), "x");
+    fn a_file_type_entry_lands_under_system_file_associations() {
+        // The measured way to limit an entry to one kind of file: the key's
+        // place in the tree, not a query in AppliesTo.
+        let mut e = entry(Category::ExtAssoc(".PNG".into()), "x");
+        e.key_name = "ctxmenu_x".into();
+        assert_eq!(
+            e.target().expect("creatable").relative,
+            r"SystemFileAssociations\.png\shell\ctxmenu_x",
+            "the extension is normalised to the form the registry keeps"
+        );
+
+        // A whole perceived class, which is what "all pictures" means.
+        let mut e = entry(Category::PerceivedType("image".into()), "x");
+        e.key_name = "ctxmenu_x".into();
+        assert_eq!(
+            e.target().expect("creatable").relative,
+            r"SystemFileAssociations\image\shell\ctxmenu_x"
+        );
+
+        // A missing dot is a typo, not an error worth refusing over.
+        let mut e = entry(Category::ExtAssoc("jpg".into()), "x");
+        e.key_name = "ctxmenu_x".into();
+        assert!(
+            e.target()
+                .expect("creatable")
+                .relative
+                .starts_with(r"SystemFileAssociations\.jpg\")
+        );
+    }
+
+    #[test]
+    fn nonsense_extensions_are_refused_rather_than_written() {
+        for bad in [".", "", "a b", r"a\b", "a.b"] {
+            let mut e = entry(Category::ExtAssoc(bad.into()), "x");
+            e.key_name = "ctxmenu_x".into();
+            assert!(e.target().is_err(), "{bad:?} must not become a key path");
+        }
+    }
+
+    #[test]
+    fn the_progid_categories_stay_refused() {
+        // Writing into a ProgID would change what happens for every extension
+        // pointing at it, which is a different decision from "for PNG files".
+        let mut e = entry(
+            Category::ProgId {
+                prog_id: "pngfile".into(),
+                from_ext: ".png".into(),
+            },
+            "x",
+        );
         e.key_name = "ctxmenu_x".into();
         assert!(e.target().is_err());
     }

@@ -37,6 +37,9 @@ features = [
     "Win32_Globalization",             # GetUserDefaultUILanguage
     "Win32_Graphics_Dwm",              # dark title bar
     "Win32_Graphics_Gdi",              # icon extraction: DIB, DC, bitmaps
+    "Win32_Networking_WinHttp",        # web tools: send a file to a URL
+    "Win32_System_DataExchange",       # clipboard: Open/Empty/Set/CloseClipboard
+    "Win32_System_Memory",             # GlobalAlloc/Lock/Unlock for the CF_HDROP block
     "Win32_UI_Shell",                  # SHLoadIndirectString, SHDefExtractIconW
     "Win32_UI_WindowsAndMessaging",    # HICON, ICONINFO, DrawIconEx, SetWindowPos
     "Win32_Security",                  # token elevation check

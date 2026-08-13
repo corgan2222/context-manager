@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use ctxmenu::{app, cli, console, elevation, errln, smoke};
+use ctxmenu::{app, cli, console, elevation, errln, smoke, webtool};
 
 fn main() -> ExitCode {
     // Before the first write: a GUI-subsystem binary starts without standard
@@ -30,6 +30,42 @@ fn main() -> ExitCode {
                     elevation::JOB_ARG
                 );
                 console::flush();
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // A web tool favourite, started by a click in the Explorer menu. Also
+    // intercepted before the argument parser, and for the same reason as the
+    // job mode: this must never end up opening a window. There is no console
+    // either, so everything it has to say goes into a message box.
+    if raw.first().map(String::as_str) == Some(webtool::RUN_ARG) {
+        let (Some(id), Some(file)) = (raw.get(1), raw.get(2)) else {
+            webtool::shell::report(
+                "ctxmenu",
+                &format!(
+                    "{} erwartet eine Kennung und eine Datei / expects an id and a file",
+                    webtool::RUN_ARG
+                ),
+                webtool::shell::Report::Error,
+            );
+            return ExitCode::FAILURE;
+        };
+
+        return match webtool::run(id, std::path::Path::new(file)) {
+            Ok(message) => {
+                // Silence would be indistinguishable from a broken entry, and
+                // the clipboard mode in particular needs to say what to do
+                // next.
+                webtool::shell::report("ctxmenu", &message, webtool::shell::Report::Info);
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                webtool::shell::report(
+                    "ctxmenu",
+                    &format!("{error:#}"),
+                    webtool::shell::Report::Error,
+                );
                 ExitCode::FAILURE
             }
         };
@@ -66,6 +102,7 @@ fn main() -> ExitCode {
         } => cli::run_apply(action, &path, confirmed),
         cli::Command::Create(entry) => cli::run_create(&entry),
         cli::Command::Created => cli::run_created(),
+        cli::Command::Favourite(what) => cli::run_favourite(what),
         cli::Command::Backups => cli::run_backups(),
         cli::Command::Restore(directory) => cli::run_restore(&directory),
         cli::Command::Delete { path, confirmed } => cli::run_delete(&path, confirmed),

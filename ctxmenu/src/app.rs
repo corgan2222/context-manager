@@ -12,6 +12,9 @@ use egui_extras::{Column, TableBuilder};
 use windows::Win32::Foundation::HWND;
 
 use crate::elevation;
+use crate::favourites::{
+    self, Favourite, Header, ResultAction, ResultSource, Tool, Upload, UploadBody, WebMode, WebTool,
+};
 use crate::i18n::{self, Strings};
 use crate::icons::cache::IconCache;
 use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
@@ -29,6 +32,7 @@ pub enum Tab {
     Categories,
     FileTypes,
     Programs,
+    Favourites,
     Backups,
 }
 
@@ -40,6 +44,7 @@ impl Tab {
             "categories" | "kategorien" => Some(Tab::Categories),
             "filetypes" | "dateitypen" => Some(Tab::FileTypes),
             "programs" | "programme" => Some(Tab::Programs),
+            "favourites" | "favoriten" => Some(Tab::Favourites),
             "backups" | "sicherungen" => Some(Tab::Backups),
             _ => None,
         }
@@ -50,6 +55,11 @@ impl Tab {
 const HINT_COMMAND: &str = "\"C:\\Windows\\notepad.exe\" \"%1\"";
 /// Placeholder shown in the empty icon field.
 const HINT_ICON: &str = "C:\\Windows\\notepad.exe,0";
+/// Placeholders in the favourite editor.
+const HINT_PROGRAM: &str = "C:\\Program Files\\Werkzeug\\werkzeug.exe";
+const HINT_ARGS: &str = "--flag \"%1\"";
+const HINT_URL: &str = "https://squoosh.app";
+const HINT_ENDPOINT: &str = "https://api.tinify.com/shrink";
 
 /// A modal question or report.
 enum Dialog {
@@ -62,6 +72,22 @@ enum Dialog {
     Running,
     Done(Report),
     Error(String),
+    /// The form for one favourite.
+    Favourite {
+        draft: Box<Favourite>,
+        /// Adding rather than editing; decides between insert and replace.
+        fresh: bool,
+    },
+    /// "Where should this favourite appear?" — the one decision left once a
+    /// tool is in the list.
+    Place {
+        favourite: Box<Favourite>,
+        category: Category,
+        /// Filled in when the category is a file type; kept across switching
+        /// so a typed extension is not lost by clicking around.
+        ext: String,
+        perceived: String,
+    },
     /// The form for a new entry of one's own (milestone 10).
     Editor {
         entry: Box<NewEntry>,
@@ -188,6 +214,11 @@ pub struct App {
     backups: Vec<(std::path::PathBuf, BackupManifest)>,
     backup_error: Option<String>,
 
+    /// The tool box (`favourites.json`), read on entering the tab and after
+    /// every change — never per frame.
+    favourites: Vec<Favourite>,
+    favourite_error: Option<String>,
+
     icons: IconCache,
     tr: &'static Strings,
     settings: Settings,
@@ -262,6 +293,8 @@ impl App {
             progress_label: String::new(),
             backups: Vec::new(),
             backup_error: None,
+            favourites: Vec::new(),
+            favourite_error: None,
             icons: IconCache::new(&cc.egui_ctx),
             tr,
             settings,
@@ -443,7 +476,7 @@ impl App {
                 .map(|g| g.entry_indices.clone())
                 .unwrap_or_default(),
 
-            Tab::Backups => Vec::new(),
+            Tab::Backups | Tab::Favourites => Vec::new(),
         };
 
         let needle = self.search.trim().to_lowercase();
@@ -740,6 +773,9 @@ impl eframe::App for App {
             Tab::Backups => {
                 egui::CentralPanel::default().show(ui, |ui| self.backup_list(ui));
             }
+            Tab::Favourites => {
+                egui::CentralPanel::default().show(ui, |ui| self.favourite_list(ui));
+            }
             Tab::FileTypes => {
                 self.file_type_tree(ui);
                 self.detail_panel(ui);
@@ -771,6 +807,7 @@ impl App {
                     (Tab::Categories, self.tr.tab_categories),
                     (Tab::FileTypes, self.tr.tab_filetypes),
                     (Tab::Programs, self.tr.tab_programs),
+                    (Tab::Favourites, self.tr.tab_favourites),
                     (Tab::Backups, self.tr.tab_backups),
                 ] {
                     if ui.selectable_label(self.tab == tab, label).clicked() {
@@ -780,6 +817,12 @@ impl App {
                         self.clear_selection();
                         if tab == Tab::Backups {
                             self.reload_backups();
+                        }
+                        if tab == Tab::Favourites {
+                            // Read from disk on entering rather than per
+                            // frame, and again after every change: the file is
+                            // also written by the `--favourite` runner.
+                            self.reload_favourites();
                         }
                     }
                 }
@@ -865,7 +908,10 @@ impl App {
     /// Delete sits at the far end behind a separator, and never as the first
     /// thing under the cursor.
     fn action_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        if self.tab == Tab::Backups {
+        // Both of these tabs act on their own list, not on scanned entries;
+        // a bar full of buttons that would apply to nothing is worse than no
+        // bar at all.
+        if matches!(self.tab, Tab::Backups | Tab::Favourites) {
             return;
         }
 
@@ -988,6 +1034,352 @@ impl App {
             });
         });
         let _ = ctx;
+    }
+
+    /// Der Werkzeugkasten.
+    ///
+    /// Deliberately not a tree and not a table: this list is short by nature —
+    /// it holds what one person reaches for often — and its order is the
+    /// user's own, so it is shown exactly as saved.
+    fn favourite_list(&mut self, ui: &mut Ui) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.heading(self.tr.tab_favourites);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(self.tr.fav_new).clicked() {
+                    self.dialog = Some(Dialog::Favourite {
+                        draft: Box::new(blank_favourite()),
+                        fresh: true,
+                    });
+                }
+            });
+        });
+        ui.separator();
+
+        if let Some(error) = &self.favourite_error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+            ui.separator();
+        }
+
+        if self.favourites.is_empty() {
+            ui.add_space(12.0);
+            ui.label(self.tr.fav_empty);
+            return;
+        }
+
+        // Collected first, applied after the loop: every one of these mutates
+        // the list the loop is walking.
+        let mut edit: Option<Favourite> = None;
+        let mut place: Option<Favourite> = None;
+        let mut remove: Option<String> = None;
+        let mut shift: Option<(String, bool)> = None;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let count = self.favourites.len();
+                for (index, favourite) in self.favourites.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_min_width(340.0);
+                            ui.strong(&favourite.name);
+                            ui.small(describe(favourite, self.tr));
+                        });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button(self.tr.fav_remove).clicked() {
+                                remove = Some(favourite.id.clone());
+                            }
+                            if ui.small_button(self.tr.fav_edit).clicked() {
+                                edit = Some(favourite.clone());
+                            }
+                            if ui
+                                .add_enabled(
+                                    index + 1 < count,
+                                    egui::Button::new("\u{2193}").small(),
+                                )
+                                .clicked()
+                            {
+                                shift = Some((favourite.id.clone(), false));
+                            }
+                            if ui
+                                .add_enabled(index > 0, egui::Button::new("\u{2191}").small())
+                                .clicked()
+                            {
+                                shift = Some((favourite.id.clone(), true));
+                            }
+                            ui.separator();
+                            // The whole point of the list: putting a tool
+                            // where it can be reached.
+                            if ui.button(self.tr.fav_place).clicked() {
+                                place = Some(favourite.clone());
+                            }
+                        });
+                    });
+                    ui.separator();
+                }
+            });
+
+        if let Some(favourite) = edit {
+            self.dialog = Some(Dialog::Favourite {
+                draft: Box::new(favourite),
+                fresh: false,
+            });
+        }
+        if let Some(favourite) = place {
+            self.dialog = Some(Dialog::Place {
+                favourite: Box::new(favourite),
+                category: Category::AllFiles,
+                ext: String::new(),
+                perceived: "image".into(),
+            });
+        }
+        if let Some(id) = remove {
+            self.after_favourite_change(favourites::remove(&id));
+        }
+        if let Some((id, up)) = shift {
+            self.after_favourite_change(favourites::shift(&id, up));
+        }
+    }
+
+    fn reload_favourites(&mut self) {
+        match favourites::load() {
+            Ok(list) => {
+                self.favourites = list;
+                self.favourite_error = None;
+            }
+            Err(error) => {
+                // A damaged file must say so rather than look like an empty
+                // tool box, or the next save would overwrite what is left.
+                self.favourites.clear();
+                self.favourite_error = Some(format!("{error:#}"));
+            }
+        }
+    }
+
+    fn after_favourite_change(&mut self, outcome: anyhow::Result<()>) {
+        match outcome {
+            Ok(()) => self.reload_favourites(),
+            Err(error) => self.favourite_error = Some(format!("{error:#}")),
+        }
+    }
+
+    /// The dialog that edits one favourite.
+    fn favourite_dialog(&mut self, ui: &mut Ui, mut draft: Box<Favourite>, fresh: bool) {
+        let mut save = false;
+        let mut close = false;
+
+        egui::Window::new(if fresh {
+            self.tr.fav_new
+        } else {
+            self.tr.fav_edit
+        })
+        .collapsible(false)
+        .resizable(true)
+        .default_width(640.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ui.ctx(), |ui| {
+            egui::Grid::new("fav-grid")
+                .num_columns(2)
+                .spacing([10.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(self.tr.fav_name);
+                    ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(440.0));
+                    ui.end_row();
+
+                    ui.label(self.tr.fav_kind);
+                    ui.horizontal(|ui| {
+                        let is_program = matches!(draft.tool, Tool::Program { .. });
+                        if ui
+                            .selectable_label(is_program, self.tr.fav_kind_program)
+                            .clicked()
+                            && !is_program
+                        {
+                            draft.tool = Tool::Program {
+                                path: std::path::PathBuf::new(),
+                                args: String::new(),
+                            };
+                        }
+                        if ui
+                            .selectable_label(!is_program, self.tr.fav_kind_web)
+                            .clicked()
+                            && is_program
+                        {
+                            draft.tool = Tool::Web(WebTool {
+                                mode: WebMode::Clipboard { url: String::new() },
+                                allow_insecure: false,
+                                confirmed: false,
+                            });
+                        }
+                    });
+                    ui.end_row();
+                });
+
+            ui.separator();
+            match &mut draft.tool {
+                Tool::Program { path, args } => program_form(ui, self.tr, path, args),
+                Tool::Web(web) => web_form(ui, self.tr, web),
+            }
+
+            ui.separator();
+            let problems = draft.problems();
+            for problem in &problems {
+                ui.colored_label(ui.visuals().warn_fg_color, problem);
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let blocked = draft.name.trim().is_empty();
+                if ui
+                    .add_enabled(!blocked, egui::Button::new(self.tr.fav_save))
+                    .clicked()
+                {
+                    save = true;
+                }
+                if ui.button(self.tr.btn_cancel).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        if save {
+            let outcome = if fresh {
+                favourites::add(*draft.clone()).map(|_| ())
+            } else {
+                favourites::update(*draft.clone())
+            };
+            self.after_favourite_change(outcome);
+        } else if !close {
+            self.dialog = Some(Dialog::Favourite { draft, fresh });
+        }
+    }
+
+    /// The dialog that puts a favourite into the context menu.
+    fn place_dialog(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &egui::Context,
+        favourite: Box<Favourite>,
+        mut category: Category,
+        mut ext: String,
+        mut perceived: String,
+    ) {
+        let mut write = false;
+        let mut close = false;
+
+        egui::Window::new(self.tr.fav_place)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ui.ctx(), |ui| {
+                ui.set_min_width(560.0);
+                ui.label(self.tr.fmt_fav_place_intro.replace("{}", &favourite.name));
+                ui.add_space(6.0);
+
+                for candidate in Category::BASE {
+                    let chosen = category == candidate;
+                    if ui
+                        .radio(chosen, category_label(&candidate, self.tr))
+                        .clicked()
+                    {
+                        category = candidate.clone();
+                    }
+                }
+
+                ui.separator();
+                // The two that need a value of their own: one extension, or a
+                // whole class of file.
+                ui.horizontal(|ui| {
+                    let chosen = matches!(category, Category::ExtAssoc(_));
+                    if ui.radio(chosen, self.tr.fav_place_ext).clicked() {
+                        category = Category::ExtAssoc(ext.clone());
+                    }
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut ext)
+                                .desired_width(120.0)
+                                .hint_text(".png"),
+                        )
+                        .changed()
+                        && chosen
+                    {
+                        category = Category::ExtAssoc(ext.clone());
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    let chosen = matches!(category, Category::PerceivedType(_));
+                    if ui.radio(chosen, self.tr.fav_place_perceived).clicked() {
+                        category = Category::PerceivedType(perceived.clone());
+                    }
+                    for kind in ["image", "video", "audio", "text", "compressed"] {
+                        if ui.selectable_label(perceived == kind, kind).clicked() {
+                            perceived = kind.to_string();
+                            category = Category::PerceivedType(perceived.clone());
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                let exe = std::env::current_exe().unwrap_or_default();
+                let entry = favourite.entry(category.clone(), &exe);
+                match entry.target() {
+                    Ok(target) => {
+                        ui.small(format!("\u{2192} {}", target.full_path()));
+                    }
+                    Err(error) => {
+                        ui.colored_label(ui.visuals().error_fg_color, format!("{error:#}"));
+                    }
+                }
+                ui.small(&entry.command);
+
+                let problems = crate::registry::create::check(&entry);
+                let blocked = problems.iter().any(Problem::is_error) || entry.target().is_err();
+                for problem in &problems {
+                    let colour = match problem {
+                        Problem::Error(_) => ui.visuals().error_fg_color,
+                        Problem::Warning(_) => ui.visuals().warn_fg_color,
+                    };
+                    ui.colored_label(colour, problem.message());
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!blocked, egui::Button::new(self.tr.editor_create))
+                        .clicked()
+                    {
+                        write = true;
+                    }
+                    if ui.button(self.tr.btn_cancel).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if write {
+            let exe = std::env::current_exe().unwrap_or_default();
+            let entry = favourite.entry(category.clone(), &exe);
+            match crate::registry::create::create(&entry) {
+                Ok(target) => {
+                    elevation::notify_shell();
+                    self.start_scan(ctx);
+                    self.dialog = Some(Dialog::Error(
+                        self.tr.fmt_fav_placed.replace("{}", &target.full_path()),
+                    ));
+                }
+                Err(error) => {
+                    self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                }
+            }
+        } else if !close {
+            self.dialog = Some(Dialog::Place {
+                favourite,
+                category,
+                ext,
+                perceived,
+            });
+        }
     }
 
     /// The confirmation, progress and result dialogs.
@@ -1175,6 +1567,21 @@ impl App {
                 if !close {
                     self.dialog = Some(Dialog::Error(message));
                 }
+                keep = false;
+            }
+
+            Dialog::Favourite { draft, fresh } => {
+                self.favourite_dialog(ui, draft, fresh);
+                keep = false;
+            }
+
+            Dialog::Place {
+                favourite,
+                category,
+                ext,
+                perceived,
+            } => {
+                self.place_dialog(ui, ctx, favourite, category, ext, perceived);
                 keep = false;
             }
 
@@ -1523,11 +1930,42 @@ impl App {
             .size_range(240.0..=560.0)
             .show(ui, |ui| {
                 ui.add_space(4.0);
-                ui.label(
-                    self.tr
-                        .fmt_entries_found
-                        .replace("{}", &self.groups.len().to_string()),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        self.tr
+                            .fmt_entries_found
+                            .replace("{}", &self.groups.len().to_string()),
+                    );
+
+                    // The short way from "this program keeps turning up" to
+                    // "keep it, I want it elsewhere too". A COM handler has no
+                    // command line to reuse, so it cannot become a favourite.
+                    let group = self.selected_group.and_then(|i| self.groups.get(i));
+                    let usable = group.is_some_and(|g| g.key.to_lowercase().ends_with(".exe"));
+                    if ui
+                        .add_enabled(
+                            usable,
+                            egui::Button::new(self.tr.fav_add_from_program).small(),
+                        )
+                        .clicked()
+                        && let Some(group) = group
+                    {
+                        let draft = Favourite {
+                            id: String::new(),
+                            name: group.display_name.clone(),
+                            icon: group.icon_ref.clone(),
+                            note: None,
+                            tool: Tool::Program {
+                                path: std::path::PathBuf::from(&group.key),
+                                args: String::new(),
+                            },
+                        };
+                        self.dialog = Some(Dialog::Favourite {
+                            draft: Box::new(draft),
+                            fresh: true,
+                        });
+                    }
+                });
                 ui.separator();
 
                 let mut clicked: Option<usize> = None;
@@ -1856,6 +2294,340 @@ impl App {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// An empty favourite to start from.
+///
+/// A program rather than a web tool: adding an executable is the common case,
+/// and the kind can be switched in one click.
+fn blank_favourite() -> Favourite {
+    Favourite {
+        id: String::new(),
+        name: String::new(),
+        icon: None,
+        note: None,
+        tool: Tool::Program {
+            path: std::path::PathBuf::new(),
+            args: String::new(),
+        },
+    }
+}
+
+/// One line saying what a favourite is and where it points.
+fn describe(favourite: &Favourite, tr: &'static Strings) -> String {
+    match &favourite.tool {
+        Tool::Program { path, args } => {
+            let args = args.trim();
+            if args.is_empty() {
+                format!("{}  \u{b7}  {}", tr.fav_kind_program, path.display())
+            } else {
+                format!(
+                    "{}  \u{b7}  {} {}",
+                    tr.fav_kind_program,
+                    path.display(),
+                    args
+                )
+            }
+        }
+        Tool::Web(web) => {
+            let mode = match &web.mode {
+                WebMode::Open { .. } => tr.fav_mode_open,
+                WebMode::Clipboard { .. } => tr.fav_mode_clipboard,
+                WebMode::Upload(_) => tr.fav_mode_upload,
+            };
+            format!(
+                "{}  \u{b7}  {}  \u{b7}  {}",
+                tr.fav_kind_web,
+                mode,
+                favourite.address().unwrap_or_default()
+            )
+        }
+    }
+}
+
+fn program_form(
+    ui: &mut Ui,
+    tr: &'static Strings,
+    path: &mut std::path::PathBuf,
+    args: &mut String,
+) {
+    egui::Grid::new("fav-program")
+        .num_columns(2)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            ui.label(tr.fav_path);
+            let mut text = path.to_string_lossy().to_string();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut text)
+                        .desired_width(440.0)
+                        .hint_text(HINT_PROGRAM),
+                )
+                .changed()
+            {
+                // Pasted paths often arrive wrapped in quotes, and a quoted
+                // path resolves to nothing.
+                *path = std::path::PathBuf::from(text.trim().trim_matches('"'));
+            }
+            ui.end_row();
+
+            ui.label(tr.fav_args);
+            ui.add(
+                egui::TextEdit::singleline(args)
+                    .desired_width(440.0)
+                    .hint_text(HINT_ARGS),
+            );
+            ui.end_row();
+        });
+    ui.small(tr.fav_args_hint);
+}
+
+fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool) {
+    ui.horizontal(|ui| {
+        ui.label(tr.fav_mode);
+        let current = mode_index(&web.mode);
+        for (index, label) in [tr.fav_mode_clipboard, tr.fav_mode_open, tr.fav_mode_upload]
+            .into_iter()
+            .enumerate()
+        {
+            if ui.selectable_label(current == index, label).clicked() && current != index {
+                let url = current_url(&web.mode);
+                web.mode = match index {
+                    0 => WebMode::Clipboard { url },
+                    1 => WebMode::Open { url },
+                    _ => WebMode::Upload(Upload {
+                        endpoint: url,
+                        method: "POST".into(),
+                        body: UploadBody::Multipart {
+                            field: "file".into(),
+                        },
+                        headers: Vec::new(),
+                        fields: Vec::new(),
+                        result: ResultAction::Report,
+                    }),
+                };
+            }
+        }
+    });
+
+    ui.small(match &web.mode {
+        WebMode::Clipboard { .. } => tr.fav_mode_clipboard_hint,
+        WebMode::Open { .. } => tr.fav_mode_open_hint,
+        WebMode::Upload(_) => tr.fav_mode_upload_hint,
+    });
+    ui.add_space(4.0);
+
+    match &mut web.mode {
+        WebMode::Clipboard { url } | WebMode::Open { url } => {
+            ui.horizontal(|ui| {
+                ui.label(tr.fav_url);
+                ui.add(
+                    egui::TextEdit::singleline(url)
+                        .desired_width(460.0)
+                        .hint_text(HINT_URL),
+                );
+            });
+        }
+        WebMode::Upload(upload) => upload_form(ui, tr, upload),
+    }
+
+    ui.add_space(4.0);
+    ui.checkbox(&mut web.allow_insecure, tr.fav_allow_insecure);
+    if web.confirmed {
+        ui.horizontal(|ui| {
+            ui.small(tr.fav_confirmed);
+            if ui.small_button(tr.fav_forget_consent).clicked() {
+                web.confirmed = false;
+            }
+        });
+    }
+}
+
+fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload) {
+    egui::Grid::new("fav-upload")
+        .num_columns(2)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            ui.label(tr.fav_endpoint);
+            ui.add(
+                egui::TextEdit::singleline(&mut upload.endpoint)
+                    .desired_width(440.0)
+                    .hint_text(HINT_ENDPOINT),
+            );
+            ui.end_row();
+
+            ui.label(tr.fav_method);
+            ui.horizontal(|ui| {
+                for verb in ["POST", "PUT"] {
+                    if ui.selectable_label(upload.method == verb, verb).clicked() {
+                        upload.method = verb.to_string();
+                    }
+                }
+            });
+            ui.end_row();
+
+            ui.label(tr.fav_body);
+            ui.horizontal(|ui| {
+                let multipart = matches!(upload.body, UploadBody::Multipart { .. });
+                if ui
+                    .selectable_label(multipart, tr.fav_body_multipart)
+                    .clicked()
+                {
+                    upload.body = UploadBody::Multipart {
+                        field: "file".into(),
+                    };
+                }
+                if ui.selectable_label(!multipart, tr.fav_body_raw).clicked() {
+                    upload.body = UploadBody::Raw;
+                }
+                if let UploadBody::Multipart { field } = &mut upload.body {
+                    ui.label(tr.fav_field);
+                    ui.add(egui::TextEdit::singleline(field).desired_width(120.0));
+                }
+            });
+            ui.end_row();
+
+            ui.label(tr.fav_result);
+            ui.horizontal(|ui| {
+                let current = result_index(&upload.result);
+                for (index, label) in [tr.fav_result_save, tr.fav_result_open, tr.fav_result_report]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if ui.selectable_label(current == index, label).clicked() && current != index {
+                        let source = current_source(&upload.result);
+                        upload.result = match index {
+                            0 => ResultAction::Save {
+                                source,
+                                suffix: ".neu".into(),
+                            },
+                            1 => ResultAction::Open { source },
+                            _ => ResultAction::Report,
+                        };
+                    }
+                }
+            });
+            ui.end_row();
+
+            // Where the answer keeps the result, and what to call it.
+            match &mut upload.result {
+                ResultAction::Save { source, suffix } => {
+                    ui.label(tr.fav_result_source);
+                    ui.horizontal(|ui| {
+                        source_picker(ui, tr, source);
+                        ui.label(tr.fav_suffix);
+                        ui.add(egui::TextEdit::singleline(suffix).desired_width(80.0));
+                    });
+                    ui.end_row();
+                }
+                ResultAction::Open { source } => {
+                    ui.label(tr.fav_result_source);
+                    ui.horizontal(|ui| source_picker(ui, tr, source));
+                    ui.end_row();
+                }
+                ResultAction::Report => {}
+            }
+        });
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(tr.fav_headers);
+        if ui.small_button(tr.fav_header_add).clicked() {
+            upload.headers.push(Header {
+                name: String::new(),
+                value: String::new(),
+            });
+        }
+    });
+
+    let mut drop_header = None;
+    for (index, header) in upload.headers.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut header.name)
+                    .desired_width(160.0)
+                    .hint_text("Authorization"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut header.value)
+                    .desired_width(320.0)
+                    .hint_text("Basic \u{2026}"),
+            );
+            if ui.small_button("\u{2715}").clicked() {
+                drop_header = Some(index);
+            }
+        });
+    }
+    if let Some(index) = drop_header {
+        upload.headers.remove(index);
+    }
+}
+
+fn source_picker(ui: &mut Ui, tr: &'static Strings, source: &mut ResultSource) {
+    let current = match source {
+        ResultSource::Body => 0,
+        ResultSource::Location => 1,
+        ResultSource::Json { .. } => 2,
+    };
+
+    for (index, label) in [
+        tr.fav_source_body,
+        tr.fav_source_location,
+        tr.fav_source_json,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if ui.selectable_label(current == index, label).clicked() && current != index {
+            *source = match index {
+                0 => ResultSource::Body,
+                1 => ResultSource::Location,
+                _ => ResultSource::Json {
+                    path: "output.url".into(),
+                },
+            };
+        }
+    }
+
+    if let ResultSource::Json { path } = source {
+        ui.add(
+            egui::TextEdit::singleline(path)
+                .desired_width(160.0)
+                .hint_text("output.url"),
+        );
+    }
+}
+
+fn mode_index(mode: &WebMode) -> usize {
+    match mode {
+        WebMode::Clipboard { .. } => 0,
+        WebMode::Open { .. } => 1,
+        WebMode::Upload(_) => 2,
+    }
+}
+
+/// Keeps the address when the mode changes, so switching to compare does not
+/// wipe what was typed.
+fn current_url(mode: &WebMode) -> String {
+    match mode {
+        WebMode::Clipboard { url } | WebMode::Open { url } => url.clone(),
+        WebMode::Upload(upload) => upload.endpoint.clone(),
+    }
+}
+
+fn result_index(result: &ResultAction) -> usize {
+    match result {
+        ResultAction::Save { .. } => 0,
+        ResultAction::Open { .. } => 1,
+        ResultAction::Report => 2,
+    }
+}
+
+fn current_source(result: &ResultAction) -> ResultSource {
+    match result {
+        ResultAction::Save { source, .. } | ResultAction::Open { source } => source.clone(),
+        ResultAction::Report => ResultSource::Body,
+    }
+}
 
 fn strings_for(language: Language) -> &'static Strings {
     match language {

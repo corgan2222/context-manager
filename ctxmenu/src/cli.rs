@@ -48,8 +48,29 @@ pub enum Command {
     Create(Box<crate::registry::create::NewEntry>),
     /// List what this tool created, from entries.json.
     Created,
+    /// The tool box. Subcommands, because five of them as top level verbs
+    /// would crowd out the ones that scan.
+    Favourite(FavouriteCommand),
     Smoke,
     Help,
+}
+
+pub enum FavouriteCommand {
+    List,
+    Add(Box<crate::favourites::Favourite>),
+    /// Write a favourite into the context menu somewhere.
+    Place {
+        id: String,
+        category: Category,
+    },
+    Remove(String),
+    /// Do what a click on the entry would do, but report to the console
+    /// instead of a message box — the only way to measure this path in the
+    /// test VM, which has no interactive desktop for a dialog.
+    Run {
+        id: String,
+        file: String,
+    },
 }
 
 pub struct ScanArgs {
@@ -64,7 +85,8 @@ ctxmenu — Windows Context Menu Manager
 Verwendung / Usage:
   ctxmenu                   Fenster öffnen / open the window
   ctxmenu --tab <name>      Fenster auf einem Reiter oeffnen / open on a tab:
-                            categories, filetypes, programs, backups
+                            categories, filetypes, programs, favourites,
+                            backups
   ctxmenu --search <text>   Fenster mit gesetzter Suche oeffnen /
                             open the window with the search box filled
   ctxmenu --synthetic <n> [--bench <frames>]
@@ -91,6 +113,20 @@ Verwendung / Usage:
                             create your own entry in HKCU
   ctxmenu created           Selbst angelegte Eintraege auflisten /
                             list entries created by this tool
+  ctxmenu favourites        Favoriten auflisten / list favourites
+  ctxmenu favourite add --name <text>
+        --exe <pfad> [--args <zeile>]                  Programm / a program
+        --url <adresse> [--mode clipboard|open]        Webtool ohne Endpunkt
+        --endpoint <adresse> [--raw] [--field <name>]  Webtool mit Upload
+        [--header \"Name: Wert\"] [--result save|open|report]
+        [--suffix .min] [--json-path output.url] [--insecure]
+  ctxmenu favourite place <id> --category <name> | --ext .png | --perceived image
+                            Favorit ins Kontextmenue eintragen /
+                            put a favourite into the context menu
+  ctxmenu favourite remove <id>
+  ctxmenu favourite run <id> <datei>
+                            Ausfuehren wie ein Klick, Ausgabe auf der Konsole /
+                            run as a click would, reporting on the console
   ctxmenu --smoke           Smoke-Test-Fenster / open the smoke test window
   ctxmenu --help            Diese Hilfe / this help
 
@@ -201,6 +237,12 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             });
         }
         "created" => return Ok(Command::Created),
+        "favourites" | "favoriten" => {
+            return Ok(Command::Favourite(FavouriteCommand::List));
+        }
+        "favourite" | "favorit" => {
+            return parse_favourite(&args[1..]).map(Command::Favourite);
+        }
         "create" => {
             use crate::registry::create::NewEntry;
             let mut entry = NewEntry {
@@ -635,6 +677,247 @@ pub fn run_created() -> Result<()> {
         crate::outln!("    {}", entry.command);
     }
     Ok(())
+}
+
+/// `ctxmenu favourite <was> …`
+fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
+    use crate::favourites::{
+        Favourite, ResultAction, ResultSource, Tool, Upload, UploadBody, WebMode, WebTool,
+    };
+
+    let what = args
+        .first()
+        .map(String::as_str)
+        .context("favourite erwartet list, add, place, remove oder run")?;
+
+    match what {
+        "list" => Ok(FavouriteCommand::List),
+
+        "remove" => {
+            let id = args.get(1).context("remove erwartet eine Kennung")?;
+            Ok(FavouriteCommand::Remove(id.clone()))
+        }
+
+        "run" => {
+            let (Some(id), Some(file)) = (args.get(1), args.get(2)) else {
+                bail!("run erwartet eine Kennung und eine Datei / expects an id and a file");
+            };
+            Ok(FavouriteCommand::Run {
+                id: id.clone(),
+                file: file.clone(),
+            })
+        }
+
+        "place" => {
+            let id = args.get(1).context("place erwartet eine Kennung")?.clone();
+            let mut category = None;
+            let mut rest = args[2..].iter();
+
+            while let Some(flag) = rest.next() {
+                let value = rest
+                    .next()
+                    .with_context(|| format!("{flag} erwartet einen Wert"))?;
+                category = Some(match flag.as_str() {
+                    "--category" => Category::from_slug(value).with_context(|| {
+                        format!("Unbekannte Kategorie / unknown category: {value}")
+                    })?,
+                    "--ext" => Category::ExtAssoc(value.clone()),
+                    "--perceived" => Category::PerceivedType(value.clone()),
+                    other => bail!("Unbekannte Option / unknown option: {other}"),
+                });
+            }
+
+            Ok(FavouriteCommand::Place {
+                id,
+                category: category.context("place erwartet --category, --ext oder --perceived")?,
+            })
+        }
+
+        "add" => {
+            let mut name = String::new();
+            let mut exe: Option<String> = None;
+            let mut program_args = String::new();
+            let mut url: Option<String> = None;
+            let mut mode = "clipboard".to_string();
+            let mut endpoint: Option<String> = None;
+            let mut field = "file".to_string();
+            let mut raw = false;
+            let mut insecure = false;
+            let mut headers: Vec<crate::favourites::Header> = Vec::new();
+            let mut result = "report".to_string();
+            let mut suffix = ".neu".to_string();
+            let mut json_path: Option<String> = None;
+            let mut icon: Option<String> = None;
+
+            let mut rest = args[1..].iter();
+            while let Some(flag) = rest.next() {
+                match flag.as_str() {
+                    "--raw" => {
+                        raw = true;
+                        continue;
+                    }
+                    "--insecure" => {
+                        insecure = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                let value = rest
+                    .next()
+                    .with_context(|| format!("{flag} erwartet einen Wert"))?;
+                match flag.as_str() {
+                    "--name" => name = value.clone(),
+                    "--exe" => exe = Some(value.clone()),
+                    "--args" => program_args = value.clone(),
+                    "--url" => url = Some(value.clone()),
+                    "--mode" => mode = value.to_lowercase(),
+                    "--endpoint" => endpoint = Some(value.clone()),
+                    "--field" => field = value.clone(),
+                    "--icon" => icon = Some(value.clone()),
+                    "--result" => result = value.to_lowercase(),
+                    "--suffix" => suffix = value.clone(),
+                    "--json-path" => json_path = Some(value.clone()),
+                    "--header" => {
+                        let (key, val) = value
+                            .split_once(':')
+                            .context("--header erwartet \"Name: Wert\"")?;
+                        headers.push(crate::favourites::Header {
+                            name: key.trim().to_string(),
+                            value: val.trim().to_string(),
+                        });
+                    }
+                    other => bail!("Unbekannte Option / unknown option: {other}"),
+                }
+            }
+
+            let source = match json_path {
+                Some(path) => ResultSource::Json { path },
+                None => ResultSource::Body,
+            };
+
+            let tool = match (exe, endpoint, url) {
+                (Some(path), _, _) => Tool::Program {
+                    path: std::path::PathBuf::from(path.trim().trim_matches('"')),
+                    args: program_args,
+                },
+                (None, Some(endpoint), _) => Tool::Web(WebTool {
+                    mode: WebMode::Upload(Upload {
+                        endpoint,
+                        method: "POST".into(),
+                        body: if raw {
+                            UploadBody::Raw
+                        } else {
+                            UploadBody::Multipart { field }
+                        },
+                        headers,
+                        fields: Vec::new(),
+                        result: match result.as_str() {
+                            "save" => ResultAction::Save { source, suffix },
+                            "open" => ResultAction::Open { source },
+                            _ => ResultAction::Report,
+                        },
+                    }),
+                    allow_insecure: insecure,
+                    confirmed: false,
+                }),
+                (None, None, Some(url)) => Tool::Web(WebTool {
+                    mode: match mode.as_str() {
+                        "open" => WebMode::Open { url },
+                        _ => WebMode::Clipboard { url },
+                    },
+                    allow_insecure: insecure,
+                    confirmed: false,
+                }),
+                (None, None, None) => {
+                    bail!("add erwartet --exe, --url oder --endpoint")
+                }
+            };
+
+            Ok(FavouriteCommand::Add(Box::new(Favourite {
+                id: String::new(),
+                name,
+                icon,
+                note: None,
+                tool,
+            })))
+        }
+
+        other => bail!("Unbekannt / unknown: favourite {other}"),
+    }
+}
+
+pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
+    use crate::favourites;
+
+    match command {
+        FavouriteCommand::List => {
+            let list = favourites::load()?;
+            if list.is_empty() {
+                crate::outln!("Keine Favoriten / no favourites");
+                crate::outln!("  {}", favourites::path()?.display());
+                return Ok(());
+            }
+
+            for favourite in &list {
+                crate::outln!("{:<20} {}", favourite.id, favourite.name);
+                match &favourite.tool {
+                    crate::favourites::Tool::Program { path, args } => {
+                        crate::outln!("    Programm  {} {}", path.display(), args);
+                    }
+                    crate::favourites::Tool::Web(_) => {
+                        crate::outln!(
+                            "    Webtool   {}{}",
+                            favourite.address().unwrap_or_default(),
+                            if favourite.transfers_the_file() {
+                                "   (sendet die Datei)"
+                            } else {
+                                ""
+                            }
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        FavouriteCommand::Add(favourite) => {
+            for problem in favourite.problems() {
+                crate::errln!("Hinweis / note: {problem}");
+            }
+            let id = favourites::add(*favourite)?;
+            crate::outln!("Angelegt / created: {id}");
+            Ok(())
+        }
+
+        FavouriteCommand::Remove(id) => {
+            favourites::remove(&id)?;
+            crate::outln!("Entfernt / removed: {id}");
+            Ok(())
+        }
+
+        FavouriteCommand::Place { id, category } => {
+            let favourite = favourites::find(&id)?;
+            let exe = std::env::current_exe().context("Eigenen Pfad nicht ermittelbar")?;
+            let entry = favourite.entry(category, &exe);
+
+            for problem in crate::registry::create::check(&entry) {
+                crate::errln!("Hinweis / note: {}", problem.message());
+            }
+
+            let target = crate::registry::create::create(&entry)?;
+            crate::elevation::notify_shell();
+            crate::outln!("Angelegt / created: {}", target.full_path());
+            crate::outln!("  {}", entry.command);
+            Ok(())
+        }
+
+        FavouriteCommand::Run { id, file } => {
+            let message = crate::webtool::run(&id, std::path::Path::new(&file))?;
+            crate::outln!("{message}");
+            Ok(())
+        }
+    }
 }
 
 pub fn run_backups() -> Result<()> {
