@@ -14,7 +14,8 @@ use super::clsid::{ClsidInfo, ClsidResolver};
 use super::mui::MuiResolver;
 use super::paths::{self, CategorySource, SourceKind};
 use crate::model::{
-    Category, ContextEntry, EntryKind, ScanProgress, ScanResult, ScanStats, Scope, stable_id,
+    Category, ContextEntry, EntryKind, FileTypeInfo, ScanProgress, ScanResult, ScanStats, Scope,
+    stable_id,
 };
 
 /// How deep cascading submenus are followed.
@@ -28,6 +29,11 @@ pub struct ScanOptions {
     pub scopes: Vec<Scope>,
     /// `None` means every base category.
     pub categories: Option<Vec<Category>>,
+    /// Extensions to walk the file type chain for (ToDo 10.1).
+    ///
+    /// Empty by default: the chain costs a few hundred extra key opens, and
+    /// the command line has no use for it unless asked.
+    pub file_types: Vec<String>,
 }
 
 impl Default for ScanOptions {
@@ -35,6 +41,20 @@ impl Default for ScanOptions {
         Self {
             scopes: Scope::ALL.to_vec(),
             categories: None,
+            file_types: Vec::new(),
+        }
+    }
+}
+
+impl ScanOptions {
+    /// Everything, including the curated file types — what the window uses.
+    pub fn with_curated_file_types() -> Self {
+        Self {
+            file_types: super::filetypes::CURATED
+                .iter()
+                .map(|d| d.ext.to_string())
+                .collect(),
+            ..Self::default()
         }
     }
 }
@@ -55,24 +75,57 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
         })
         .collect();
 
-    let total = sources.len() * options.scopes.len();
+    // Levels 3 to 7 of the file type chain, one set of locations per
+    // extension. Levels 1 and 2 are the base categories above and are
+    // deliberately scanned once and reused (ToDo 10.4).
+    let mut file_types: Vec<FileTypeInfo> = Vec::new();
+    let mut file_type_sources = Vec::new();
+    let mut seen_locations: rustc_hash::FxHashSet<(String, SourceKind)> = Default::default();
+    for ext in &options.file_types {
+        let resolution = super::filetypes::resolve(ext);
+        // An unregistered type still belongs in the tree, with a count of
+        // zero — "no entries" and "not looked at" must stay distinguishable.
+        if resolution.registered {
+            // Deduplicated, and this is not an optimisation but a
+            // correctness fix. Thirteen image extensions all name
+            // `SystemFileAssociations\image`, and several share a ProgID.
+            // Scanning a location once per extension produced one copy of
+            // each entry per extension, so `.jpg` reported 79 entries where
+            // it has 19. Attribution below hands the single copy to every
+            // type it belongs to, which is the correct sharing.
+            for source in super::filetypes::sources_for(&resolution) {
+                let fingerprint = (source.relative.to_lowercase(), source.kind);
+                if seen_locations.insert(fingerprint) {
+                    file_type_sources.push(source);
+                }
+            }
+        }
+        file_types.push(FileTypeInfo {
+            group: super::filetypes::group_of(ext),
+            resolution,
+            // Filled in after the scan, by matching categories.
+            entry_indices: Vec::new(),
+        });
+    }
+
+    let total = (sources.len() + file_type_sources.len()) * options.scopes.len();
     let mut entries = Vec::new();
     let mut done = 0;
 
-    for source in &sources {
+    for source in sources.iter().chain(file_type_sources.iter()) {
         for &scope in &options.scopes {
             done += 1;
 
             // A missing location is the normal case, not an error: no machine
             // has every category populated in every hive.
-            if let Ok(key) = paths::root_key(scope).open(paths::key_path(scope, source.relative)) {
+            if let Ok(key) = paths::root_key(scope).open(paths::key_path(scope, &source.relative)) {
                 collect(&key, source, scope, &mut entries);
             }
 
             progress(ScanProgress {
                 done,
                 total,
-                label: paths::display_path(scope, source.relative),
+                label: paths::display_path(scope, &source.relative),
                 found: entries.len(),
             });
         }
@@ -86,15 +139,58 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
     let mut clsids = ClsidResolver::new();
     resolve_entries(&mut entries, &mut mui, &mut clsids);
 
+    attribute_to_file_types(&entries, &mut file_types);
+
     let (mui_cache_hits, mui_cache_misses) = mui.stats();
     ScanResult::new(
         entries,
+        file_types,
         ScanStats {
             mui_cache_hits,
             mui_cache_misses,
             blocked_clsids: clsids.blocked_count(),
         },
     )
+}
+
+/// Works out which entries belong to which file type.
+///
+/// Driven by the category an entry already carries, rather than by
+/// remembering which slice of the location list produced it: the category is
+/// the durable fact, the ordering is an implementation detail.
+///
+/// One entry can belong to several types — a `SystemFileAssociations\image`
+/// entry is shared by every image extension — which is exactly right and the
+/// reason this is not a partition.
+fn attribute_to_file_types(entries: &[ContextEntry], file_types: &mut [FileTypeInfo]) {
+    for (index, entry) in entries.iter().enumerate() {
+        for info in file_types.iter_mut() {
+            let ext = &info.resolution.ext;
+            let belongs = match &entry.category {
+                Category::ExtAssoc(other) | Category::ExtDirect(other) => other == ext,
+                // Matched on membership, not on `from_ext`. A ProgID is
+                // scanned once even when several extensions list it — the
+                // Store PDF viewer is registered for both .jpg and .pdf —
+                // and `from_ext` then only records whichever extension asked
+                // first. Attributing by that would silently drop the entry
+                // from every other type that offers it.
+                Category::ProgId { prog_id, .. } => info
+                    .resolution
+                    .all_progids()
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(prog_id)),
+                Category::PerceivedType(perceived) => {
+                    info.resolution.perceived_type.as_deref() == Some(perceived.as_str())
+                }
+                // Levels 1 and 2 apply to every file and are counted
+                // separately, so they must not inflate a single type.
+                _ => false,
+            };
+            if belongs {
+                info.entry_indices.push(index);
+            }
+        }
+    }
 }
 
 /// Turns raw registry values into what the user should actually read.
@@ -442,6 +538,67 @@ mod tests {
         let _ = CURRENT_USER.remove_tree(class);
     }
 
+    /// A ProgID shared by two extensions must appear under both.
+    ///
+    /// Locations are scanned once, so the entry exists a single time; without
+    /// membership-based attribution the second extension would silently lose
+    /// it. Regression guard for exactly that.
+    #[test]
+    fn a_shared_progid_is_attributed_to_every_extension_that_lists_it() {
+        use crate::registry::filetypes;
+
+        // Find two curated extensions that genuinely share a ProgID on this
+        // machine; without such a pair there is nothing to check here.
+        let curated: Vec<(String, Vec<String>)> = filetypes::CURATED
+            .iter()
+            .take(40)
+            .map(|d| {
+                let r = filetypes::resolve(d.ext);
+                (d.ext.to_string(), r.all_progids())
+            })
+            .filter(|(_, ids)| !ids.is_empty())
+            .collect();
+
+        let Some((a, b, shared)) = curated.iter().enumerate().find_map(|(i, (ext_a, ids_a))| {
+            curated[i + 1..].iter().find_map(|(ext_b, ids_b)| {
+                ids_a
+                    .iter()
+                    .find(|id| ids_b.contains(id))
+                    .map(|id| (ext_a.clone(), ext_b.clone(), id.clone()))
+            })
+        }) else {
+            return;
+        };
+
+        let options = ScanOptions {
+            file_types: vec![a.clone(), b.clone()],
+            ..ScanOptions::default()
+        };
+        let result = scan(&options, |_| {});
+
+        for ext in [&a, &b] {
+            let info = result
+                .file_types
+                .iter()
+                .find(|f| f.ext() == ext)
+                .expect("both types scanned");
+
+            let has_shared = info.entry_indices.iter().any(|&i| {
+                matches!(&result.entries[i].category,
+                    Category::ProgId { prog_id, .. } if prog_id.eq_ignore_ascii_case(&shared))
+            });
+            let shared_exists = result.entries.iter().any(|e| {
+                matches!(&e.category,
+                    Category::ProgId { prog_id, .. } if prog_id.eq_ignore_ascii_case(&shared))
+            });
+
+            assert_eq!(
+                has_shared, shared_exists,
+                "{ext} must see the shared ProgID {shared} if it produced any entries"
+            );
+        }
+    }
+
     /// Reads a location that exists on every Windows installation. Guards
     /// against the scanner silently returning nothing.
     #[test]
@@ -449,6 +606,7 @@ mod tests {
         let options = ScanOptions {
             scopes: Scope::ALL.to_vec(),
             categories: Some(vec![Category::Directory]),
+            ..ScanOptions::default()
         };
         let mut calls = 0;
         let result = scan(&options, |_| calls += 1);

@@ -21,10 +21,14 @@ pub enum Command {
         synthetic: Option<usize>,
         /// Run this many measured frames, report and exit.
         bench: Option<usize>,
+        /// Which tab to open on.
+        tab: crate::app::Tab,
     },
     Scan(ScanArgs),
     /// Group every entry by the program behind it (milestone 8).
     Programs,
+    /// Walk the full resolution chain for one extension (milestone 7).
+    FileType(String),
     Backups,
     Restore(String),
     Delete {
@@ -46,12 +50,16 @@ ctxmenu — Windows Context Menu Manager
 
 Verwendung / Usage:
   ctxmenu                   Fenster öffnen / open the window
+  ctxmenu --tab <name>      Fenster auf einem Reiter oeffnen / open on a tab:
+                            categories, filetypes, programs, backups
   ctxmenu --synthetic <n> [--bench <frames>]
                             Fenster mit n erzeugten Zeilen, optional als
                             Messlauf / window with n generated rows,
                             optionally as a measured run
   ctxmenu scan [Optionen]   Einträge auflisten / list context menu entries
   ctxmenu programs          Nach Programm gruppieren / group by program
+  ctxmenu filetype <ext>    Auflösungskette eines Dateityps /
+                            resolution chain of one file type
   ctxmenu backups           Backups auflisten / list backups
   ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
   ctxmenu delete <key> --yes
@@ -66,6 +74,7 @@ Optionen / Options:
                       directorybackground, folder, desktopbackground, drive
   --scope <name>      user | machine | machine32 | all
                       (Vorgabe / default: all)
+  --all-types         Auch die Dateityp-Kette / walk the file type chain too
   --json              Ausgabe als JSON / emit JSON on stdout
   --quiet             Kein Fortschritt / suppress progress output
 ";
@@ -78,36 +87,56 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
         return Ok(Command::Gui {
             synthetic: None,
             bench: None,
+            tab: crate::app::Tab::Categories,
         });
     }
 
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--smoke" => return Ok(Command::Smoke),
-        "--synthetic" | "--bench" => {
+        "--synthetic" | "--bench" | "--tab" => {
             let mut synthetic = None;
             let mut bench = None;
+            let mut tab = crate::app::Tab::Categories;
             let mut rest = args.iter();
 
             while let Some(flag) = rest.next() {
-                let target = match flag.as_str() {
-                    "--synthetic" => &mut synthetic,
-                    "--bench" => &mut bench,
-                    other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
-                };
                 let value = rest
                     .next()
-                    .with_context(|| format!("{flag} erwartet eine Zahl / expects a number"))?;
-                *target = Some(
-                    value
-                        .parse::<usize>()
-                        .with_context(|| format!("Keine Zahl / not a number: {value}"))?,
-                );
+                    .with_context(|| format!("{flag} erwartet einen Wert / expects a value"))?;
+                match flag.as_str() {
+                    "--tab" => {
+                        tab = crate::app::Tab::from_slug(value).with_context(|| {
+                            format!("Unbekannter Reiter / unknown tab: {value}")
+                        })?;
+                    }
+                    "--synthetic" | "--bench" => {
+                        let number = value
+                            .parse::<usize>()
+                            .with_context(|| format!("Keine Zahl / not a number: {value}"))?;
+                        if flag == "--synthetic" {
+                            synthetic = Some(number);
+                        } else {
+                            bench = Some(number);
+                        }
+                    }
+                    other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
+                }
             }
 
-            return Ok(Command::Gui { synthetic, bench });
+            return Ok(Command::Gui {
+                synthetic,
+                bench,
+                tab,
+            });
         }
         "programs" => return Ok(Command::Programs),
+        "filetype" => {
+            let ext = args
+                .get(1)
+                .context("filetype erwartet eine Erweiterung / expects an extension")?;
+            return Ok(Command::FileType(ext.clone()));
+        }
         "backups" => return Ok(Command::Backups),
         "restore" => {
             let directory = args
@@ -137,6 +166,14 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
         match arg.as_str() {
             "--json" => json = true,
             "--quiet" => quiet = true,
+            // Walks the file type chain for every curated extension — what
+            // the window does, and the only way to measure its cost.
+            "--all-types" => {
+                options.file_types = crate::registry::filetypes::CURATED
+                    .iter()
+                    .map(|d| d.ext.to_string())
+                    .collect();
+            }
             "--category" => {
                 let value = rest
                     .next()
@@ -276,6 +313,121 @@ pub fn run_programs() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn run_file_type(raw_ext: &str) -> Result<()> {
+    use crate::registry::filetypes;
+
+    let ext = filetypes::normalize_ext(raw_ext)
+        .with_context(|| format!("Keine Erweiterung / not an extension: {raw_ext}"))?;
+
+    let started = std::time::Instant::now();
+    let result = scan::scan(
+        &ScanOptions {
+            file_types: vec![ext.clone()],
+            ..ScanOptions::default()
+        },
+        |_| {},
+    );
+
+    let info = result
+        .file_types
+        .first()
+        .context("Der Scanner hat den Dateityp nicht geliefert")?;
+    let r = &info.resolution;
+
+    crate::outln!("{}   Gruppe: {:?}", r.ext, info.group);
+    crate::outln!("{}", "-".repeat(100));
+    crate::outln!("registriert:        {}", r.registered);
+    crate::outln!(
+        "Nutzerwahl:         {}",
+        r.user_choice.as_deref().unwrap_or("—")
+    );
+    crate::outln!(
+        "Systemvorgabe:      {}",
+        r.default_progid.as_deref().unwrap_or("—")
+    );
+    crate::outln!(
+        "wirksame ProgID:    {}",
+        r.effective_progid().unwrap_or("—")
+    );
+    crate::outln!(
+        "PerceivedType:      {}",
+        r.perceived_type
+            .as_deref()
+            .unwrap_or("— (Ebene 3 entfällt)")
+    );
+    crate::outln!("OpenWithProgids:    {}", r.open_with_progids.join(", "));
+    crate::outln!();
+
+    // Levels 1 and 2 are shared by every file type; showing them separately
+    // is the honest presentation, because deleting one of those hits every
+    // other file type too (ToDo 10.4).
+    let inherited: Vec<&ContextEntry> = result
+        .entries
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.category,
+                Category::AllFiles | Category::AllFilesystemObjects
+            )
+        })
+        .collect();
+
+    crate::outln!(
+        "Ebenen 1-2, gelten fuer ALLE Dateien: {} Einträge",
+        inherited.len()
+    );
+    for entry in inherited.iter().take(6) {
+        crate::outln!(
+            "    {:<7} {:<10} {}",
+            entry.scope.label(),
+            entry.kind.type_label(),
+            truncate(&entry.display_name, 60)
+        );
+    }
+    if inherited.len() > 6 {
+        crate::outln!("    … und {} weitere", inherited.len() - 6);
+    }
+    crate::outln!();
+
+    crate::outln!(
+        "Ebenen 3-7, nur fuer {}: {} Einträge",
+        r.ext,
+        info.own_entry_count()
+    );
+    for &index in &info.entry_indices {
+        let entry = &result.entries[index];
+        crate::outln!(
+            "    {:<7} {:<10} {:<34} {}",
+            entry.scope.label(),
+            entry.kind.type_label(),
+            truncate(&entry.display_name, 34),
+            level_label(&entry.category)
+        );
+    }
+
+    crate::outln!();
+    crate::outln!(
+        "Summe fuer einen Rechtsklick auf eine {}-Datei: {} Einträge, ermittelt in {:.2} s",
+        r.ext,
+        inherited.len() + info.own_entry_count(),
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
+}
+
+/// Which level of the chain an entry came from.
+fn level_label(category: &Category) -> String {
+    match category {
+        Category::AllFiles => "1 alle Dateien".into(),
+        Category::AllFilesystemObjects => "2 alle Dateisystemobjekte".into(),
+        Category::PerceivedType(t) => format!("3 wahrgenommener Typ ({t})"),
+        Category::ExtAssoc(e) => format!("4 SystemFileAssociations\\{e}"),
+        Category::ProgId { prog_id, .. } => format!("5/7 ProgID {prog_id}"),
+        Category::ExtDirect(e) => format!("6 {e}\\shell"),
+        other => format!("{other:?}"),
+    }
 }
 
 pub fn run_backups() -> Result<()> {
@@ -463,7 +615,8 @@ mod tests {
             parse_args(&[]).unwrap(),
             Command::Gui {
                 synthetic: None,
-                bench: None
+                bench: None,
+                ..
             }
         ));
         assert!(matches!(parse_args(&["--help"]).unwrap(), Command::Help));
@@ -475,14 +628,16 @@ mod tests {
             parse_args(&["--synthetic", "2000"]).unwrap(),
             Command::Gui {
                 synthetic: Some(2000),
-                bench: None
+                bench: None,
+                ..
             }
         ));
         assert!(matches!(
             parse_args(&["--synthetic", "2000", "--bench", "600"]).unwrap(),
             Command::Gui {
                 synthetic: Some(2000),
-                bench: Some(600)
+                bench: Some(600),
+                ..
             }
         ));
         assert!(parse_args(&["--synthetic"]).is_err());

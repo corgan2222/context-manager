@@ -210,6 +210,28 @@ pub struct ScanStats {
     pub blocked_clsids: usize,
 }
 
+/// One file type and the entries its resolution chain contributed.
+///
+/// Levels 1 and 2 of the chain apply to every file and are held once in
+/// `ScanResult::entries` under their base categories; `entry_indices` covers
+/// only levels 3 to 7, which are specific to this extension (ToDo 10.4).
+#[derive(Debug, Clone, Serialize)]
+pub struct FileTypeInfo {
+    pub group: crate::registry::filetypes::TypeGroup,
+    pub resolution: crate::registry::filetypes::Resolution,
+    pub entry_indices: Vec<usize>,
+}
+
+impl FileTypeInfo {
+    pub fn ext(&self) -> &str {
+        &self.resolution.ext
+    }
+
+    pub fn own_entry_count(&self) -> usize {
+        self.entry_indices.len()
+    }
+}
+
 /// Result of one scan pass.
 #[derive(Debug, Serialize)]
 // The index maps are read by the GUI from milestone 4 onwards.
@@ -224,10 +246,16 @@ pub struct ScanResult {
     pub by_program: FxHashMap<String, Vec<usize>>,
     pub scanned_at: chrono::DateTime<chrono::Local>,
     pub stats: ScanStats,
+    /// Empty unless the scan was asked to walk file types.
+    pub file_types: Vec<FileTypeInfo>,
 }
 
 impl ScanResult {
-    pub fn new(entries: Vec<ContextEntry>, stats: ScanStats) -> Self {
+    pub fn new(
+        entries: Vec<ContextEntry>,
+        file_types: Vec<FileTypeInfo>,
+        stats: ScanStats,
+    ) -> Self {
         let mut by_category: FxHashMap<Category, Vec<usize>> = FxHashMap::default();
         let mut by_program: FxHashMap<String, Vec<usize>> = FxHashMap::default();
 
@@ -244,6 +272,7 @@ impl ScanResult {
             by_program,
             scanned_at: chrono::Local::now(),
             stats,
+            file_types,
         }
     }
 }

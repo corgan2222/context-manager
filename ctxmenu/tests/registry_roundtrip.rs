@@ -74,6 +74,7 @@ fn find_entry(key_name: &str) -> Option<ctxmenu::model::ContextEntry> {
     let options = ScanOptions {
         scopes: vec![Scope::User],
         categories: Some(vec![Category::Directory]),
+        ..ScanOptions::default()
     };
     scan(&options, |_| {})
         .entries

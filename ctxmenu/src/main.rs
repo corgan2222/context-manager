@@ -28,11 +28,14 @@ fn main() -> ExitCode {
             ctxmenu::outln!("{}", cli::HELP);
             Ok(())
         }
-        cli::Command::Gui { synthetic, bench } => {
-            app::run(synthetic, bench).map_err(|e| anyhow::anyhow!("eframe: {e}"))
-        }
+        cli::Command::Gui {
+            synthetic,
+            bench,
+            tab,
+        } => app::run(synthetic, bench, tab).map_err(|e| anyhow::anyhow!("eframe: {e}")),
         cli::Command::Scan(args) => cli::run_scan(args),
         cli::Command::Programs => cli::run_programs(),
+        cli::Command::FileType(ext) => cli::run_file_type(&ext),
         cli::Command::Backups => cli::run_backups(),
         cli::Command::Restore(directory) => cli::run_restore(&directory),
         cli::Command::Delete { path, confirmed } => cli::run_delete(&path, confirmed),

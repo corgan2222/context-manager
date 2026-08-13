@@ -14,17 +14,33 @@ use windows::Win32::Foundation::HWND;
 use crate::i18n::{self, Strings};
 use crate::icons::cache::IconCache;
 use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
+use crate::program::group::{self, ProgramGroup};
+use crate::program::identity::NameResolver;
 use crate::registry::backup::{self, BackupManifest};
 use crate::registry::scan::{self, ScanOptions};
 use crate::settings::{Language, Settings, ThemeChoice};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
+pub enum Tab {
     Categories,
     FileTypes,
     Programs,
     Backups,
+}
+
+impl Tab {
+    /// Lets a start-up tab be named on the command line, which is how the
+    /// window gets photographed on a tab other than the first one.
+    pub fn from_slug(value: &str) -> Option<Tab> {
+        match value.to_ascii_lowercase().as_str() {
+            "categories" | "kategorien" => Some(Tab::Categories),
+            "filetypes" | "dateitypen" => Some(Tab::FileTypes),
+            "programs" | "programme" => Some(Tab::Programs),
+            "backups" | "sicherungen" => Some(Tab::Backups),
+            _ => None,
+        }
+    }
 }
 
 /// What the scan thread reports back.
@@ -47,6 +63,12 @@ pub struct App {
 
     tab: Tab,
     selected_category: Option<Category>,
+    /// Selected extension in the file type tab.
+    selected_ext: Option<String>,
+    /// Index into `groups` for the program tab.
+    selected_group: Option<usize>,
+    /// Built once after each scan; never in the frame path.
+    groups: Vec<ProgramGroup>,
     selection: Option<usize>,
     search: String,
 
@@ -94,6 +116,7 @@ impl App {
         cc: &eframe::CreationContext<'_>,
         synthetic: Option<usize>,
         bench_frames: Option<usize>,
+        start_tab: Tab,
     ) -> Self {
         install_fonts(&cc.egui_ctx);
 
@@ -107,8 +130,11 @@ impl App {
             scan: None,
             visible_rows: Vec::new(),
             filter_dirty: true,
-            tab: Tab::Categories,
+            tab: start_tab,
             selected_category: None,
+            selected_ext: None,
+            selected_group: None,
+            groups: Vec::new(),
             selection: None,
             search: String::new(),
             scan_rx: None,
@@ -157,7 +183,7 @@ impl App {
         std::thread::Builder::new()
             .name("registry-scan".into())
             .spawn(move || {
-                let options = ScanOptions::default();
+                let options = ScanOptions::with_curated_file_types();
                 let sender = tx.clone();
                 let progress_ctx = ctx.clone();
 
@@ -190,7 +216,12 @@ impl App {
                     self.progress_label = progress.label;
                 }
                 ScanMessage::Done(result) => {
-                    self.scan = Some(*result);
+                    let result = *result;
+                    // Version resource lookups hit the disk, so the grouping
+                    // is built once here and never per frame.
+                    let mut names = NameResolver::new();
+                    self.groups = group::build(&result, &mut names);
+                    self.scan = Some(result);
                     self.filter_dirty = true;
                     finished = true;
                 }
@@ -217,18 +248,68 @@ impl App {
     }
 
     /// Rebuilds `visible_rows`. Runs on change only, never per frame.
+    ///
+    /// Which entries are candidates depends on the tab; the search then
+    /// narrows that set. Keeping both steps here means the table itself never
+    /// filters anything.
     fn rebuild_visible(&mut self) {
         self.visible_rows.clear();
         let Some(scan) = &self.scan else { return };
 
-        let needle = self.search.trim().to_lowercase();
+        let candidates: Vec<usize> = match self.tab {
+            // Base categories only. Without the second condition, "no
+            // category selected" would also pour in every file type entry
+            // and the count next to the tree would be a different number
+            // from the sum of its children.
+            Tab::Categories => scan
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| match &self.selected_category {
+                    Some(category) => &e.category == category,
+                    None => Category::BASE.contains(&e.category),
+                })
+                .map(|(i, _)| i)
+                .collect(),
 
-        for (index, entry) in scan.entries.iter().enumerate() {
-            if let Some(category) = &self.selected_category
-                && &entry.category != category
-            {
-                continue;
-            }
+            Tab::FileTypes => match &self.selected_ext {
+                Some(ext) => {
+                    // Levels 1 and 2 apply to every file, so they belong in
+                    // the list for this type even though they are not stored
+                    // under it (ToDo 10.4). Showing only levels 3 to 7 would
+                    // understate what a right-click actually offers.
+                    let mut rows: Vec<usize> = scan
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| {
+                            matches!(
+                                e.category,
+                                Category::AllFiles | Category::AllFilesystemObjects
+                            )
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    if let Some(info) = scan.file_types.iter().find(|f| f.ext() == ext) {
+                        rows.extend(info.entry_indices.iter().copied());
+                    }
+                    rows
+                }
+                None => Vec::new(),
+            },
+
+            Tab::Programs => self
+                .selected_group
+                .and_then(|i| self.groups.get(i))
+                .map(|g| g.entry_indices.clone())
+                .unwrap_or_default(),
+
+            Tab::Backups => Vec::new(),
+        };
+
+        let needle = self.search.trim().to_lowercase();
+        for index in candidates {
+            let entry = &scan.entries[index];
             if !needle.is_empty() && !matches_search(entry, &needle) {
                 continue;
             }
@@ -306,7 +387,18 @@ impl App {
         }
     }
 
+    /// Entries in the base categories — what the category tree covers.
     fn entry_count(&self) -> usize {
+        self.scan.as_ref().map_or(0, |s| {
+            s.entries
+                .iter()
+                .filter(|e| Category::BASE.contains(&e.category))
+                .count()
+        })
+    }
+
+    /// Everything the scan found, including the file type chain.
+    fn total_entry_count(&self) -> usize {
         self.scan.as_ref().map_or(0, |s| s.entries.len())
     }
 
@@ -349,14 +441,14 @@ impl eframe::App for App {
                 egui::CentralPanel::default().show(ui, |ui| self.backup_list(ui));
             }
             Tab::FileTypes => {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    not_built_yet(ui, "Meilenstein 7 / milestone 7", self.tr.tab_filetypes);
-                });
+                self.file_type_tree(ui);
+                self.detail_panel(ui);
+                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui));
             }
             Tab::Programs => {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    not_built_yet(ui, "Meilenstein 8 / milestone 8", self.tr.tab_programs);
-                });
+                self.program_list(ui);
+                self.detail_panel(ui);
+                egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui));
             }
         }
     }
@@ -379,6 +471,9 @@ impl App {
                 ] {
                     if ui.selectable_label(self.tab == tab, label).clicked() {
                         self.tab = tab;
+                        // Each tab draws from a different candidate set.
+                        self.filter_dirty = true;
+                        self.selection = None;
                         if tab == Tab::Backups {
                             self.reload_backups();
                         }
@@ -475,7 +570,7 @@ impl App {
                     ui.label(
                         self.tr
                             .fmt_entries_found
-                            .replace("{}", &self.entry_count().to_string()),
+                            .replace("{}", &self.total_entry_count().to_string()),
                     );
                     ui.separator();
                     ui.label(format!("{} sichtbar / shown", self.visible_rows.len()));
@@ -552,6 +647,124 @@ impl App {
 
                         ui.take_available_space();
                     });
+            });
+    }
+
+    /// File types, grouped, with the number of entries each one adds.
+    fn file_type_tree(&mut self, ui: &mut Ui) {
+        egui::Panel::left("filetypes")
+            .resizable(true)
+            .default_size(260.0)
+            .size_range(200.0..=460.0)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+
+                let hide_empty = &mut self.settings.hide_empty_types;
+                if ui.checkbox(hide_empty, self.tr.filter_hide_empty).changed() {
+                    let _ = self.settings.save();
+                }
+                ui.separator();
+
+                let Some(scan) = &self.scan else {
+                    ui.spinner();
+                    return;
+                };
+
+                let hide_empty = self.settings.hide_empty_types;
+                let mut clicked: Option<String> = None;
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for group in crate::registry::filetypes::TypeGroup::ALL {
+                            let types: Vec<_> = scan
+                                .file_types
+                                .iter()
+                                .filter(|f| f.group == group)
+                                .filter(|f| !hide_empty || f.own_entry_count() > 0)
+                                .collect();
+                            if types.is_empty() {
+                                continue;
+                            }
+
+                            let total: usize = types.iter().map(|f| f.own_entry_count()).sum();
+                            egui::CollapsingHeader::new(format!(
+                                "{}  ({total})",
+                                type_group_label(group)
+                            ))
+                            .id_salt(group)
+                            .default_open(group == crate::registry::filetypes::TypeGroup::Images)
+                            .show(ui, |ui| {
+                                for info in types {
+                                    let selected = self.selected_ext.as_deref() == Some(info.ext());
+                                    let label =
+                                        format!("{}  ({})", info.ext(), info.own_entry_count());
+                                    if ui.selectable_label(selected, label).clicked() {
+                                        clicked = Some(info.ext().to_string());
+                                    }
+                                }
+                            });
+                        }
+                        ui.take_available_space();
+                    });
+
+                if let Some(ext) = clicked {
+                    self.selected_ext = Some(ext);
+                    self.selection = None;
+                    self.filter_dirty = true;
+                }
+            });
+    }
+
+    /// Programs, largest first — the one worth twenty deletions is on top.
+    fn program_list(&mut self, ui: &mut Ui) {
+        egui::Panel::left("programs")
+            .resizable(true)
+            .default_size(340.0)
+            .size_range(240.0..=560.0)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.label(
+                    self.tr
+                        .fmt_entries_found
+                        .replace("{}", &self.groups.len().to_string()),
+                );
+                ui.separator();
+
+                let mut clicked: Option<usize> = None;
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (index, group) in self.groups.iter().enumerate() {
+                            let selected = self.selected_group == Some(index);
+                            let label =
+                                format!("{:>3}×  {}", group.entry_count(), group.display_name);
+
+                            let response = ui.selectable_label(selected, label);
+                            if response.clicked() {
+                                clicked = Some(index);
+                            }
+                            // The full path is long and only occasionally
+                            // wanted, so it lives in the tooltip.
+                            response.on_hover_text(&group.key);
+
+                            if group.is_system {
+                                ui.indent(index, |ui| {
+                                    ui.colored_label(
+                                        ui.visuals().weak_text_color(),
+                                        self.tr.badge_system,
+                                    );
+                                });
+                            }
+                        }
+                        ui.take_available_space();
+                    });
+
+                if let Some(index) = clicked {
+                    self.selected_group = Some(index);
+                    self.selection = None;
+                    self.filter_dirty = true;
+                }
             });
     }
 
@@ -815,6 +1028,26 @@ fn strings_for(language: Language) -> &'static Strings {
     }
 }
 
+/// Human label for a file type group.
+///
+/// Not in the i18n table: these are the eight fixed buckets of the curated
+/// list, and adding sixteen more fields for them would bury the strings that
+/// actually vary.
+fn type_group_label(group: crate::registry::filetypes::TypeGroup) -> &'static str {
+    use crate::registry::filetypes::TypeGroup as G;
+    match group {
+        G::Documents => "Dokumente / Documents",
+        G::Images => "Bilder / Images",
+        G::Raw => "RAW",
+        G::Audio => "Audio",
+        G::Video => "Video",
+        G::Archives => "Archive / Archives",
+        G::Code => "Code",
+        G::System => "System",
+        G::Other => "Sonstige / Other",
+    }
+}
+
 fn category_label(category: &Category, tr: &'static Strings) -> &'static str {
     match category {
         Category::AllFiles => tr.cat_all_files,
@@ -883,15 +1116,6 @@ fn field(ui: &mut Ui, label: &str, value: &str) {
     ui.label(egui::RichText::new(label).weak().small());
     // Selectable so a registry path can be copied out into regedit.
     ui.add(egui::Label::new(value).selectable(true).wrap());
-}
-
-fn not_built_yet(ui: &mut Ui, milestone: &str, title: &str) {
-    ui.centered_and_justified(|ui| {
-        ui.vertical_centered(|ui| {
-            ui.heading(title);
-            ui.label(format!("Noch nicht gebaut / not built yet: {milestone}"));
-        });
-    });
 }
 
 /// Segoe UI, so the window does not look foreign on Windows.
@@ -1011,7 +1235,11 @@ impl FrameTimes {
 }
 
 /// Launches the window.
-pub fn run(synthetic: Option<usize>, bench_frames: Option<usize>) -> eframe::Result<()> {
+pub fn run(
+    synthetic: Option<usize>,
+    bench_frames: Option<usize>,
+    start_tab: Tab,
+) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(i18n::DE.app_title)
@@ -1023,7 +1251,7 @@ pub fn run(synthetic: Option<usize>, bench_frames: Option<usize>) -> eframe::Res
     eframe::run_native(
         "ctxmenu",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, synthetic, bench_frames)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, synthetic, bench_frames, start_tab)))),
     )
 }
 

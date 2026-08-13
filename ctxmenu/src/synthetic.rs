@@ -83,7 +83,7 @@ pub fn scan_result(count: usize) -> ScanResult {
         });
     }
 
-    ScanResult::new(entries, ScanStats::default())
+    ScanResult::new(entries, Vec::new(), ScanStats::default())
 }
 
 #[cfg(test)]

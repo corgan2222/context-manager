@@ -8,7 +8,7 @@ use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
 use crate::model::{Category, Scope};
 
 /// Whether a location holds static verbs or COM handler registrations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceKind {
     /// `…\shell` — verbs with display text and command line in the registry.
     Shell,
@@ -17,11 +17,15 @@ pub enum SourceKind {
 }
 
 /// One place to look, relative to a scope's classes root.
+///
+/// `relative` is owned rather than `&'static str`: the file type chain builds
+/// its locations at runtime from the extension and its ProgIDs, and leaking a
+/// string per location on every rescan would be a slow memory leak.
 #[derive(Debug, Clone)]
 pub struct CategorySource {
     pub category: Category,
     /// Path below `…\Classes`, e.g. `Directory\shell`.
-    pub relative: &'static str,
+    pub relative: String,
     pub kind: SourceKind,
 }
 
@@ -69,7 +73,7 @@ pub fn base_sources() -> Vec<CategorySource> {
         .iter()
         .map(|(category, relative, kind)| CategorySource {
             category: category.clone(),
-            relative,
+            relative: (*relative).to_string(),
             kind: *kind,
         })
         .collect()

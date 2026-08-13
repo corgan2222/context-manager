@@ -7,6 +7,10 @@
 //! tools overlook.
 
 use serde::{Deserialize, Serialize};
+use windows_registry::CURRENT_USER;
+
+use super::paths::{self, CategorySource, SourceKind};
+use crate::model::{Category, Scope};
 
 /// Grouping for the tree on the left of the file type tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -193,6 +197,175 @@ pub fn group_of(ext: &str) -> TypeGroup {
         .map_or(TypeGroup::Other, |d| d.group)
 }
 
+/// What Windows knows about one extension.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct Resolution {
+    pub ext: String,
+    /// `…\FileExts\<ext>\UserChoice`. Beats the class default.
+    pub user_choice: Option<String>,
+    /// Default value of `HKCR\<ext>`.
+    pub default_progid: Option<String>,
+    /// `text`, `image`, `audio`, `video`, `compressed`, … Absent for many
+    /// extensions, and then level 3 of the chain does not exist at all.
+    pub perceived_type: Option<String>,
+    /// Value names under `HKCR\<ext>\OpenWithProgids`.
+    pub open_with_progids: Vec<String>,
+    /// Does the extension key exist anywhere?
+    pub registered: bool,
+}
+
+impl Resolution {
+    /// The ProgID that actually wins.
+    ///
+    /// The user's own choice takes precedence over the system default, and
+    /// the two really do disagree: measured on this machine, `.jpg` defaults
+    /// to `ImageGlass.AssocFile.JPG` while the user choice is a Store app.
+    pub fn effective_progid(&self) -> Option<&str> {
+        self.user_choice
+            .as_deref()
+            .or(self.default_progid.as_deref())
+    }
+
+    /// Every ProgID that contributes entries: the effective one first, then
+    /// the alternatives from `OpenWithProgids`, without repeats.
+    pub fn all_progids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for candidate in self
+            .effective_progid()
+            .into_iter()
+            .map(str::to_string)
+            .chain(self.default_progid.clone())
+            .chain(self.open_with_progids.iter().cloned())
+        {
+            if !candidate.trim().is_empty() && !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+        out
+    }
+}
+
+/// Reads everything needed to walk the chain for one extension.
+pub fn resolve(ext: &str) -> Resolution {
+    let Some(ext) = normalize_ext(ext) else {
+        return Resolution::default();
+    };
+
+    let mut resolution = Resolution {
+        ext: ext.clone(),
+        // The user's choice lives outside the classes tree entirely.
+        user_choice: CURRENT_USER
+            .open(format!(
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{ext}\UserChoice"
+            ))
+            .ok()
+            .and_then(|key| key.get_string("ProgId").ok())
+            .filter(|value| !value.trim().is_empty()),
+        ..Resolution::default()
+    };
+
+    // HKCU wins over HKLM, and the 64-bit view over the 32-bit one.
+    for scope in Scope::ALL {
+        let Ok(key) = paths::root_key(scope).open(paths::key_path(scope, &ext)) else {
+            continue;
+        };
+        resolution.registered = true;
+
+        if resolution.default_progid.is_none() {
+            resolution.default_progid = key
+                .get_string("")
+                .ok()
+                .filter(|value| !value.trim().is_empty());
+        }
+        if resolution.perceived_type.is_none() {
+            // Lowercased on purpose. Different extensions spell the same
+            // perceived type differently — measured on this machine: some
+            // declare `image`, others `Image` — and without folding the case
+            // the tree grows two branches for one type and the shared level-3
+            // location gets scanned twice. Registry paths do not care about
+            // case, so nothing is lost.
+            resolution.perceived_type = key
+                .get_string("PerceivedType")
+                .ok()
+                .map(|value| value.trim().to_lowercase())
+                .filter(|value| !value.is_empty());
+        }
+
+        if let Ok(open_with) = key.open("OpenWithProgids")
+            && let Ok(values) = open_with.values()
+        {
+            for (name, _) in values {
+                if !name.trim().is_empty() && !resolution.open_with_progids.contains(&name) {
+                    resolution.open_with_progids.push(name);
+                }
+            }
+        }
+    }
+
+    resolution
+}
+
+/// The registry locations that contribute entries for one extension.
+///
+/// Levels 1 and 2 of the chain — `*` and `AllFilesystemObjects` — are the same
+/// for every file type and are deliberately **not** included: they are scanned
+/// once as base categories and reused (ToDo 10.4). What comes back here is
+/// levels 3 to 7.
+pub fn sources_for(resolution: &Resolution) -> Vec<CategorySource> {
+    let mut sources = Vec::new();
+    let ext = &resolution.ext;
+    if ext.is_empty() {
+        return sources;
+    }
+
+    let mut push = |category: Category, relative: String| {
+        sources.push(CategorySource {
+            category: category.clone(),
+            relative: format!(r"{relative}\shell"),
+            kind: SourceKind::Shell,
+        });
+        sources.push(CategorySource {
+            category,
+            relative: format!(r"{relative}\shellex\ContextMenuHandlers"),
+            kind: SourceKind::ShellEx,
+        });
+    };
+
+    // Level 3: the perceived type. Skipped entirely when the extension has
+    // none, which is the common case — `.pdf` has no PerceivedType at all.
+    if let Some(perceived) = &resolution.perceived_type {
+        push(
+            Category::PerceivedType(perceived.clone()),
+            format!(r"SystemFileAssociations\{perceived}"),
+        );
+    }
+
+    // Level 4: the extension under SystemFileAssociations. Together with
+    // level 3 this is where image viewers and converters register, and it is
+    // what most competing tools miss.
+    push(
+        Category::ExtAssoc(ext.clone()),
+        format!(r"SystemFileAssociations\{ext}"),
+    );
+
+    // Levels 5 and 7: the winning ProgID and every alternative.
+    for prog_id in resolution.all_progids() {
+        push(
+            Category::ProgId {
+                prog_id: prog_id.clone(),
+                from_ext: ext.clone(),
+            },
+            prog_id,
+        );
+    }
+
+    // Level 6: the extension key itself. Rare — it exists for none of the
+    // eight extensions surveyed on this machine — but it does occur.
+    push(Category::ExtDirect(ext.clone()), ext.clone());
+
+    sources
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +428,173 @@ mod tests {
         assert_eq!(group_of(".rs"), TypeGroup::Code);
         assert_eq!(group_of(".vhdx"), TypeGroup::System);
         assert_eq!(group_of(".gibtsnicht"), TypeGroup::Other);
+    }
+
+    // ------------------------------------------------------------------
+    // The chain, checked against what this machine actually holds.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_common_image_type_resolves_completely() {
+        let jpg = resolve(".jpg");
+        assert!(jpg.registered, ".jpg must be registered on any Windows");
+        assert_eq!(
+            jpg.perceived_type.as_deref(),
+            Some("image"),
+            "the perceived type drives level 3 of the chain"
+        );
+        assert!(
+            jpg.effective_progid().is_some(),
+            "some ProgID must win for .jpg"
+        );
+    }
+
+    #[test]
+    fn the_user_choice_beats_the_class_default() {
+        let mut resolution = Resolution {
+            default_progid: Some("System.Default".into()),
+            user_choice: Some("Users.Pick".into()),
+            ..Resolution::default()
+        };
+        assert_eq!(resolution.effective_progid(), Some("Users.Pick"));
+
+        resolution.user_choice = None;
+        assert_eq!(resolution.effective_progid(), Some("System.Default"));
+    }
+
+    #[test]
+    fn the_default_progid_survives_even_when_the_user_chose_otherwise() {
+        // Both branches carry entries, so losing the default would hide them.
+        let resolution = Resolution {
+            default_progid: Some("System.Default".into()),
+            user_choice: Some("Users.Pick".into()),
+            open_with_progids: vec!["Third.One".into(), "Users.Pick".into()],
+            ..Resolution::default()
+        };
+        let all = resolution.all_progids();
+        assert_eq!(all, vec!["Users.Pick", "System.Default", "Third.One"]);
+    }
+
+    #[test]
+    fn a_type_without_a_perceived_type_skips_level_three() {
+        // Measured: .pdf carries no PerceivedType on this machine.
+        let without = Resolution {
+            ext: ".pdf".into(),
+            default_progid: Some("Some.Reader".into()),
+            registered: true,
+            ..Resolution::default()
+        };
+        let sources = sources_for(&without);
+        assert!(
+            !sources
+                .iter()
+                .any(|s| matches!(s.category, Category::PerceivedType(_))),
+            "level 3 must be absent without a perceived type"
+        );
+
+        let with = Resolution {
+            perceived_type: Some("image".into()),
+            ..without.clone()
+        };
+        assert!(
+            sources_for(&with)
+                .iter()
+                .any(|s| matches!(s.category, Category::PerceivedType(_)))
+        );
+    }
+
+    #[test]
+    fn the_chain_covers_levels_three_to_seven_and_not_one_or_two() {
+        let resolution = Resolution {
+            ext: ".jpg".into(),
+            perceived_type: Some("image".into()),
+            default_progid: Some("jpegfile".into()),
+            registered: true,
+            ..Resolution::default()
+        };
+        let sources = sources_for(&resolution);
+
+        let has = |needle: &str| sources.iter().any(|s| s.relative.contains(needle));
+        assert!(has(r"SystemFileAssociations\image"), "level 3");
+        assert!(has(r"SystemFileAssociations\.jpg"), "level 4");
+        assert!(has("jpegfile"), "level 5");
+        assert!(
+            sources
+                .iter()
+                .any(|s| matches!(&s.category, Category::ExtDirect(e) if e == ".jpg")),
+            "level 6"
+        );
+
+        // Levels 1 and 2 are base categories, scanned once and reused.
+        assert!(!has(r"*\shell"), "level 1 must not be repeated per type");
+        assert!(!has("AllFilesystemObjects"), "level 2 must not be repeated");
+
+        // Every location is looked at for both verbs and COM handlers.
+        let shell = sources
+            .iter()
+            .filter(|s| s.kind == SourceKind::Shell)
+            .count();
+        let shellex = sources
+            .iter()
+            .filter(|s| s.kind == SourceKind::ShellEx)
+            .count();
+        assert_eq!(shell, shellex);
+    }
+
+    /// Guards the deduplication the scanner relies on.
+    ///
+    /// Every image extension names the same level-3 location. If that is
+    /// scanned once per extension, each of them reports the shared entries
+    /// several times over — measured before the fix: `.jpg` claimed 79
+    /// entries where it has 19.
+    #[test]
+    fn image_extensions_name_the_same_level_three_location() {
+        let jpg = sources_for(&resolve(".jpg"));
+        let png = sources_for(&resolve(".png"));
+
+        let level3 = |sources: &[CategorySource]| -> Vec<String> {
+            sources
+                .iter()
+                .filter(|s| matches!(s.category, Category::PerceivedType(_)))
+                .map(|s| s.relative.to_lowercase())
+                .collect()
+        };
+
+        let a = level3(&jpg);
+        let b = level3(&png);
+        assert!(!a.is_empty(), "images must have a perceived type");
+        assert_eq!(a, b, "the shared location must be spelled identically");
+    }
+
+    #[test]
+    fn perceived_types_are_case_folded() {
+        // `.tif` and `.jpg` both mean the image perceived type, but the two
+        // keys do not agree on capitalisation. Two branches for one type
+        // would double both the tree and the scanning work.
+        let types: HashSet<String> = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif"]
+            .iter()
+            .filter_map(|ext| resolve(ext).perceived_type)
+            .collect();
+
+        for value in &types {
+            assert_eq!(
+                value,
+                &value.to_lowercase(),
+                "perceived type {value:?} was not folded"
+            );
+        }
+        assert!(
+            types.len() <= 1,
+            "image extensions should share one perceived type, got {types:?}"
+        );
+    }
+
+    #[test]
+    fn an_unregistered_extension_yields_nothing_but_does_not_fail() {
+        let resolution = resolve(".gibtesganzsichernicht");
+        assert!(!resolution.registered);
+        assert_eq!(resolution.effective_progid(), None);
+        assert!(resolution.all_progids().is_empty());
     }
 
     /// The list is a starting point, but a shrunken one would silently drop
