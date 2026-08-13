@@ -198,6 +198,18 @@ pub struct ContextEntry {
     pub program_key: Option<String>,
 }
 
+/// Diagnostics from one scan pass.
+///
+/// Reported rather than kept internal because the caching claims in this code
+/// base are supposed to be checkable, not assumed.
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct ScanStats {
+    pub mui_cache_hits: usize,
+    pub mui_cache_misses: usize,
+    /// Size of the machine-wide blocked-CLSID list.
+    pub blocked_clsids: usize,
+}
+
 /// Result of one scan pass.
 #[derive(Debug, Serialize)]
 // The index maps are read by the GUI from milestone 4 onwards.
@@ -211,10 +223,11 @@ pub struct ScanResult {
     #[serde(skip)]
     pub by_program: FxHashMap<String, Vec<usize>>,
     pub scanned_at: chrono::DateTime<chrono::Local>,
+    pub stats: ScanStats,
 }
 
 impl ScanResult {
-    pub fn new(entries: Vec<ContextEntry>) -> Self {
+    pub fn new(entries: Vec<ContextEntry>, stats: ScanStats) -> Self {
         let mut by_category: FxHashMap<Category, Vec<usize>> = FxHashMap::default();
         let mut by_program: FxHashMap<String, Vec<usize>> = FxHashMap::default();
 
@@ -230,6 +243,7 @@ impl ScanResult {
             by_category,
             by_program,
             scanned_at: chrono::Local::now(),
+            stats,
         }
     }
 }

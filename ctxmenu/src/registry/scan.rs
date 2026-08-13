@@ -7,8 +7,12 @@
 
 use windows_registry::Key;
 
+use super::clsid::{ClsidInfo, ClsidResolver};
+use super::mui::MuiResolver;
 use super::paths::{self, CategorySource, SourceKind};
-use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult, Scope, stable_id};
+use crate::model::{
+    Category, ContextEntry, EntryKind, ScanProgress, ScanResult, ScanStats, Scope, stable_id,
+};
 
 /// How deep cascading submenus are followed.
 ///
@@ -71,7 +75,80 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
         }
     }
 
-    ScanResult::new(entries)
+    // Name resolution runs once over the finished tree rather than inside the
+    // read path. That keeps reading and interpreting separable — and the two
+    // resolvers share their caches across the whole scan, which is where the
+    // saving is: a full scan hits the same shell32 references over and over.
+    let mut mui = MuiResolver::new();
+    let mut clsids = ClsidResolver::new();
+    resolve_entries(&mut entries, &mut mui, &mut clsids);
+
+    let (mui_cache_hits, mui_cache_misses) = mui.stats();
+    ScanResult::new(
+        entries,
+        ScanStats {
+            mui_cache_hits,
+            mui_cache_misses,
+            blocked_clsids: clsids.blocked_count(),
+        },
+    )
+}
+
+/// Turns raw registry values into what the user should actually read.
+///
+/// Split out from reading so the scanner stays a plain traversal, and so this
+/// pass can be pointed at any entry tree in tests.
+fn resolve_entries(
+    entries: &mut [ContextEntry],
+    mui: &mut MuiResolver,
+    clsids: &mut ClsidResolver,
+) {
+    enum Resolved {
+        Verb(Option<String>),
+        ShellEx { info: ClsidInfo, blocked: bool },
+    }
+
+    for entry in entries.iter_mut() {
+        let resolved = match &entry.kind {
+            EntryKind::Verb { .. } => {
+                Resolved::Verb(entry.raw_display.as_deref().map(|raw| mui.resolve(raw)))
+            }
+            EntryKind::ShellEx { clsid, .. } => Resolved::ShellEx {
+                info: clsids.resolve(clsid),
+                blocked: clsids.is_blocked(clsid),
+            },
+        };
+
+        match resolved {
+            Resolved::Verb(Some(display)) => entry.display_name = display,
+            Resolved::Verb(None) => {}
+            Resolved::ShellEx { info, blocked } => {
+                // Falls back to the subkey name set while reading. That is
+                // still the best available label for a handler whose CLSID is
+                // registered without a friendly name.
+                if let Some(name) = &info.friendly_name {
+                    entry.display_name = name.clone();
+                }
+                // The server DLL is the grouping key for the program view
+                // (ToDo 5.4), so it is filled here rather than in milestone 8.
+                entry.program_key = info.program_key.clone();
+
+                if let EntryKind::ShellEx {
+                    server_path,
+                    blocked: is_blocked,
+                    ..
+                } = &mut entry.kind
+                {
+                    *server_path = info.server_path;
+                    *is_blocked = blocked;
+                }
+            }
+        }
+
+        if let EntryKind::Verb { sub_commands, .. } = &mut entry.kind {
+            resolve_entries(sub_commands, mui, clsids);
+        }
+    }
 }
 
 fn collect(key: &Key, source: &CategorySource, scope: Scope, out: &mut Vec<ContextEntry>) {

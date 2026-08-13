@@ -142,6 +142,10 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     }
 
     print_summary(&result.entries, &args.options.scopes);
+    println!(
+        "MUI-Cache: {} Treffer / {} Auflösungen, blockierte CLSIDs im System: {}",
+        result.stats.mui_cache_hits, result.stats.mui_cache_misses, result.stats.blocked_clsids
+    );
     Ok(())
 }
 
