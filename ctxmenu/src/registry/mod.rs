@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod clsid;
+pub mod filetypes;
 pub mod mui;
 pub mod paths;
 pub mod scan;

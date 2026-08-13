@@ -9,6 +9,7 @@ pub mod console;
 pub mod i18n;
 pub mod icons;
 pub mod model;
+pub mod program;
 pub mod registry;
 pub mod settings;
 pub mod smoke;
