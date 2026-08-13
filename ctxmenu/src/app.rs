@@ -63,7 +63,12 @@ enum Dialog {
     Done(Report),
     Error(String),
     /// The form for a new entry of one's own (milestone 10).
-    Editor(Box<NewEntry>),
+    Editor {
+        entry: Box<NewEntry>,
+        /// Read when the dialog opens, not per frame: this is a file on disk,
+        /// and the frame path has no business touching one (ToDo 4.3).
+        recorded: Vec<NewEntry>,
+    },
 }
 
 /// One line of the table.
@@ -877,18 +882,21 @@ impl App {
                 // it sits before the selection controls rather than among the
                 // actions that do.
                 if ui.button(self.tr.editor_new).clicked() {
-                    self.dialog = Some(Dialog::Editor(Box::new(NewEntry {
-                        category: self
-                            .selected_category
-                            .clone()
-                            .unwrap_or(Category::Directory),
-                        key_name: String::new(),
-                        display_name: String::new(),
-                        command: String::new(),
-                        icon: None,
-                        position: None,
-                        extended: false,
-                    })));
+                    self.dialog = Some(Dialog::Editor {
+                        entry: Box::new(NewEntry {
+                            category: self
+                                .selected_category
+                                .clone()
+                                .unwrap_or(Category::Directory),
+                            key_name: String::new(),
+                            display_name: String::new(),
+                            command: String::new(),
+                            icon: None,
+                            position: None,
+                            extended: false,
+                        }),
+                        recorded: create::recorded().unwrap_or_default(),
+                    });
                 }
                 ui.separator();
 
@@ -1170,7 +1178,10 @@ impl App {
                 keep = false;
             }
 
-            Dialog::Editor(mut entry) => {
+            Dialog::Editor {
+                mut entry,
+                recorded,
+            } => {
                 let mut close = false;
                 let mut save = false;
 
@@ -1287,7 +1298,6 @@ impl App {
                             }
                         }
 
-                        let recorded = create::recorded().unwrap_or_default();
                         if !recorded.is_empty() {
                             ui.add_space(6.0);
                             ui.separator();
@@ -1333,7 +1343,7 @@ impl App {
                         }
                     }
                 } else if !close {
-                    self.dialog = Some(Dialog::Editor(entry));
+                    self.dialog = Some(Dialog::Editor { entry, recorded });
                 }
                 keep = false;
             }

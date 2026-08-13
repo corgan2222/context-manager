@@ -66,6 +66,18 @@ impl Drop for Fixture {
     }
 }
 
+/// Removes the backup a test produced.
+///
+/// Not cosmetic: every run of this file writes into
+/// `%LOCALAPPDATA%\ctxmenu\backups`, and the tests once left 266 directories
+/// there, all of which the backup tab of the application then offered as if
+/// they were the user's.
+fn discard(report: &ctxmenu::registry::plan::Report) {
+    if let Some(directory) = &report.backup_directory {
+        let _ = std::fs::remove_dir_all(directory);
+    }
+}
+
 /// Every failed step with its reason.
 ///
 /// A bare count in an assertion says "two of three" and nothing about which one
@@ -105,6 +117,7 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
     );
     assert_eq!(report.failed(), 0);
     assert!(report.backup_directory.is_some(), "a backup is mandatory");
+    discard(&report);
 
     for target in &fixture.targets {
         assert!(
@@ -121,9 +134,7 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
         assert!(!flag_present(target, "LegacyDisable"));
     }
 
-    if let Some(directory) = report.backup_directory {
-        let _ = std::fs::remove_dir_all(directory);
-    }
+    discard(&report);
 }
 
 #[test]
@@ -191,9 +202,7 @@ fn a_failing_step_does_not_stop_the_others() {
         );
     }
 
-    if let Some(directory) = report.backup_directory {
-        let _ = std::fs::remove_dir_all(directory);
-    }
+    discard(&report);
 }
 
 #[test]
