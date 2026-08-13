@@ -33,6 +33,14 @@ switchable at runtime; this README is German only.*
 - **Eigene Einträge anlegen** mit Anzeigename, Befehl, Symbol, Position und
   Umschalt-Sichtbarkeit. Immer in `HKCU`, also ohne Administratorrechte und
   ohne Risiko für andere Konten.
+- **Favoriten: der Werkzeugkasten.** Ein Programm oder ein Webtool einmal
+  eintragen, und es bleibt. Von dort aus landet es mit einem Klick in jeder
+  Kategorie oder bei einem bestimmten Dateityp. Aus dem Reiter *Programme*
+  wandert ein Programm, das ohnehin ständig auftaucht, mit einem Klick in die
+  Liste.
+- **Webtools als Favorit.** Ein Favorit muss keine `.exe` sein, eine Adresse
+  genügt. Weil eine Webseite keine lokale Datei lesen darf, wird sie
+  *geschickt* — dazu unten mehr.
 - **Sichern und zurückholen.** Jede Aktion legt vorher ein Backup an, eine
   Gruppenaktion genau eines für die ganze Gruppe. Der Reiter *Sicherungen*
   zeigt den Verlauf und spielt zurück.
@@ -74,6 +82,7 @@ nur für diesen einen Schritt.
 | **Kategorien** | Der Einstieg: was bei Rechtsklick auf Ordner, Dateien, Desktop erscheint |
 | **Dateitypen** | Eine Erweiterung wählen und die vollständige Auflösungskette sehen |
 | **Programme** | Nach Programm gruppiert — der schnellste Weg, ein Programm ganz aus dem Menü zu nehmen |
+| **Favoriten** | Der eigene Werkzeugkasten: einmal eintragen, immer da |
 | **Sicherungen** | Verlauf aller Sicherungen, mit Knopf zum Zurückspielen |
 
 Das Suchfeld greift auf jedem Reiter und durchsucht Anzeigename, Befehl und
@@ -87,6 +96,52 @@ Registry-Pfad; auch dann, wenn links noch nichts ausgewählt ist.
 4. Wenn Windows nach Administratorrechten fragt: das sind die Einträge unter
    `HKLM`, also die für alle Konten. Wer ablehnt, behält die Änderungen an den
    eigenen Einträgen; die anderen bleiben, wie sie waren.
+
+---
+
+## Favoriten und Webtools
+
+Der Reiter **Favoriten** ist eine Liste, die bleibt. Was einmal darin steht,
+lässt sich jederzeit an einer weiteren Stelle im Kontextmenü eintragen, ohne
+es noch einmal einzurichten. „Ins Kontextmenü" fragt nur noch nach dem Wo:
+eine der Basis-Kategorien, eine Dateiendung (`.png`), oder eine ganze Art von
+Datei (`image` erfasst jedes Bildformat, das Windows kennt).
+
+Ein Favorit muss kein Programm sein. Wenn das Werkzeug im Browser lebt, gibt
+es ein Problem, das keine Registry löst: **eine Webseite darf keine lokale
+Datei lesen.** Eine Adresse wie `https://tool.example/?f=C:\bild.png` öffnet
+zwar die Seite, aber die Datei kommt dort nie an — kein Browser erlaubt das,
+und das ist auch gut so. Die Datei muss also verschickt werden, und dafür
+braucht es einen Absender. Das ist dieses Programm: der Menüeintrag ruft
+`ctxmenu --favourite <kennung> "%1"` auf und macht dann, je nach Betriebsart,
+eines von drei Dingen.
+
+**Zwischenablage** — die Datei landet in der Zwischenablage, die Seite geht
+auf, ein Strg+V im Browser genügt. Das ist der Weg für alles, was gar keine
+Schnittstelle anbietet: Squoosh, die TinyPNG-Seite, remove.bg. Kein Schlüssel,
+kein Endpunkt, funktioniert auch bei Werkzeugen, die nie damit gerechnet
+haben. Bei einer PNG liegt zusätzlich das Bild selbst in der Ablage, damit
+auch Seiten zufrieden sind, die ein Bild statt einer Datei erwarten.
+
+**Hochladen** — für Werkzeuge mit echtem Endpunkt. Die Datei geht per
+`multipart/form-data` (Feldname einstellbar) oder pur als Rumpf hinaus,
+Kopfzeilen für einen Schlüssel lassen sich mitgeben. Was zurückkommt, wird
+wahlweise neben der Originaldatei gespeichert (`bild.png` → `bild.min.png`;
+das Original wird **nie** überschrieben), im Browser geöffnet, oder nur
+gemeldet. Die Ergebnisadresse darf im `Location`-Kopf oder in einem JSON-Feld
+wie `output.url` stehen.
+
+**Adresse öffnen** — baut die Adresse aus Platzhaltern und öffnet sie, ohne
+etwas zu übertragen. `{name}`, `{stem}`, `{ext}`, `{path}`, `{dir}` und
+`{fileurl}`, alle korrekt kodiert. Für Suche, Wiki, Ticketformular.
+
+**Vor dem ersten Hochladen wird gefragt.** Einmal je Werkzeug, mit Angabe von
+Ziel und Dateigröße; die Antwort wird gemerkt. Unverschlüsseltes `http://`
+lehnt das Programm ab, solange es nicht für diesen Favoriten ausdrücklich
+erlaubt wurde — eine Datei im Klartext durchs Netz zu schicken soll eine
+Entscheidung sein, keine Voreinstellung. Für die Übertragung ist WinHTTP
+zuständig, also der Client von Windows selbst: mit dem Systemzertifikatspeicher
+und den Proxy-Einstellungen, die ohnehin gelten.
 
 ---
 
@@ -107,6 +162,11 @@ ctxmenu restore "<verzeichnis>"          Sicherung zurückspielen
 ctxmenu create --category directory --name "Mit Editor öffnen"
                --command "\"C:\Windows\notepad.exe\" \"%1\""
 ctxmenu created                          eigene Einträge auflisten
+ctxmenu favourites                       Favoriten auflisten
+ctxmenu favourite add --name "PNG verkleinern"
+        --url https://squoosh.app --mode clipboard
+ctxmenu favourite place <kennung> --ext .png
+ctxmenu favourite run <kennung> <datei>  ausführen wie ein Klick
 ctxmenu --help                           die vollständige Liste
 ```
 
@@ -123,6 +183,7 @@ denn ein Eintrag, der nichts tut, sieht aus wie ein Eintrag, der geht.
     manifest.json      was gesichert wurde, wann, und was fehlte
     01_….reg           eine Datei je Schlüssel, von reg.exe geschrieben
 %LOCALAPPDATA%\ctxmenu\entries.json     selbst angelegte Einträge
+%LOCALAPPDATA%\ctxmenu\favourites.json  der Werkzeugkasten
 %LOCALAPPDATA%\ctxmenu\settings.json    Sprache und Darstellung
 ```
 
