@@ -1,0 +1,24 @@
+[package]
+name = "ctxmenu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows Context Menu Manager"
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+windows.workspace = true
+windows-registry.workspace = true
+windows-result.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+rustc-hash.workspace = true
+
+[build-dependencies]
+winresource = "0.1.31"

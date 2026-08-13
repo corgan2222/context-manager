@@ -1,0 +1,13 @@
+# Build-Artefakte
+/target
+*.pdb
+
+# Laufzeitdaten des Werkzeugs
+/backups
+
+# Enthält gültige API-Schlüssel (Kimi, DeepSeek, xAI) im Klartext.
+# Darf niemals committet werden, auch nicht in einem privaten Repo.
+.mcp.json
+
+# Claude Code, lokal
+.claude/settings.local.json
