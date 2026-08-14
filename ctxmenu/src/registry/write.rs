@@ -25,7 +25,7 @@ pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
         );
     }
 
-    paths::root_key(target.scope)
+    paths::root_key(target.scope())
         .remove_tree(target.key_path())
         .with_context(|| {
             format!(
@@ -39,7 +39,7 @@ pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
 
 /// Does this key currently exist?
 pub fn exists(target: &RegTarget) -> bool {
-    paths::root_key(target.scope)
+    paths::root_key(target.scope())
         .open(target.key_path())
         .is_ok()
 }
@@ -51,7 +51,7 @@ pub fn exists(target: &RegTarget) -> bool {
 /// belongs to TrustedInstaller, while `Directory\shell\find` in the same hive
 /// and category is writable.
 pub fn is_writable(target: &RegTarget) -> bool {
-    paths::root_key(target.scope)
+    paths::root_key(target.scope())
         .options()
         .read()
         .write()
@@ -67,7 +67,7 @@ pub fn is_writable(target: &RegTarget) -> bool {
 pub fn set_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result<()> {
     require_backup(target, token)?;
 
-    paths::root_key(target.scope)
+    paths::root_key(target.scope())
         .options()
         .read()
         .write()
@@ -85,7 +85,7 @@ pub fn set_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result<(
 pub fn clear_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result<()> {
     require_backup(target, token)?;
 
-    let key = paths::root_key(target.scope)
+    let key = paths::root_key(target.scope())
         .options()
         .read()
         .write()
@@ -122,7 +122,7 @@ pub fn set_position(target: &RegTarget, value: Option<&str>, token: &BackupToken
     match value {
         Some(value) => {
             require_backup(target, token)?;
-            paths::root_key(target.scope)
+            paths::root_key(target.scope())
                 .options()
                 .read()
                 .write()
@@ -242,14 +242,15 @@ mod tests {
         // Its own throwaway class rather than `Directory\shell`: the scanner
         // tests enumerate that key in parallel, and a test should not make
         // another test's enumeration race.
-        let covered = RegTarget {
-            scope: Scope::User,
-            relative: r"ctxmenu_selftest_write\shell\token_a".into(),
+        let target = |name: &str| {
+            RegTarget::below_classes(
+                Scope::User,
+                &format!(r"ctxmenu_selftest_write\shell\{name}"),
+            )
+            .expect("a test path names an entry")
         };
-        let other = RegTarget {
-            scope: Scope::User,
-            relative: r"ctxmenu_selftest_write\shell\token_b".into(),
-        };
+        let covered = target("token_a");
+        let other = target("token_b");
 
         // Create only the first key so the export succeeds.
         paths::root_key(Scope::User)

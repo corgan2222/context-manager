@@ -28,9 +28,9 @@ impl Fixture {
         let class = format!("ctxmenu_selftest_plan_{class}");
         let targets: Vec<RegTarget> = names
             .iter()
-            .map(|name| RegTarget {
-                scope: Scope::User,
-                relative: format!(r"{class}\shell\{name}"),
+            .map(|name| {
+                RegTarget::below_classes(Scope::User, &format!(r"{class}\shell\{name}"))
+                    .expect("a fixture path names an entry")
             })
             .collect();
 
@@ -53,7 +53,7 @@ impl Fixture {
                     target: target.clone(),
                     action: action.clone(),
                     clsid: None,
-                    display_name: target.relative.clone(),
+                    display_name: target.relative().to_string(),
                 })
                 .collect(),
         )
@@ -197,10 +197,11 @@ fn a_failing_step_does_not_stop_the_others() {
     plan.operations.insert(
         2,
         Operation {
-            target: RegTarget {
-                scope: Scope::User,
-                relative: format!(r"{}\shell\gibt_es_nicht", fixture.class),
-            },
+            target: RegTarget::below_classes(
+                Scope::User,
+                &format!(r"{}\shell\gibt_es_nicht", fixture.class),
+            )
+            .expect("a fixture path names an entry"),
             action: Action::Hide,
             clsid: None,
             display_name: "fehlt".into(),

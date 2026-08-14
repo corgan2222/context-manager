@@ -206,11 +206,41 @@ pub fn display_path(scope: Scope, relative: &str) -> String {
 /// `CommandStore`, anything outside `…\Classes`, or a container key such as
 /// `Directory\shell` itself — cannot be expressed, so they need no separate
 /// check further down.
+///
+/// That claim used to be false, and the fields being `pub` was why: anything
+/// could assemble the struct and skip every check the constructors make. They
+/// are private now, and the three ways in — [`parse`](Self::parse),
+/// [`below_classes`](Self::below_classes) and deserialisation — all run the
+/// same validation.
+///
+/// **Deserialisation matters most.** A plan travels to the elevated half of
+/// this program as JSON in a temp file, and that half runs as administrator.
+/// `try_from` means a hand-edited job file cannot name a path that the
+/// unelevated side would have refused.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "UncheckedTarget")]
 pub struct RegTarget {
-    pub scope: Scope,
+    scope: Scope,
     /// Path below the classes root, e.g. `Directory\shell\cmd`.
-    pub relative: String,
+    relative: String,
+}
+
+/// The shape `RegTarget` has on disk, before it is checked.
+///
+/// Exists only so `serde` has something to deserialise into that is allowed to
+/// be invalid; the `TryFrom` below is where it becomes a `RegTarget`.
+#[derive(serde::Deserialize)]
+struct UncheckedTarget {
+    scope: Scope,
+    relative: String,
+}
+
+impl TryFrom<UncheckedTarget> for RegTarget {
+    type Error = TargetError;
+
+    fn try_from(raw: UncheckedTarget) -> Result<Self, Self::Error> {
+        Self::below_classes(raw.scope, &raw.relative)
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -255,12 +285,48 @@ impl RegTarget {
             })
             .ok_or_else(|| TargetError::NotAClassesPath(full.to_string()))?;
 
+        Self::below_classes(scope, &relative).map_err(|error| match error {
+            // Report the path the caller passed in, not the tail of it.
+            TargetError::ContainerKey(_) => TargetError::ContainerKey(full.to_string()),
+            other => other,
+        })
+    }
+
+    /// Builds a target from a scope and a path below the classes root.
+    ///
+    /// The other way in, for callers that never had a full path to begin with
+    /// — the editor knows the category and the key name, and composing a
+    /// string only to parse it back would be a detour with a chance of error.
+    ///
+    /// Runs exactly the checks `parse` runs, because they are the same checks:
+    /// an empty path names the classes root itself, and a path ending in a
+    /// container key names a collection rather than an entry. Both would turn
+    /// a single delete into a sweep.
+    pub fn below_classes(scope: Scope, relative: &str) -> Result<Self, TargetError> {
+        let relative = relative.trim().trim_matches('\\').to_string();
+        if relative.is_empty() {
+            return Err(TargetError::NotAClassesPath(format!(
+                "{}\\{}",
+                scope.hive(),
+                scope.classes_path()
+            )));
+        }
+
         let last = relative.rsplit('\\').next().unwrap_or_default();
         if CONTAINER_KEYS.contains(&last.to_lowercase().as_str()) {
-            return Err(TargetError::ContainerKey(full.to_string()));
+            return Err(TargetError::ContainerKey(relative));
         }
 
         Ok(Self { scope, relative })
+    }
+
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// Path below the classes root.
+    pub fn relative(&self) -> &str {
+        &self.relative
     }
 
     /// Path in `reg.exe` notation.
@@ -319,6 +385,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_job_file_cannot_smuggle_a_path_past_the_checks() {
+        // The load-bearing one. A plan travels to the elevated half of this
+        // program as JSON in a temp file, and that half runs as administrator.
+        // Before `try_from`, hand-editing that file was enough to name a
+        // container key — and have it deleted with full rights.
+        let sweep = r#"{"scope":"User","relative":"Directory\\shell"}"#;
+        let error = serde_json::from_str::<RegTarget>(sweep)
+            .expect_err("a container key must not deserialise");
+        assert!(
+            error.to_string().contains("Sammelschlüssel"),
+            "unexpected error: {error}"
+        );
+
+        assert!(
+            serde_json::from_str::<RegTarget>(r#"{"scope":"User","relative":""}"#).is_err(),
+            "the classes root itself must not deserialise"
+        );
+
+        // What a legitimate job file carries still goes through.
+        let fine: RegTarget =
+            serde_json::from_str(r#"{"scope":"User","relative":"Directory\\shell\\cmd"}"#)
+                .expect("an ordinary entry must survive the round trip");
+        assert_eq!(fine.relative(), r"Directory\shell\cmd");
+    }
+
+    #[test]
+    fn a_target_survives_its_own_serialisation() {
+        // The elevation hand-off depends on this: what the parent writes has
+        // to be what the child reads.
+        let original = RegTarget::below_classes(Scope::Machine, r"Directory\shell\cmd")
+            .expect("names an entry");
+        let json = serde_json::to_string(&original).expect("serialises");
+        let back: RegTarget = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(original, back);
+    }
+
+    #[test]
+    fn the_checking_constructor_refuses_what_parse_refuses() {
+        // Two ways in, one set of rules. They used to be one way in and one
+        // way around.
+        for tail in [
+            "shell",
+            "SHELL",
+            "command",
+            "shellex",
+            "ContextMenuHandlers",
+        ] {
+            let relative = format!(r"Directory\{tail}");
+            assert!(
+                matches!(
+                    RegTarget::below_classes(Scope::User, &relative),
+                    Err(TargetError::ContainerKey(_))
+                ),
+                "{relative} should be refused as a container"
+            );
+        }
+
+        assert!(RegTarget::below_classes(Scope::User, "  ").is_err());
+        assert!(RegTarget::below_classes(Scope::User, "\\").is_err());
+
+        // A nested child is a single entry and stays allowed: that is the one
+        // thing standing between here and editing submenu children.
+        assert!(RegTarget::below_classes(Scope::User, r"Directory\shell\a\shell\b").is_ok());
     }
 
     #[test]

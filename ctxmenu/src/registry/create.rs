@@ -165,11 +165,13 @@ impl NewEntry {
     /// Where this entry will live.
     pub fn target(&self) -> Result<RegTarget> {
         let relative = category_relative(&self.category)?;
-        Ok(RegTarget {
-            // Always the user's own hive.
-            scope: Scope::User,
-            relative: format!(r"{relative}\{}", self.key_name.trim()),
-        })
+        // Always the user's own hive. Through the checking constructor, so a
+        // key name of "shell" — or of nothing at all — is refused here rather
+        // than creating a key that later swallows a delete of its siblings.
+        Ok(RegTarget::below_classes(
+            Scope::User,
+            &format!(r"{relative}\{}", self.key_name.trim()),
+        )?)
     }
 }
 
@@ -438,11 +440,11 @@ mod tests {
             e.key_name = "ctxmenu_x".into();
             let target = e.target().expect("base categories are creatable");
             assert_eq!(
-                target.scope,
+                target.scope(),
                 Scope::User,
                 "an entry must never be written machine-wide"
             );
-            assert!(target.relative.ends_with(r"\ctxmenu_x"));
+            assert!(target.relative().ends_with(r"\ctxmenu_x"));
         }
     }
 
@@ -453,7 +455,7 @@ mod tests {
         let mut e = entry(Category::ExtAssoc(".PNG".into()), "x");
         e.key_name = "ctxmenu_x".into();
         assert_eq!(
-            e.target().expect("creatable").relative,
+            e.target().expect("creatable").relative(),
             r"SystemFileAssociations\.png\shell\ctxmenu_x",
             "the extension is normalised to the form the registry keeps"
         );
@@ -462,7 +464,7 @@ mod tests {
         let mut e = entry(Category::PerceivedType("image".into()), "x");
         e.key_name = "ctxmenu_x".into();
         assert_eq!(
-            e.target().expect("creatable").relative,
+            e.target().expect("creatable").relative(),
             r"SystemFileAssociations\image\shell\ctxmenu_x"
         );
 
@@ -472,7 +474,7 @@ mod tests {
         assert!(
             e.target()
                 .expect("creatable")
-                .relative
+                .relative()
                 .starts_with(r"SystemFileAssociations\.jpg\")
         );
     }

@@ -50,10 +50,8 @@ struct Fixture {
 
 impl Fixture {
     fn create(name: &str) -> Self {
-        let target = RegTarget {
-            scope: Scope::User,
-            relative: format!(r"Directory\shell\{name}"),
-        };
+        let target = RegTarget::below_classes(Scope::User, &format!(r"Directory\shell\{name}"))
+            .expect("a fixture path names an entry");
 
         let key = CURRENT_USER
             .create(target.key_path())
@@ -262,10 +260,11 @@ fn exporting_a_missing_key_is_reported_rather_than_silently_succeeding() {
     // creating and removing one.
     let _guard = serialized();
 
-    let target = RegTarget {
-        scope: Scope::User,
-        relative: r"Directory\shell\ctxmenu selftest does not exist".into(),
-    };
+    let target = RegTarget::below_classes(
+        Scope::User,
+        r"Directory\shell\ctxmenu selftest does not exist",
+    )
+    .expect("a fixture path names an entry");
 
     // Nothing exportable at all must fail loudly: a token handed out here
     // would authorise a delete with no way back.

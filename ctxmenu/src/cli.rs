@@ -619,7 +619,7 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     let plan = Plan::new(
         action.label(),
         vec![Operation {
-            display_name: target.relative.clone(),
+            display_name: target.relative().to_string(),
             target: target.clone(),
             action,
             clsid: None,

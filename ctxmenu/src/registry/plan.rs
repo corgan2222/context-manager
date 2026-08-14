@@ -156,7 +156,7 @@ impl Plan {
             .partition(Operation::needs_elevation);
 
         let mut direct = direct;
-        direct.sort_by_key(|o| match o.target.scope {
+        direct.sort_by_key(|o| match o.target.scope() {
             Scope::User => 0,
             Scope::Machine => 1,
             Scope::Machine32 => 2,
@@ -277,10 +277,7 @@ mod tests {
 
     fn operation(relative: &str, scope: Scope, action: Action) -> Operation {
         Operation {
-            target: RegTarget {
-                scope,
-                relative: relative.into(),
-            },
+            target: RegTarget::below_classes(scope, relative).expect("a test path names an entry"),
             action,
             clsid: None,
             display_name: relative.into(),
@@ -346,7 +343,7 @@ mod tests {
         );
         let (direct, _) = plan.partition();
 
-        let scopes: Vec<Scope> = direct.operations.iter().map(|o| o.target.scope).collect();
+        let scopes: Vec<Scope> = direct.operations.iter().map(|o| o.target.scope()).collect();
         for pair in scopes.windows(2) {
             assert!(pair[0] <= pair[1], "HKCU must come first, got {scopes:?}");
         }

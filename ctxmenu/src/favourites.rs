@@ -643,7 +643,7 @@ mod tests {
 
         // And it must land where that category lives.
         assert_eq!(
-            entry.target().expect("creatable").relative,
+            entry.target().expect("creatable").relative(),
             r"SystemFileAssociations\.txt\shell\ctxmenu_editor"
         );
     }
