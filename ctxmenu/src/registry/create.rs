@@ -98,6 +98,12 @@ pub enum Fault {
     UnusualPosition(String),
     /// A submenu carries no command of its own; the value would be dropped.
     CommandBesideSubmenu,
+    /// The category cannot hold an entry of one's own — a ProgID, the
+    /// CommandStore, or a file type field that is still empty.
+    CategoryNotCreatable,
+    /// Everything else [`NewEntry::target`] refuses, `shell` as a key name
+    /// being the one that is actually reachable from the form.
+    UnusableKeyName,
     /// Numbers are 1-based: they name a row of the form, not an index.
     ChildMissingDisplayName(usize),
     ChildMissingCommand(usize),
@@ -135,6 +141,12 @@ impl Fault {
                  a submenu runs nothing itself; the command will not be written."
                     .into()
             }
+            Fault::CategoryNotCreatable => "Hier kann kein eigener Eintrag angelegt werden. / \
+                 no entry of one's own can be created here."
+                .into(),
+            Fault::UnusableKeyName => "Dieser Schlüsselname ist hier nicht erlaubt. / \
+                 that key name is not allowed here."
+                .into(),
             Fault::ChildMissingDisplayName(n) => {
                 format!("Untereintrag {n} hat keinen Anzeigenamen / submenu entry {n} has no name")
             }
@@ -225,6 +237,17 @@ pub fn check(entry: &NewEntry) -> Vec<Problem> {
         || entry.children.iter().any(|c| c.display_name.contains('&'))
     {
         problems.push(Problem::Warning(Fault::AmpersandInDisplayName));
+    }
+
+    // Whatever `target()` will refuse, said in the same voice as everything
+    // above. Until 2026-08-15 the editor had to print that error verbatim
+    // instead, and `paths` writes in both languages at once because it also
+    // serves the console — so the form showed a sentence half of which nobody
+    // had asked for, usually right above the plain reason for it.
+    if !category_is_creatable(&entry.category) {
+        problems.push(Problem::Error(Fault::CategoryNotCreatable));
+    } else if entry.target().is_err() && !problems.iter().any(Problem::is_error) {
+        problems.push(Problem::Error(Fault::UnusableKeyName));
     }
 
     if let Some(position) = &entry.position
@@ -788,6 +811,54 @@ mod tests {
             after.len() < before + 1,
             "forgetting must remove exactly the one entry"
         );
+    }
+
+    #[test]
+    fn what_the_target_refuses_is_said_in_words_here() {
+        // The editor shows this list and nothing else now, so everything
+        // `target()` would refuse has to turn up in it — otherwise the button
+        // is dead with no reason on screen.
+        let e = entry(Category::ExtAssoc(String::new()), "x");
+        assert!(e.target().is_err(), "no extension typed yet");
+        assert!(
+            check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::CategoryNotCreatable))
+        );
+
+        // `shell` passes every check above — not empty, no backslash — and is
+        // still refused, because that key holds the entries rather than being
+        // one. It is the one way to reach this case from the form.
+        let mut e = entry(Category::Directory, "x");
+        e.key_name = "shell".into();
+        assert!(e.target().is_err());
+        assert!(
+            check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::UnusableKeyName))
+        );
+
+        // The everyday case keeps its plain wording: an empty key name is
+        // "key name is missing", not "that key name is not allowed".
+        let mut e = entry(Category::Directory, "x");
+        e.key_name = String::new();
+        let problems = check(&e);
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::MissingKeyName))
+        );
+        assert!(
+            !problems
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::UnusableKeyName)),
+            "one cause, one line: {problems:?}"
+        );
+
+        // A complete entry stays quiet.
+        let mut e = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        e.key_name = "ctxmenu_ok".into();
+        assert!(check(&e).is_empty(), "{:?}", check(&e));
     }
 
     #[test]

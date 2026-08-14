@@ -260,26 +260,26 @@ impl Favourite {
         )
     }
 
-    /// Complaints about this favourite, in both languages, empty when it is
-    /// usable.
-    pub fn problems(&self) -> Vec<String> {
+    /// Complaints about this favourite, empty when it is usable.
+    ///
+    /// Causes rather than sentences, for the same reason as
+    /// [`crate::registry::create::check`]: this list feeds the window, which
+    /// has a language setting, and the console, which has none.
+    pub fn problems(&self) -> Vec<Fault> {
         let mut problems = Vec::new();
 
         if self.name.trim().is_empty() {
-            problems.push("Name fehlt / name is missing".into());
+            problems.push(Fault::MissingName);
         }
 
         match &self.tool {
             Tool::Program { path, .. } => {
                 if path.as_os_str().is_empty() {
-                    problems.push("Pfad fehlt / path is missing".into());
+                    problems.push(Fault::MissingPath);
                 } else if !path.is_file() {
                     // A warning in effect: a program on a removable drive is
                     // legitimate, so this does not refuse anything.
-                    problems.push(format!(
-                        "Datei nicht gefunden / file not found: {}",
-                        path.display()
-                    ));
+                    problems.push(Fault::FileNotFound(path.display().to_string()));
                 }
             }
             Tool::Web(web) => {
@@ -287,39 +287,77 @@ impl Favourite {
                     return problems;
                 };
                 if url.trim().is_empty() {
-                    problems.push("Adresse fehlt / address is missing".into());
+                    problems.push(Fault::MissingAddress);
                 } else if !url.starts_with("https://") {
                     if url.starts_with("http://") {
                         if !web.allow_insecure {
-                            problems.push(
-                                "Unverschlüsselte Adresse: die Datei ginge im Klartext durchs Netz. \
-                                 Nur mit ausdrücklicher Erlaubnis. / unencrypted address; the file \
-                                 would travel in the clear."
-                                    .into(),
-                            );
+                            problems.push(Fault::InsecureAddress);
                         }
                     } else {
-                        problems.push(
-                            "Adresse muss mit https:// beginnen / address must start with https://"
-                                .into(),
-                        );
+                        problems.push(Fault::NotHttps);
                     }
                 }
 
                 if let WebMode::Open { url } = &web.mode
                     && !url.contains('{')
                 {
-                    problems.push(
-                        "Ohne Platzhalter wird die Datei gar nicht erwähnt — {name}, {stem}, \
-                         {path} oder {ext} einsetzen. / without a placeholder the file is never \
-                         mentioned."
-                            .into(),
-                    );
+                    problems.push(Fault::NoPlaceholder);
                 }
             }
         }
 
         problems
+    }
+}
+
+/// What is wrong with a favourite, without saying it in any particular
+/// language.
+///
+/// The counterpart to [`crate::registry::create::Fault`], and here for the
+/// same reason: the window formulates in the language it is set to, the
+/// console prints both halves because it has no setting to follow.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fault {
+    MissingName,
+    MissingPath,
+    /// The program is not where the favourite says it is. Carries the path,
+    /// because "file not found" without the name it looked for is no help.
+    FileNotFound(String),
+    MissingAddress,
+    /// `http://` without the explicit permission that makes it acceptable.
+    InsecureAddress,
+    /// Neither `https://` nor `http://` — not an address at all.
+    NotHttps,
+    /// An "open address" tool whose URL never mentions the file.
+    NoPlaceholder,
+}
+
+impl Fault {
+    /// Both languages at once, for the console and the log.
+    pub fn bilingual(&self) -> String {
+        match self {
+            Fault::MissingName => "Name fehlt / name is missing".into(),
+            Fault::MissingPath => "Pfad fehlt / path is missing".into(),
+            Fault::FileNotFound(path) => {
+                format!("Datei nicht gefunden / file not found: {path}")
+            }
+            Fault::MissingAddress => "Adresse fehlt / address is missing".into(),
+            Fault::InsecureAddress => {
+                "Unverschlüsselte Adresse: die Datei ginge im Klartext durchs Netz. \
+                 Nur mit ausdrücklicher Erlaubnis. / unencrypted address; the file \
+                 would travel in the clear."
+                    .into()
+            }
+            Fault::NotHttps => {
+                "Adresse muss mit https:// beginnen / address must start with https://".into()
+            }
+            Fault::NoPlaceholder => {
+                "Ohne Platzhalter wird die Datei gar nicht erwähnt — {name}, {stem}, \
+                 {path} oder {ext} einsetzen. / without a placeholder the file is never \
+                 mentioned."
+                    .into()
+            }
+        }
     }
 }
 
@@ -561,7 +599,7 @@ mod tests {
         }));
 
         assert!(
-            favourite.problems().iter().any(|p| p.contains("Klartext")),
+            favourite.problems().contains(&Fault::InsecureAddress),
             "http must be objected to: {:?}",
             favourite.problems()
         );
@@ -583,12 +621,7 @@ mod tests {
         let favourite = web(WebMode::Open {
             url: "https://wiki.local/search".into(),
         });
-        assert!(
-            favourite
-                .problems()
-                .iter()
-                .any(|p| p.contains("Platzhalter"))
-        );
+        assert!(favourite.problems().contains(&Fault::NoPlaceholder));
 
         let favourite = web(WebMode::Open {
             url: "https://wiki.local/search?q={stem}".into(),

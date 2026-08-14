@@ -975,7 +975,8 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
 
         FavouriteCommand::Add(favourite) => {
             for problem in favourite.problems() {
-                crate::errln!("Hinweis / note: {problem}");
+                // The console has no language setting, so it gets both halves.
+                crate::errln!("Hinweis / note: {}", problem.bilingual());
             }
             let id = favourites::add(*favourite)?;
             crate::outln!("Angelegt / created: {id}");

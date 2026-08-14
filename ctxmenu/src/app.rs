@@ -2097,7 +2097,7 @@ impl App {
             ui.separator();
             let problems = draft.problems();
             for problem in &problems {
-                ui.colored_label(ui.visuals().warn_fg_color, problem);
+                ui.colored_label(ui.visuals().warn_fg_color, fav_fault_text(problem, self.tr));
             }
 
             ui.add_space(8.0);
@@ -2196,13 +2196,11 @@ impl App {
                 ui.add_space(6.0);
                 let exe = std::env::current_exe().unwrap_or_default();
                 let entry = favourite.entry(category.clone(), &exe);
-                match entry.target() {
-                    Ok(target) => {
-                        ui.small(format!("\u{2192} {}", target.full_path()));
-                    }
-                    Err(error) => {
-                        ui.colored_label(ui.visuals().error_fg_color, format!("{error:#}"));
-                    }
+                // Same as the editor: the path when there is one, and
+                // otherwise the reason in the list below rather than the raw,
+                // bilingual error from `paths`.
+                if let Ok(target) = entry.target() {
+                    ui.small(format!("\u{2192} {}", target.full_path()));
                 }
                 ui.small(&entry.command);
 
@@ -2791,18 +2789,14 @@ impl App {
                             });
 
                         ui.add_space(6.0);
-                        // Coloured, not merely small. Since a file type can be
-                        // chosen freely, "no extension typed yet" is one click
-                        // away — and a grey line of prose under a form is not
-                        // where anyone looks for the reason a button is dead.
+                        // Where it will land, once that is decidable. When it
+                        // is not, the reason stands in the list below in one
+                        // language — printing the error from `paths` here
+                        // instead put a bilingual sentence on screen, usually
+                        // directly above the plain reason for it.
                         let target = entry.target();
-                        match &target {
-                            Ok(target) => {
-                                ui.small(format!("\u{2192} {}", target.full_path()));
-                            }
-                            Err(error) => {
-                                ui.colored_label(ui.visuals().error_fg_color, format!("{error:#}"));
-                            }
+                        if let Ok(target) = &target {
+                            ui.small(format!("\u{2192} {}", target.full_path()));
                         }
 
                         // Live, because a warning after the fact is no use: the %1
@@ -2810,8 +2804,9 @@ impl App {
                         let problems = create::check(&entry);
                         // `target` too: an unusable category has to disable the
                         // button, or the dialog offers to do something it will
-                        // then refuse. The place dialog has always checked
-                        // both; this one only checked half.
+                        // then refuse. Since `check` reports that case itself,
+                        // this is now belt and braces rather than the only
+                        // guard — and it stays for exactly that reason.
                         let blocked = problems.iter().any(Problem::is_error) || target.is_err();
                         if !problems.is_empty() {
                             ui.add_space(4.0);
@@ -4098,6 +4093,27 @@ fn fault_text(fault: &Fault, tr: &'static Strings) -> String {
         Fault::ChildMissingDisplayName(n) => tr.fmt_fault_child_name.replace("{}", &n.to_string()),
         Fault::ChildMissingCommand(n) => tr.fmt_fault_child_command.replace("{}", &n.to_string()),
         Fault::DuplicateChildKeyName(name) => tr.fmt_fault_child_duplicate.replace("{}", name),
+        Fault::CategoryNotCreatable => tr.fault_category.to_string(),
+        Fault::UnusableKeyName => tr.fault_key_name_refused.to_string(),
+    }
+}
+
+/// What is wrong with a favourite, in the language on screen.
+///
+/// The counterpart to [`fault_text`]. Until 2026-08-15 this dialog showed the
+/// bilingual string straight from `favourites`, so every reader read half a
+/// message they did not need — the same fault that was fixed for the entry
+/// editor and the same cure.
+fn fav_fault_text(fault: &favourites::Fault, tr: &'static Strings) -> String {
+    use favourites::Fault;
+    match fault {
+        Fault::MissingName => tr.fault_fav_name.to_string(),
+        Fault::MissingPath => tr.fault_fav_path.to_string(),
+        Fault::FileNotFound(path) => tr.fmt_fault_fav_missing_file.replace("{}", path),
+        Fault::MissingAddress => tr.fault_fav_address.to_string(),
+        Fault::InsecureAddress => tr.fault_fav_insecure.to_string(),
+        Fault::NotHttps => tr.fault_fav_not_https.to_string(),
+        Fault::NoPlaceholder => tr.fault_fav_placeholder.to_string(),
     }
 }
 
@@ -4489,6 +4505,64 @@ mod tests {
                 entry.target().is_ok(),
                 "{category:?} maps to {chosen:?}, which cannot be written"
             );
+        }
+    }
+
+    #[test]
+    fn nothing_the_window_says_is_said_twice() {
+        // The window knows which language it is set to; a message that carries
+        // both halves makes every reader read one they did not ask for. The
+        // core keeps its bilingual strings for the console, which has no
+        // setting to follow — that split is the entire point of the two
+        // `Fault` types, and this test is what keeps them apart.
+        let fav = [
+            favourites::Fault::MissingName,
+            favourites::Fault::MissingPath,
+            favourites::Fault::FileNotFound(r"C:\Programme\tool.exe".into()),
+            favourites::Fault::MissingAddress,
+            favourites::Fault::InsecureAddress,
+            favourites::Fault::NotHttps,
+            favourites::Fault::NoPlaceholder,
+        ];
+        let entry = [
+            Fault::MissingKeyName,
+            Fault::BackslashInKeyName,
+            Fault::MissingDisplayName,
+            Fault::MissingCommand,
+            Fault::PercentOneInBackground,
+            Fault::AmpersandInDisplayName,
+            Fault::UnusualPosition("Last".into()),
+            Fault::CommandBesideSubmenu,
+            Fault::ChildMissingDisplayName(2),
+            Fault::ChildMissingCommand(2),
+            Fault::DuplicateChildKeyName("01_x".into()),
+            Fault::CategoryNotCreatable,
+            Fault::UnusableKeyName,
+        ];
+
+        for tr in [&i18n::DE, &i18n::EN] {
+            for fault in &fav {
+                let text = fav_fault_text(fault, tr);
+                assert!(!text.is_empty(), "{fault:?} has no wording");
+                assert!(!text.contains(" / "), "{fault:?} says it twice: {text}");
+            }
+            for fault in &entry {
+                let text = fault_text(fault, tr);
+                assert!(!text.is_empty(), "{fault:?} has no wording");
+                assert!(!text.contains(" / "), "{fault:?} says it twice: {text}");
+            }
+        }
+
+        // And the other direction, because the console depends on it: there,
+        // both halves have to be present.
+        for fault in &fav {
+            assert!(
+                fault.bilingual().contains(" / "),
+                "{fault:?} lost a language the console needs"
+            );
+        }
+        for fault in &entry {
+            assert!(fault.bilingual().contains(" / "), "{fault:?}");
         }
     }
 
