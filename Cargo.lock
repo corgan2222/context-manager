@@ -368,6 +368,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "raw-window-handle",
+ "read-fonts",
  "rustc-hash",
  "serde",
  "serde_json",

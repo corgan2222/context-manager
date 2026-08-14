@@ -3788,7 +3788,7 @@ fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload) {
                     .desired_width(320.0)
                     .hint_text("Basic \u{2026}"),
             );
-            if ui.small_button("\u{2715}").clicked() {
+            if ui.small_button("\u{00d7}").clicked() {
                 drop_header = Some(index);
             }
         });
@@ -3973,6 +3973,19 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
 ///
 /// The checking modules report a cause rather than a sentence — they also feed
 /// the console, which has no language setting — so the sentence is built here.
+/// Every glyph the interface draws that is not part of a translated string.
+///
+/// A list rather than a comment, because `every_glyph_the_window_draws_is_in
+/// _a_font_it_loads` checks it: a glyph no loaded font carries comes out as an
+/// empty box, and eight of those were on screen before two of them were
+/// noticed. Anyone reaching for a new symbol adds it here.
+///
+/// Test-only because the buttons carry their own literals — a list the code
+/// indexed into would be less readable at every call site than the character
+/// itself, and it is the *checking* that has to be complete, not the plumbing.
+#[cfg(test)]
+const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}";
+
 /// A fresh, empty row of the submenu list.
 fn empty_child() -> NewChild {
     NewChild {
@@ -4049,7 +4062,7 @@ fn children_editor(
             // The last one stays: an empty submenu is not a state this form
             // can write, and "single entry" above is the way back.
             if ui
-                .add_enabled(count > 1, egui::Button::new("\u{2715}"))
+                .add_enabled(count > 1, egui::Button::new("\u{00d7}"))
                 .on_hover_text(tr.tip_child_remove)
                 .clicked()
             {
@@ -4272,35 +4285,61 @@ fn field(ui: &mut Ui, label: &str, value: &str) {
     ui.add(egui::Label::new(value).selectable(true).wrap());
 }
 
-/// Segoe UI, so the window does not look foreign on Windows.
+/// Segoe UI for the text, Segoe UI Symbol for everything that is not a letter.
 ///
 /// egui ships its own font, which is immediately recognisable and wrong for a
 /// system tool. A failed read leaves the default font rather than panicking
 /// (ToDo 9.3).
+///
+/// The second file is not decoration. Measured on 2026-08-15 against every
+/// font this application loads — Segoe UI plus the three egui never removes —
+/// **eight of the glyphs the interface draws are in none of them**: `↳ ⇧ ▴ ▸
+/// ▾ ✓ ✗ ✕`. Each one was an empty box on screen, and only two of them were
+/// ever noticed. `seguisym.ttf` carries all eight, ships with Windows since
+/// Vista, and costs 2.4 MB of address space rather than binary size.
 fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut family = Vec::new();
+
     // Segoe UI Variable only exists from Windows 11 on, so the older file is
     // tried first — it is present everywhere.
-    for candidate in [
-        r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\SegUIVar.ttf",
+    for (name, candidate) in [
+        ("segoe", r"C:\Windows\Fonts\segoeui.ttf"),
+        ("segoe", r"C:\Windows\Fonts\SegUIVar.ttf"),
+        ("segoe-symbol", r"C:\Windows\Fonts\seguisym.ttf"),
     ] {
+        // The text face is settled by the first file that reads; the symbol
+        // face is a separate name and joins it either way.
+        if family.iter().any(|had| had == name) {
+            continue;
+        }
         let Ok(data) = std::fs::read(candidate) else {
             continue;
         };
 
-        let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
-            "segoe".to_owned(),
+            name.to_owned(),
             std::sync::Arc::new(egui::FontData::from_owned(data)),
         );
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "segoe".to_owned());
-        ctx.set_fonts(fonts);
+        family.push(name.to_owned());
+    }
+
+    if family.is_empty() {
         return;
     }
+
+    // In front of egui's own fonts, in this order: a glyph is looked up in
+    // Segoe UI first and falls through to the symbol face only when it is not
+    // there, so ordinary text keeps the face it had.
+    let proportional = fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default();
+    for (index, name) in family.into_iter().enumerate() {
+        proportional.insert(index, name);
+    }
+
+    ctx.set_fonts(fonts);
 }
 
 /// A short rolling window of frame times.
@@ -4506,6 +4545,83 @@ mod tests {
                 "{category:?} maps to {chosen:?}, which cannot be written"
             );
         }
+    }
+
+    #[test]
+    fn every_glyph_the_window_draws_is_in_a_font_it_loads() {
+        // The failure this catches is silent: a character no loaded font
+        // carries is drawn as an empty box, and nothing in the code, the tests
+        // or the log says a word about it. Eight of them were on screen for
+        // weeks — `↳ ⇧ ▴ ▸ ▾ ✓ ✗ ✕` — and only the two on buttons were ever
+        // reported. The fonts are asked here rather than guessed at: this
+        // reads the same character-to-glyph table the renderer looks in.
+        use read_fonts::{FontRef, TableProvider};
+
+        // What `install_fonts` puts in front, plus everything egui ships and
+        // never removes. Taken from `FontDefinitions` rather than from a path,
+        // so the two lists cannot drift apart.
+        let mut faces: Vec<Vec<u8>> = egui::FontDefinitions::default()
+            .font_data
+            .values()
+            .map(|data| data.font.to_vec())
+            .collect();
+
+        let mut own = 0;
+        for path in [
+            r"C:\Windows\Fonts\segoeui.ttf",
+            r"C:\Windows\Fonts\SegUIVar.ttf",
+            r"C:\Windows\Fonts\seguisym.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                faces.push(bytes);
+                own += 1;
+            }
+        }
+        if own == 0 {
+            // Not a Windows install with the system fonts in place; a verdict
+            // from here would be about the machine, not about the code.
+            return;
+        }
+
+        let covered = |ch: char| {
+            ch.is_ascii()
+                || faces.iter().any(|bytes| {
+                    FontRef::new(bytes)
+                        .ok()
+                        .and_then(|font| font.cmap().ok())
+                        .and_then(|cmap| cmap.map_codepoint(ch))
+                        .is_some()
+                })
+        };
+
+        // The check has to be able to say no, or it says nothing at all.
+        // U+FF0B is the fullwidth plus these buttons wore until 2026-08-15,
+        // and not one loaded font has it — Segoe UI Symbol included.
+        assert!(
+            !covered('\u{ff0b}'),
+            "the font check never refuses anything, so it proves nothing"
+        );
+
+        let mut missing: Vec<String> = Vec::new();
+        for (field, de, en) in i18n::field_pairs() {
+            for text in [de, en] {
+                for ch in text.chars() {
+                    if !covered(ch) {
+                        missing.push(format!("{field}: U+{:04X} {ch}", ch as u32));
+                    }
+                }
+            }
+        }
+        for ch in UI_GLYPHS.chars() {
+            if !covered(ch) {
+                missing.push(format!("UI_GLYPHS: U+{:04X} {ch}", ch as u32));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "these would be drawn as empty boxes: {missing:#?}"
+        );
     }
 
     #[test]

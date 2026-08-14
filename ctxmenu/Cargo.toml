@@ -23,3 +23,9 @@ rustc-hash.workspace = true
 
 [build-dependencies]
 winresource = "0.1.31"
+
+[dev-dependencies]
+# Reads a font's own character-to-glyph table, which is what decides whether a
+# glyph is drawn or comes out as an empty box. Already in the tree below
+# epaint, so this adds a line rather than a download.
+read-fonts = "0.41"

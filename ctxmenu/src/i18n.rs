@@ -346,7 +346,7 @@ pub static DE: Strings = Strings {
     detail_applies_to: "Erscheint bei",
     detail_nothing_selected: "Kein Eintrag ausgewählt.",
 
-    editor_new: "\u{ff0b} Neu",
+    editor_new: "+ Neu",
     editor_title: "Eigenen Eintrag anlegen",
     editor_category: "Kategorie",
     editor_display_name: "Anzeigename",
@@ -360,7 +360,7 @@ pub static DE: Strings = Strings {
     editor_kind_single: "Einzelner Eintrag",
     editor_kind_submenu: "Untermen\u{fc}",
     editor_children: "Untereintr\u{e4}ge",
-    editor_child_add: "\u{ff0b} Untereintrag",
+    editor_child_add: "+ Untereintrag",
     editor_child_name_hint: "Anzeigename",
     editor_created_before: "Bereits mit diesem Werkzeug angelegt:",
     editor_create: "Anlegen",
@@ -577,7 +577,7 @@ pub static EN: Strings = Strings {
     detail_applies_to: "Appears on",
     detail_nothing_selected: "No entry selected.",
 
-    editor_new: "\u{ff0b} New",
+    editor_new: "+ New",
     editor_title: "Create your own entry",
     editor_category: "Category",
     editor_display_name: "Display name",
@@ -591,7 +591,7 @@ pub static EN: Strings = Strings {
     editor_kind_single: "Single entry",
     editor_kind_submenu: "Submenu",
     editor_children: "Submenu entries",
-    editor_child_add: "\u{ff0b} Entry",
+    editor_child_add: "+ Entry",
     editor_child_name_hint: "Display name",
     editor_created_before: "Already created with this tool:",
     editor_create: "Create",
@@ -728,7 +728,7 @@ pub static EN: Strings = Strings {
 /// survived in one language and was dropped in the other — which would produce
 /// a sentence missing its number.
 #[cfg(test)]
-fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
+pub(crate) fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
     macro_rules! pairs {
         ($($field:ident),* $(,)?) => {
             vec![$((stringify!($field), DE.$field, EN.$field)),*]
