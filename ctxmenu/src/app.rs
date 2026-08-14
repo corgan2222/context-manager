@@ -786,6 +786,13 @@ impl App {
                 bench.keys_sent,
                 bench.cursor_walked
             );
+            // What "New" would open on, from wherever the run ended up. A
+            // preselection that quietly falls back to the default looks
+            // exactly like one that works.
+            crate::errln!(
+                "bench: new_entry_category={}",
+                self.category_for_new().slug()
+            );
             crate::console::flush();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -857,6 +864,20 @@ impl App {
             plan,
             needs_elevation,
         });
+    }
+
+    /// The category the editor should open on.
+    fn category_for_new(&self) -> Category {
+        let focused = self
+            .focused
+            .and_then(|index| self.scan.as_ref()?.entries.get(index));
+
+        category_for_new_entry(
+            focused,
+            self.tab,
+            self.selected_ext.as_deref(),
+            self.selected_category.as_ref(),
+        )
     }
 
     /// Backs up without changing anything.
@@ -1216,10 +1237,7 @@ impl App {
                     {
                         self.dialog = Some(Dialog::Editor {
                             entry: Box::new(NewEntry {
-                                category: self
-                                    .selected_category
-                                    .clone()
-                                    .unwrap_or(Category::Directory),
+                                category: self.category_for_new(),
                                 key_name: String::new(),
                                 display_name: String::new(),
                                 command: String::new(),
@@ -1477,11 +1495,22 @@ impl App {
             });
         }
         if let Some(favourite) = place {
+            // Same rule as the editor: start where the user last was. The
+            // favourites tab has no tree of its own, so this is whatever they
+            // were looking at before coming here — which is exactly the thing
+            // they wanted this tool for.
+            let category = self.category_for_new();
             self.dialog = Some(Dialog::Place {
                 favourite: Box::new(favourite),
-                category: Category::AllFiles,
-                ext: String::new(),
-                perceived: "image".into(),
+                ext: match &category {
+                    Category::ExtAssoc(ext) | Category::ExtDirect(ext) => ext.clone(),
+                    _ => String::new(),
+                },
+                perceived: match &category {
+                    Category::PerceivedType(kind) => kind.clone(),
+                    _ => "image".into(),
+                },
+                category,
             });
         }
         if let Some(id) = remove {
@@ -1977,9 +2006,25 @@ impl App {
                             .spacing([10.0, 6.0])
                             .show(ui, |ui| {
                                 ui.label(self.tr.editor_category);
+                                // A file type the entry came in with is offered
+                                // as its own choice. Without this the picker
+                                // would show "Dateitypen" for `.png` and lose
+                                // the preselection at the first click.
+                                let chosen = (!Category::BASE.contains(&entry.category))
+                                    .then(|| entry.category.clone());
+
                                 egui::ComboBox::from_id_salt("editor-category")
-                                    .selected_text(category_label(&entry.category, self.tr))
+                                    .selected_text(category_choice_label(&entry.category, self.tr))
                                     .show_ui(ui, |ui| {
+                                        if let Some(chosen) = &chosen {
+                                            let label = category_choice_label(chosen, self.tr);
+                                            ui.selectable_value(
+                                                &mut entry.category,
+                                                chosen.clone(),
+                                                label,
+                                            );
+                                            ui.separator();
+                                        }
                                         for candidate in Category::BASE {
                                             let label = category_label(&candidate, self.tr);
                                             ui.selectable_value(
@@ -3105,6 +3150,67 @@ fn type_group_label(
     }
 }
 
+/// The category a new entry should start in.
+///
+/// In order of how specific the signal is: the row last clicked, then the
+/// selection in the tree of the tab being looked at, then the last category
+/// chosen at all. Somebody who has just picked `.png` and presses "New" means
+/// `.png`, and having to say so again in a combo box is the kind of small
+/// insult that makes a form feel stupid.
+///
+/// File type categories that cannot be written to are mapped to the one that
+/// can: a ProgID is shared by several extensions, so an entry meant "for this
+/// kind of file" belongs under the extension it was reached from.
+fn category_for_new_entry(
+    focused: Option<&ContextEntry>,
+    tab: Tab,
+    selected_ext: Option<&str>,
+    selected_category: Option<&Category>,
+) -> Category {
+    if let Some(entry) = focused
+        && let Some(category) = creatable_category(&entry.category)
+    {
+        return category;
+    }
+
+    if tab == Tab::FileTypes
+        && let Some(ext) = selected_ext
+    {
+        return Category::ExtAssoc(ext.to_string());
+    }
+
+    selected_category
+        .cloned()
+        // The most common thing anybody adds an entry for, and the one place
+        // where a guess is harmless: it is visible in the form and one click
+        // to change.
+        .unwrap_or(Category::Directory)
+}
+
+/// The nearest category an entry can actually be created in.
+fn creatable_category(category: &Category) -> Option<Category> {
+    match category {
+        Category::PerceivedType(_) | Category::ExtAssoc(_) => Some(category.clone()),
+        // Both of these name one extension and cannot be written to directly,
+        // but `SystemFileAssociations\<ext>` means the same thing to the user
+        // and is the place this program creates entries.
+        Category::ProgId { from_ext, .. } => Some(Category::ExtAssoc(from_ext.clone())),
+        Category::ExtDirect(ext) => Some(Category::ExtAssoc(ext.clone())),
+        base if Category::BASE.contains(base) => Some(base.clone()),
+        _ => None,
+    }
+}
+
+/// A category as it should read in a picker.
+///
+/// The seven base categories have names; a file type says itself.
+fn category_choice_label(category: &Category, tr: &'static Strings) -> String {
+    match category.applies_to_label() {
+        label if label.is_empty() => category_label(category, tr).to_string(),
+        label => label,
+    }
+}
+
 /// Where an entry turns up, in words rather than registry shorthand.
 ///
 /// `*` means "on every file" and `Folder` means "on folders"; neither says so
@@ -3112,12 +3218,7 @@ fn type_group_label(
 /// answer is the type itself, which is the difference that matters when one
 /// program registers itself twenty times.
 fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
-    let applies = entry.category.applies_to_label();
-    if applies.is_empty() {
-        category_label(&entry.category, tr).to_string()
-    } else {
-        applies
-    }
+    category_choice_label(&entry.category, tr)
 }
 
 /// A check result, in the language on screen.
@@ -3442,6 +3543,86 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::synthetic;
+
+    #[test]
+    fn a_new_entry_starts_where_the_user_is_looking() {
+        let mut entries = synthetic::scan_result(3).entries;
+        entries[0].category = Category::ExtAssoc(".png".into());
+        entries[1].category = Category::ProgId {
+            prog_id: "pngfile".into(),
+            from_ext: ".png".into(),
+        };
+        entries[2].category = Category::Drive;
+
+        // The clicked row wins: it is the most specific thing on screen.
+        assert_eq!(
+            category_for_new_entry(Some(&entries[0]), Tab::Categories, None, None),
+            Category::ExtAssoc(".png".into())
+        );
+
+        // A ProgID cannot be written to, and it is shared by several
+        // extensions — so the entry goes under the one it was reached from.
+        assert_eq!(
+            category_for_new_entry(Some(&entries[1]), Tab::FileTypes, None, None),
+            Category::ExtAssoc(".png".into())
+        );
+
+        // A base category comes through unchanged.
+        assert_eq!(
+            category_for_new_entry(Some(&entries[2]), Tab::Categories, None, None),
+            Category::Drive
+        );
+
+        // Nothing clicked, but an extension chosen in the tree.
+        assert_eq!(
+            category_for_new_entry(None, Tab::FileTypes, Some(".jpg"), None),
+            Category::ExtAssoc(".jpg".into())
+        );
+
+        // The extension only counts on the tab it belongs to.
+        assert_eq!(
+            category_for_new_entry(None, Tab::Categories, Some(".jpg"), Some(&Category::Folder)),
+            Category::Folder
+        );
+
+        // Nothing at all: the most common case, and one click to change.
+        assert_eq!(
+            category_for_new_entry(None, Tab::Programs, None, None),
+            Category::Directory
+        );
+    }
+
+    #[test]
+    fn every_preselected_category_can_actually_be_created() {
+        // A preselection the writer then refuses would be worse than none.
+        let exe = std::path::Path::new("x.exe");
+        let _ = exe;
+
+        for category in [
+            Category::ExtAssoc(".png".into()),
+            Category::PerceivedType("image".into()),
+            Category::ProgId {
+                prog_id: "pngfile".into(),
+                from_ext: ".png".into(),
+            },
+            Category::ExtDirect(".rar".into()),
+        ] {
+            let chosen = creatable_category(&category).expect("has a creatable equivalent");
+            let entry = crate::registry::create::NewEntry {
+                category: chosen.clone(),
+                key_name: "ctxmenu_x".into(),
+                display_name: "x".into(),
+                command: "x".into(),
+                icon: None,
+                position: None,
+                extended: false,
+            };
+            assert!(
+                entry.target().is_ok(),
+                "{category:?} maps to {chosen:?}, which cannot be written"
+            );
+        }
+    }
 
     #[test]
     fn sorting_ignores_capitalisation() {
