@@ -574,6 +574,8 @@ fn level_label(category: &Category) -> String {
         Category::ExtAssoc(e) => format!("4 SystemFileAssociations\\{e}"),
         Category::ProgId { prog_id, .. } => format!("5/7 ProgID {prog_id}"),
         Category::ExtDirect(e) => format!("6 {e}\\shell"),
+        // Not part of the chain at all: a stock, not a level.
+        Category::CommandStore => "— Verbvorrat".into(),
         other => format!("{other:?}"),
     }
 }

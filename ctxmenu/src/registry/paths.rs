@@ -16,7 +16,22 @@ pub enum SourceKind {
     ShellEx,
 }
 
-/// One place to look, relative to a scope's classes root.
+/// What a location's path is measured from.
+///
+/// Almost everything hangs off a scope's classes root, which is also the only
+/// place this tool is allowed to write. The CommandStore does not: it lives
+/// under `SOFTWARE\Microsoft\Windows\…`, and keeping that distinction in the
+/// type is what stops a read-only location from ever being handed to the
+/// delete path by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Anchor {
+    /// Below `…\Classes`.
+    Classes,
+    /// Below the hive itself, with this prefix in front of `relative`.
+    Hive(&'static str),
+}
+
+/// One place to look, with the anchor its path is measured from.
 ///
 /// `relative` is owned rather than `&'static str`: the file type chain builds
 /// its locations at runtime from the extension and its ProgIDs, and leaking a
@@ -24,9 +39,57 @@ pub enum SourceKind {
 #[derive(Debug, Clone)]
 pub struct CategorySource {
     pub category: Category,
-    /// Path below `…\Classes`, e.g. `Directory\shell`.
+    /// Path below the anchor, e.g. `Directory\shell`.
     pub relative: String,
     pub kind: SourceKind,
+    pub anchor: Anchor,
+}
+
+/// Scope and anchor together — everything a path needs besides its tail.
+///
+/// Carried through the scanner instead of a bare `Scope`, so that reading a
+/// verb out of the CommandStore builds the CommandStore's own path rather than
+/// silently claiming the entry lives under `…\Classes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Location {
+    pub scope: Scope,
+    pub anchor: Anchor,
+}
+
+impl Location {
+    pub fn classes(scope: Scope) -> Self {
+        Self {
+            scope,
+            anchor: Anchor::Classes,
+        }
+    }
+
+    /// What comes between the hive and `relative`.
+    fn base(&self) -> &str {
+        match self.anchor {
+            Anchor::Classes => self.scope.classes_path(),
+            Anchor::Hive(prefix) => prefix,
+        }
+    }
+
+    /// Path relative to the predefined key — what `Key::open` wants.
+    pub fn key_path(&self, relative: &str) -> String {
+        join(self.base(), relative)
+    }
+
+    /// Full path in `reg.exe` notation — what backup, restore and the UI want.
+    pub fn display_path(&self, relative: &str) -> String {
+        join(&join(self.scope.hive(), self.base()), relative)
+    }
+
+    /// Can anything here be changed at all?
+    ///
+    /// `false` for the CommandStore, whatever the key's own permissions say:
+    /// those verbs belong to Windows, and a machine where they happen to be
+    /// writable is not a reason to offer it (ToDo 5.5).
+    pub fn writable_at_all(&self) -> bool {
+        matches!(self.anchor, Anchor::Classes)
+    }
 }
 
 /// The base categories from ToDo section 5.1.
@@ -75,8 +138,46 @@ pub fn base_sources() -> Vec<CategorySource> {
             category: category.clone(),
             relative: (*relative).to_string(),
             kind: *kind,
+            anchor: Anchor::Classes,
         })
         .collect()
+}
+
+/// Windows' own stock of verbs, as a location to scan.
+///
+/// Not one of the base categories and never scanned per scope: the
+/// CommandStore exists once, in HKLM. The entries it holds appear in no menu
+/// by themselves — a `SubCommands` value elsewhere has to name them — which is
+/// why they are shown as their own category rather than mixed in with entries
+/// that really are on a menu.
+pub fn command_store_source() -> CategorySource {
+    CategorySource {
+        category: Category::CommandStore,
+        relative: String::new(),
+        kind: SourceKind::Shell,
+        anchor: Anchor::Hive(COMMAND_STORE),
+    }
+}
+
+/// Where the CommandStore hangs, for resolving a `SubCommands` verb list.
+pub fn command_store_location() -> Location {
+    Location {
+        scope: Scope::Machine,
+        anchor: Anchor::Hive(COMMAND_STORE),
+    }
+}
+
+/// Joins two path parts, tolerating an empty one.
+///
+/// The CommandStore is scanned at its own root, so its `relative` is empty and
+/// a plain `format!` would produce `…\CommandStore\shell\\Verb` — a path that
+/// `reg.exe` rejects and that would land in every backup manifest.
+pub fn join(head: &str, tail: &str) -> String {
+    match (head.is_empty(), tail.is_empty()) {
+        (true, _) => tail.to_string(),
+        (_, true) => head.to_string(),
+        _ => format!("{head}\\{tail}"),
+    }
 }
 
 /// The predefined key a scope hangs off.
@@ -218,6 +319,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_command_store_builds_its_own_path_not_a_classes_one() {
+        let at = command_store_location();
+        let path = at.display_path("Windows.Rotate90");
+
+        assert_eq!(
+            path,
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\CommandStore\shell\Windows.Rotate90"
+        );
+        assert!(
+            !path.contains(r"\\"),
+            "an empty source path must not double the separator: {path}"
+        );
+        assert!(
+            !path.to_lowercase().contains("classes"),
+            "the store is not below Classes: {path}"
+        );
+    }
+
+    #[test]
+    fn nothing_in_the_command_store_can_be_named_as_a_target() {
+        // The safety net behind the read-only flag: even if a path from the
+        // store reached the delete path, it cannot be turned into a target.
+        let at = command_store_location();
+        let path = at.display_path("Windows.Rotate90");
+        assert!(matches!(
+            RegTarget::parse(&path),
+            Err(TargetError::NotAClassesPath(_))
+        ));
+
+        assert!(!at.writable_at_all());
+        assert!(Location::classes(Scope::User).writable_at_all());
+    }
+
+    #[test]
+    fn joining_tolerates_an_empty_part_on_either_side() {
+        assert_eq!(join("a", "b"), r"a\b");
+        assert_eq!(join("", "b"), "b");
+        assert_eq!(join("a", ""), "a");
+        assert_eq!(join("", ""), "");
+    }
+
+    #[test]
+    fn a_classes_location_still_builds_what_it_always_did() {
+        // The refactor to `Location` must not have moved anything: these are
+        // the paths backup, restore and every manifest already contain.
+        let at = Location::classes(Scope::Machine);
+        assert_eq!(
+            at.display_path(r"Directory\shell\cmd"),
+            display_path(Scope::Machine, r"Directory\shell\cmd")
+        );
+        assert_eq!(
+            at.key_path(r"Directory\shell\cmd"),
+            key_path(Scope::Machine, r"Directory\shell\cmd")
+        );
+        assert_eq!(
+            Location::classes(Scope::Machine32).display_path("x"),
+            r"HKLM\SOFTWARE\WOW6432Node\Classes\x"
+        );
     }
 
     /// Guards the load-bearing assumption of `Scope::Machine32`.

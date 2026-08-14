@@ -12,7 +12,8 @@
 //! into one identity each — including the last one, which has a space in its
 //! path and no quotes to mark where the program name ends (ToDo 11.1).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::registry::mui;
 
@@ -272,10 +273,16 @@ fn file_stem(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Appends the executable extension the registry value left out, if any.
+/// Appends the executable extension the registry value left out, if any, and
+/// resolves a bare program name against `PATH`.
 ///
 /// Windows resolves `C:\tools\t` to `C:\tools\t.exe`; without doing the same,
-/// two spellings of one program would become two groups.
+/// two spellings of one program would become two groups. The `PATH` step is
+/// the same argument one level up: the registry is allowed to say `attrib`
+/// where it means `C:\Windows\System32\attrib.exe`, and a name without a
+/// directory is a name the icon fallback cannot extract anything from
+/// (measured on this machine: eight commands, among them `attrib` and
+/// `compact`, had no icon for exactly this reason).
 fn resolve_extension(path: &str) -> String {
     let trimmed = path.trim().trim_matches('"');
     if trimmed.is_empty() || Path::new(trimmed).is_file() {
@@ -287,7 +294,61 @@ fn resolve_extension(path: &str) -> String {
             return candidate;
         }
     }
+    if let Some(found) = resolve_on_path(trimmed) {
+        return found;
+    }
     trimmed.to_string()
+}
+
+/// Looks a bare program name up in the directories of `PATH`.
+///
+/// Deliberately restricted to names without a directory separator: anything
+/// carrying a path is either right or wrong on its own terms, and searching
+/// `PATH` for it would invent a second program with the same file name. A
+/// relative path such as `.\tool.exe` is meaningless here anyway, because the
+/// working directory of *this* process is not the one the verb will run in.
+fn resolve_on_path(name: &str) -> Option<String> {
+    if name.contains('\\') || name.contains('/') || name.contains(':') {
+        return None;
+    }
+
+    let has_extension = Path::new(name).extension().is_some();
+    for directory in path_directories() {
+        if has_extension {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+            continue;
+        }
+        for ext in EXECUTABLE_EXTENSIONS {
+            let candidate = directory.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// The directories of `PATH`, split and expanded once.
+///
+/// Once, because a full scan asks for this a few thousand times and `PATH` on
+/// this machine has 40-odd entries — re-splitting it per command line turns a
+/// lookup into a measurable part of the scan.
+fn path_directories() -> &'static [PathBuf] {
+    static DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRECTORIES.get_or_init(|| {
+        let Ok(value) = std::env::var("PATH") else {
+            return Vec::new();
+        };
+        value
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(|part| PathBuf::from(mui::expand_env(part.trim_matches('"'))))
+            .collect()
+    })
 }
 
 /// Collapses the many spellings of one path into a single grouping key.
@@ -449,6 +510,60 @@ mod tests {
             parsed.target,
             r"C:\Program Files\WindowsApps\Some.App_1.0_x64__abc\app.exe"
         );
+    }
+
+    #[test]
+    fn a_bare_command_name_is_resolved_against_path() {
+        // The eight icon-less rows from the measurement: `attrib %1` names a
+        // program that exists, just not where the string says. Without the
+        // PATH step the icon fallback gets `attrib,0` and extracts nothing.
+        let resolved = resolve_extension("attrib");
+        assert!(
+            resolved.to_lowercase().ends_with(r"\attrib.exe"),
+            "expected a full path, got {resolved}"
+        );
+        assert!(Path::new(&resolved).is_file(), "{resolved} must exist");
+    }
+
+    #[test]
+    fn a_bare_name_that_already_has_its_extension_is_resolved_too() {
+        // The rundll32 case: the target is `shell32.dll`, a name with an
+        // extension but no directory.
+        let resolved = resolve_extension("shell32.dll");
+        assert!(
+            resolved.to_lowercase().ends_with(r"\shell32.dll"),
+            "expected a full path, got {resolved}"
+        );
+    }
+
+    #[test]
+    fn a_name_carrying_a_directory_is_never_searched_on_path() {
+        // `C:\Nirgends\attrib.exe` must stay wrong rather than silently become
+        // the `attrib.exe` from System32 — that would attribute an entry to a
+        // program it has nothing to do with.
+        let wrong = r"C:\Nirgends\attrib.exe";
+        assert_eq!(resolve_extension(wrong), wrong);
+        assert_eq!(resolve_on_path(wrong), None);
+        assert_eq!(resolve_on_path(r".\attrib"), None);
+    }
+
+    #[test]
+    fn a_name_that_is_nowhere_on_path_stays_as_it_was() {
+        assert_eq!(
+            resolve_extension("gibtesnichtaufdiesermaschine"),
+            "gibtesnichtaufdiesermaschine"
+        );
+    }
+
+    #[test]
+    fn path_resolution_collapses_the_bare_and_the_full_spelling() {
+        // The grouping consequence: `attrib` and the full path are one program.
+        let bare = parse("attrib +r %1").expect("parses");
+        let full = parse(r"C:\Windows\System32\attrib.exe +r %1").expect("parses");
+        if !Path::new(r"C:\Windows\System32\attrib.exe").is_file() {
+            return;
+        }
+        assert_eq!(bare.program_key(), full.program_key());
     }
 
     #[test]

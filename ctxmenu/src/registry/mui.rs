@@ -72,6 +72,40 @@ fn load_indirect_string(raw: &str) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// Removes the menu accelerator markers Windows reads out of a display name.
+///
+/// `Eingabeauff&orderung hier öffnen` is not a typo in the registry: Windows
+/// underlines the `o` and shows no ampersand at all. Repeating the raw string
+/// makes every second system entry look broken, so the display path follows
+/// the same two rules the menu does — `&&` is a literal ampersand, a single
+/// `&` marks the next character and disappears.
+///
+/// Only ever applied to text meant for the eye. `raw_display` keeps the
+/// original, which is what the detail pane shows and what a bug report needs.
+pub fn strip_accelerator(raw: &str) -> String {
+    if !raw.contains('&') {
+        return raw.to_string();
+    }
+
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            out.push(ch);
+            continue;
+        }
+        // `&&` is one literal ampersand; a lone `&` marks the next character
+        // and is not shown. A trailing `&` marks nothing and vanishes too —
+        // that is what the menu does with it.
+        match chars.next() {
+            Some('&') => out.push('&'),
+            Some(next) => out.push(next),
+            None => {}
+        }
+    }
+    out
+}
+
 /// Expands `%SystemRoot%`-style references in a path.
 ///
 /// Returns the input unchanged when expansion fails, for the same reason as
@@ -153,5 +187,40 @@ mod tests {
     fn a_path_without_variables_survives_expansion() {
         let path = r"C:\Program Files\7-Zip\7-zip.dll";
         assert_eq!(expand_env(path), path);
+    }
+
+    #[test]
+    fn an_accelerator_marker_is_not_shown() {
+        // The real value behind the `cmd` verb on a German installation.
+        assert_eq!(
+            strip_accelerator("Eingabeauff&orderung hier öffnen"),
+            "Eingabeaufforderung hier öffnen"
+        );
+        assert_eq!(strip_accelerator("&Open"), "Open");
+    }
+
+    #[test]
+    fn a_doubled_ampersand_is_a_real_one() {
+        assert_eq!(strip_accelerator("AT&&T Werkzeug"), "AT&T Werkzeug");
+        assert_eq!(strip_accelerator("&&"), "&");
+    }
+
+    #[test]
+    fn text_without_an_ampersand_is_returned_untouched() {
+        assert_eq!(strip_accelerator("Open with VLC"), "Open with VLC");
+        assert_eq!(strip_accelerator(""), "");
+    }
+
+    #[test]
+    fn a_trailing_ampersand_marks_nothing_and_disappears() {
+        assert_eq!(strip_accelerator("Kopieren&"), "Kopieren");
+    }
+
+    #[test]
+    fn stripping_never_splits_a_character() {
+        // Iterating over chars rather than bytes: an `&` in front of an umlaut
+        // used to be the obvious place to slice a string in half.
+        assert_eq!(strip_accelerator("&Öffnen"), "Öffnen");
+        assert_eq!(strip_accelerator("Datei &übergeben"), "Datei übergeben");
     }
 }

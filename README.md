@@ -19,7 +19,10 @@ switchable at runtime; this README is German only.*
 - **Alles sehen.** Die sieben Basis-Kategorien (Dateien, Ordner,
   Ordner-Hintergrund, Desktop, Laufwerke …) über drei Registry-Bereiche:
   `HKCU`, `HKLM` und die 32-Bit-Sicht `WOW6432Node`. Statische Verben und
-  COM-Handler getrennt ausgewiesen.
+  COM-Handler getrennt ausgewiesen. Dazu Windows' eigener **Verbvorrat**
+  (`CommandStore`) — 229 Verben auf dieser Maschine, die in keinem Menü
+  stehen, bis ein anderer Eintrag sie in seiner `SubCommands`-Liste nennt.
+  Nur lesbar, mit Schloss gekennzeichnet.
 - **Dateitypen auflösen.** Für eine Erweiterung wie `.jpg` die vollständige
   Kette aus Benutzerwahl, ProgID, `PerceivedType` und `SystemFileAssociations`
   — also das, was der Rechtsklick tatsächlich anzeigt, nicht das, was an einer

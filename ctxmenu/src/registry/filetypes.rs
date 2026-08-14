@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use windows_registry::CURRENT_USER;
 
-use super::paths::{self, CategorySource, SourceKind};
+use super::paths::{self, Anchor, CategorySource, SourceKind};
 use crate::model::{Category, Scope};
 
 /// Grouping for the tree on the left of the file type tab.
@@ -323,11 +323,13 @@ pub fn sources_for(resolution: &Resolution) -> Vec<CategorySource> {
             category: category.clone(),
             relative: format!(r"{relative}\shell"),
             kind: SourceKind::Shell,
+            anchor: Anchor::Classes,
         });
         sources.push(CategorySource {
             category,
             relative: format!(r"{relative}\shellex\ContextMenuHandlers"),
             kind: SourceKind::ShellEx,
+            anchor: Anchor::Classes,
         });
     };
 

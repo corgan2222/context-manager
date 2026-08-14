@@ -107,7 +107,9 @@ fn lookup(clsid: &str, mui_resolver: &mut mui::MuiResolver) -> ClsidInfo {
             .get_string("")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .map(|raw| mui_resolver.resolve(&raw));
+            // A handler name reaches the menu the same way a verb name does,
+            // so it goes through the same accelerator rule.
+            .map(|raw| mui::strip_accelerator(&mui_resolver.resolve(&raw)));
 
         let server_path = key
             .open("InprocServer32")

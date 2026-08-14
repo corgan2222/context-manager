@@ -11,8 +11,8 @@ use windows::core::PWSTR;
 use windows_registry::Key;
 
 use super::clsid::{ClsidInfo, ClsidResolver};
-use super::mui::MuiResolver;
-use super::paths::{self, CategorySource, SourceKind};
+use super::mui::{self, MuiResolver};
+use super::paths::{self, CategorySource, Location, SourceKind};
 use crate::model::{
     Category, ContextEntry, EntryKind, FileTypeInfo, ScanProgress, ScanResult, ScanStats, Scope,
     stable_id,
@@ -34,6 +34,13 @@ pub struct ScanOptions {
     /// Empty by default: the chain costs a few hundred extra key opens, and
     /// the command line has no use for it unless asked.
     pub file_types: Vec<String>,
+    /// Read Windows' own verb stock as well (ToDo 5.5).
+    ///
+    /// On by default: it is one key open for 229 entries on this machine, and
+    /// they are the only place a name from a `SubCommands` list can be looked
+    /// up. Filtering by category turns it off unless it was asked for, so
+    /// `--category directory` still means what it says.
+    pub command_store: bool,
 }
 
 impl Default for ScanOptions {
@@ -42,6 +49,7 @@ impl Default for ScanOptions {
             scopes: Scope::ALL.to_vec(),
             categories: None,
             file_types: Vec::new(),
+            command_store: true,
         }
     }
 }
@@ -65,15 +73,18 @@ impl ScanOptions {
 /// those reports down an mpsc channel so the list fills visibly; the scanner
 /// itself does not care who listens.
 pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> ScanResult {
+    let wanted = |category: &Category| {
+        options
+            .categories
+            .as_ref()
+            .is_none_or(|list| list.contains(category))
+    };
+
     let sources: Vec<CategorySource> = paths::base_sources()
         .into_iter()
-        .filter(|s| {
-            options
-                .categories
-                .as_ref()
-                .is_none_or(|wanted| wanted.contains(&s.category))
-        })
+        .filter(|s| wanted(&s.category))
         .collect();
+    let with_command_store = options.command_store && wanted(&Category::CommandStore);
 
     // Levels 3 to 7 of the file type chain, one set of locations per
     // extension. Levels 1 and 2 are the base categories above and are
@@ -108,27 +119,45 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
         });
     }
 
-    let total = (sources.len() + file_type_sources.len()) * options.scopes.len();
+    let total = (sources.len() + file_type_sources.len()) * options.scopes.len()
+        + usize::from(with_command_store);
     let mut entries = Vec::new();
     let mut done = 0;
 
     for source in sources.iter().chain(file_type_sources.iter()) {
         for &scope in &options.scopes {
             done += 1;
+            let at = paths::Location::classes(scope);
 
             // A missing location is the normal case, not an error: no machine
             // has every category populated in every hive.
-            if let Ok(key) = paths::root_key(scope).open(paths::key_path(scope, &source.relative)) {
-                collect(&key, source, scope, &mut entries);
+            if let Ok(key) = paths::root_key(scope).open(at.key_path(&source.relative)) {
+                collect(&key, source, at, &mut entries);
             }
 
             progress(ScanProgress {
                 done,
                 total,
-                label: paths::display_path(scope, &source.relative),
+                label: at.display_path(&source.relative),
                 found: entries.len(),
             });
         }
+    }
+
+    // Once, not per scope: the CommandStore exists in HKLM only.
+    if with_command_store {
+        let source = paths::command_store_source();
+        let at = paths::command_store_location();
+        done += 1;
+        if let Ok(key) = paths::root_key(at.scope).open(at.key_path(&source.relative)) {
+            collect(&key, &source, at, &mut entries);
+        }
+        progress(ScanProgress {
+            done,
+            total,
+            label: at.display_path(&source.relative),
+            found: entries.len(),
+        });
     }
 
     // Name resolution runs once over the finished tree rather than inside the
@@ -216,7 +245,14 @@ fn resolve_entries(
     for entry in entries.iter_mut() {
         let resolved = match &entry.kind {
             EntryKind::Verb { command, .. } => Resolved::Verb {
-                display: entry.raw_display.as_deref().map(|raw| mui.resolve(raw)),
+                // Resolve the reference first, then take the accelerator out:
+                // the `&` usually arrives from the string table, not from the
+                // registry value, so doing it the other way round would miss
+                // every system entry.
+                display: entry
+                    .raw_display
+                    .as_deref()
+                    .map(|raw| mui::strip_accelerator(&mui.resolve(raw))),
                 // Which program this entry belongs to. Costs a few file
                 // system probes per entry, which is why it runs here in the
                 // scan worker and never in the frame path.
@@ -342,12 +378,16 @@ fn subkey_names(key: &Key) -> Vec<String> {
     names
 }
 
-fn collect(key: &Key, source: &CategorySource, scope: Scope, out: &mut Vec<ContextEntry>) {
+fn collect(key: &Key, source: &CategorySource, at: Location, out: &mut Vec<ContextEntry>) {
     for name in subkey_names(key) {
-        let relative = format!("{}\\{}", source.relative, name);
+        // `paths::join`, not `format!`: the CommandStore is scanned at its own
+        // root, so its source path is empty, and a plain join produced
+        // `…\CommandStore\shell\\Verb` — a doubled separator that reached both
+        // the detail pane and the id.
+        let relative = paths::join(&source.relative, &name);
         let entry = match source.kind {
-            SourceKind::Shell => read_verb(key, &name, &relative, scope, &source.category, 0),
-            SourceKind::ShellEx => read_shellex(key, &name, &relative, scope, &source.category),
+            SourceKind::Shell => read_verb(key, &name, &relative, at, &source.category, 0),
+            SourceKind::ShellEx => read_shellex(key, &name, &relative, at, &source.category),
         };
         if let Some(entry) = entry {
             out.push(entry);
@@ -363,7 +403,7 @@ fn read_verb(
     parent: &Key,
     name: &str,
     relative: &str,
-    scope: Scope,
+    at: Location,
     category: &Category,
     depth: usize,
 ) -> Option<ContextEntry> {
@@ -382,16 +422,29 @@ fn read_verb(
         .ok()
         .and_then(|c| non_empty(c.get_string("").ok()));
 
-    let sub_commands = if depth < MAX_SUBMENU_DEPTH {
-        read_sub_commands(&key, relative, scope, category, depth + 1)
+    let mut sub_commands = if depth < MAX_SUBMENU_DEPTH {
+        read_sub_commands(&key, relative, at, category, depth + 1)
     } else {
         Vec::new()
     };
 
-    let registry_path = paths::display_path(scope, relative);
+    // The other kind of cascading menu: a `SubCommands` value naming verbs
+    // that live in the CommandStore. An empty value is not that — it is the
+    // marker that says "this is a submenu, the children are in my own `shell`
+    // subkey", which the branch above already read. Measured on this machine:
+    // 15 entries carry `SubCommands` and every single one of them is empty, so
+    // this path is exercised by tests rather than by hardware (ToDo 5.5).
+    if sub_commands.is_empty()
+        && depth < MAX_SUBMENU_DEPTH
+        && let Some(list) = non_empty(key.get_string("SubCommands").ok())
+    {
+        sub_commands = read_store_commands(&list, category, depth + 1);
+    }
+
+    let registry_path = at.display_path(relative);
 
     Some(ContextEntry {
-        id: stable_id(scope, &registry_path),
+        id: stable_id(at.scope, &registry_path),
         key_name: name.to_string(),
         display_name,
         raw_display,
@@ -408,19 +461,50 @@ fn read_verb(
             command,
             sub_commands,
         },
-        scope,
+        scope: at.scope,
         category: category.clone(),
         registry_path,
-        read_only: !is_writable(parent, name),
+        read_only: !at.writable_at_all() || !is_writable(parent, name),
         program_key: None,
     })
+}
+
+/// Resolves a `SubCommands` verb list against the CommandStore.
+///
+/// The value is semicolon-separated and names verbs by key name, e.g.
+/// `Windows.Rotate90;Windows.Rotate270`. A name that is not in the store is
+/// skipped rather than shown as an empty row: Windows leaves it out of the
+/// menu too, and inventing a row for it would misreport what the menu holds.
+///
+/// The children keep the CommandStore's own registry path, because that is
+/// where they are — showing them under the parent would name a key that does
+/// not exist and hand the delete path something it must never touch.
+fn read_store_commands(list: &str, category: &Category, depth: usize) -> Vec<ContextEntry> {
+    let names: Vec<&str> = list
+        .split(';')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    let at = paths::command_store_location();
+    let Ok(store) = paths::root_key(at.scope).open(at.key_path("")) else {
+        return Vec::new();
+    };
+
+    names
+        .iter()
+        .filter_map(|name| read_verb(&store, name, name, at, category, depth))
+        .collect()
 }
 
 /// Follows a cascading menu: children live under `<verb>\shell\<child>`.
 fn read_sub_commands(
     key: &Key,
     relative: &str,
-    scope: Scope,
+    at: Location,
     category: &Category,
     depth: usize,
 ) -> Vec<ContextEntry> {
@@ -432,7 +516,7 @@ fn read_sub_commands(
         .into_iter()
         .filter_map(|name| {
             let child_relative = format!("{relative}\\shell\\{name}");
-            read_verb(&shell, &name, &child_relative, scope, category, depth)
+            read_verb(&shell, &name, &child_relative, at, category, depth)
         })
         .collect()
 }
@@ -446,7 +530,7 @@ fn read_shellex(
     parent: &Key,
     name: &str,
     relative: &str,
-    scope: Scope,
+    at: Location,
     category: &Category,
 ) -> Option<ContextEntry> {
     let key = parent.open(name).ok()?;
@@ -465,10 +549,10 @@ fn read_shellex(
         }
     };
 
-    let registry_path = paths::display_path(scope, relative);
+    let registry_path = at.display_path(relative);
 
     Some(ContextEntry {
-        id: stable_id(scope, &registry_path),
+        id: stable_id(at.scope, &registry_path),
         key_name: name.to_string(),
         display_name: name.to_string(),
         raw_display: default,
@@ -483,10 +567,10 @@ fn read_shellex(
             server_path: None,
             blocked: false,
         },
-        scope,
+        scope: at.scope,
         category: category.clone(),
         registry_path,
-        read_only: !is_writable(parent, name),
+        read_only: !at.writable_at_all() || !is_writable(parent, name),
         program_key: None,
     })
 }

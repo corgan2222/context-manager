@@ -10,6 +10,7 @@
 //! reported rather than guessed at.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 use windows::Win32::Foundation::HANDLE;
@@ -23,10 +24,14 @@ use windows::Win32::UI::Shell::{
     SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify,
     SHELLEXECUTEINFOW, ShellExecuteExW,
 };
-use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
-use windows::core::{Owned, PCWSTR};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SW_HIDE};
+use windows::core::{Owned, PCWSTR, w};
 
 use crate::registry::plan::{Plan, Report, execute};
+
+/// Keeps a started console tool from flashing a window. Same constant and same
+/// reason as in `registry::backup`.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The argument that puts a started instance into job mode.
 ///
@@ -143,6 +148,91 @@ pub fn run_elevated_job(job: &Path) -> Outcome {
 /// COM handlers need an Explorer restart regardless (ToDo 13.4).
 pub fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
+}
+
+/// Restarts the shell, so a changed COM handler is actually gone.
+///
+/// `notify_shell` above is the polite version and enough for a static verb. A
+/// COM handler is a DLL that Explorer loaded into its own process long ago;
+/// no notification unloads it, which is why every tool in this corner ends up
+/// reaching for the same blunt instrument. Until now this one only *said* so
+/// and left the doing to the user (ToDo 13.4).
+///
+/// Closes every open Explorer window. The button that calls this says so.
+pub fn restart_explorer() -> Result<()> {
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt as _;
+
+    let exe = std::env::var("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(r"C:\Windows"))
+        .join("System32")
+        .join("taskkill.exe");
+
+    // `taskkill` rather than looking the process up and terminating it here:
+    // one call, no PROCESS_TERMINATE right of our own to arrange, and it
+    // covers the several-Explorer-processes case ("launch folder windows in a
+    // separate process") without enumerating anything.
+    let mut command = Command::new(&exe);
+    command.args(["/f", "/im", "explorer.exe"]);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
+        .output()
+        .with_context(|| format!("{exe:?} konnte nicht gestartet werden / could not be started"))?;
+
+    // Exit code 128 is "no such process" — the shell was already down, which
+    // is not a reason to stop before starting it again.
+    if !output.status.success() && output.status.code() != Some(128) {
+        let said = String::from_utf8_lossy(&output.stdout);
+        let complained = String::from_utf8_lossy(&output.stderr);
+        let message = match complained.trim().is_empty() {
+            true => said.trim().to_string(),
+            false => complained.trim().to_string(),
+        };
+        bail!("taskkill: {message}");
+    }
+
+    if wait_for_shell(SHELL_RESTART_WAIT) {
+        return Ok(());
+    }
+
+    // Only now, and only if Windows did not do it itself. `AutoRestartShell`
+    // is on by default, and starting a second Explorer while the shell is
+    // already back does not restart anything — it opens a stray folder window
+    // in the user's face.
+    Command::new("explorer.exe")
+        .spawn()
+        .context("explorer.exe konnte nicht gestartet werden / could not be started")?;
+    Ok(())
+}
+
+/// How long to give Windows to bring the shell back on its own.
+///
+/// Measured on this machine: the taskbar reappears in well under a second.
+/// The cap exists for the case where `AutoRestartShell` is off, where waiting
+/// longer would only delay the manual start that is then needed anyway.
+const SHELL_RESTART_WAIT: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// Waits for the taskbar window to exist again.
+///
+/// `Shell_TrayWnd` is the shell's own class and outlives any single Explorer
+/// window, so its presence answers "is there a shell?" rather than "is a
+/// folder open?". Polled rather than hooked: this runs once, on a button.
+fn wait_for_shell(limit: std::time::Duration) -> bool {
+    let step = std::time::Duration::from_millis(100);
+    let mut waited = std::time::Duration::ZERO;
+
+    while waited < limit {
+        std::thread::sleep(step);
+        waited += step;
+        let found = unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) };
+        if found.is_ok() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Where the child writes its report.

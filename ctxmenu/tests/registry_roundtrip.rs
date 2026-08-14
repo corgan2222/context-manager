@@ -27,6 +27,15 @@ fn serialized() -> std::sync::MutexGuard<'static, ()> {
 }
 
 const DISPLAY: &str = "Selbsttest mit Leerzeichen & Ümläut";
+
+/// The same name as the shell would draw it.
+///
+/// The `&` marks the following character — here a space — and is not shown, so
+/// two spaces are left where three characters used to be. Unattractive, and
+/// exactly the point: this is what the menu really says, and a tool that
+/// repeats the raw value would hide the mistake instead of showing it. The
+/// unchanged original stays in `raw_display`.
+const DISPLAY_IN_MENU: &str = "Selbsttest mit Leerzeichen  Ümläut";
 const ICON: &str = r"%SystemRoot%\system32\shell32.dll,-244";
 const COMMAND: &str = r#""C:\Program Files\Test Tool\t.exe" "%V""#;
 
@@ -90,7 +99,13 @@ fn the_scanner_reads_every_field_of_a_known_key() {
 
     let entry = find_entry(name).expect("the fixture must show up in a Directory scan");
 
-    assert_eq!(entry.display_name, DISPLAY);
+    // Two separate claims: the raw value survived `reg.exe` and the registry
+    // API byte for byte, and the name shown on screen is the one the menu
+    // draws. Checking only the first would have let the accelerator through to
+    // the interface; checking only the second would no longer prove the
+    // quoting.
+    assert_eq!(entry.raw_display.as_deref(), Some(DISPLAY));
+    assert_eq!(entry.display_name, DISPLAY_IN_MENU);
     assert_eq!(entry.icon_ref.as_deref(), Some(ICON));
     assert!(entry.extended, "Extended is a presence flag");
     assert!(!entry.hidden);
@@ -148,7 +163,11 @@ fn a_deleted_key_comes_back_from_its_backup() {
     // 4. Everything must be identical, values and all -- a restore that
     //    recreates the key but loses the command line is worse than none.
     let entry = find_entry(name).expect("restored key must be scannable again");
-    assert_eq!(entry.display_name, DISPLAY);
+    // The raw value is the one that had to survive the round trip through
+    // `reg.exe export` and `reg.exe import`; the `&` is in there precisely
+    // because it is a quoting trap on that route.
+    assert_eq!(entry.raw_display.as_deref(), Some(DISPLAY));
+    assert_eq!(entry.display_name, DISPLAY_IN_MENU);
     assert_eq!(entry.icon_ref.as_deref(), Some(ICON));
     assert!(entry.extended);
     match entry.kind {
@@ -157,6 +176,84 @@ fn a_deleted_key_comes_back_from_its_backup() {
     }
 
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// The second kind of cascading menu: `SubCommands` names verbs that live in
+/// the CommandStore instead of below the entry itself (ToDo 5.5).
+///
+/// Built here rather than found: measured on this machine, 15 entries carry a
+/// `SubCommands` value and every one of them is empty — the marker form, which
+/// means "my children are in my own `shell` subkey". So the resolving path has
+/// no natural specimen, and the honest way to prove it is to make one.
+#[test]
+fn a_subcommands_list_pulls_its_children_out_of_the_command_store() {
+    let _guard = serialized();
+
+    // Whatever this Windows happens to stock, rather than a hard-coded verb
+    // name: the store differs between installations.
+    let store: Vec<ctxmenu::model::ContextEntry> = scan(
+        &ScanOptions {
+            categories: Some(vec![Category::CommandStore]),
+            ..ScanOptions::default()
+        },
+        |_| {},
+    )
+    .entries;
+    let Some(borrowed) = store.first() else {
+        // A machine with an empty CommandStore proves nothing either way.
+        return;
+    };
+    let verb = borrowed.key_name.clone();
+
+    let name = "ctxmenu selftest subcommands";
+    let fixture = Fixture::create(name);
+    CURRENT_USER
+        .create(fixture.target.key_path())
+        .expect("fixture key")
+        .set_string("SubCommands", &verb)
+        .expect("verb list");
+
+    let entry = find_entry(name).expect("the fixture must show up in a Directory scan");
+    let EntryKind::Verb { sub_commands, .. } = &entry.kind else {
+        panic!("expected a verb");
+    };
+
+    assert_eq!(sub_commands.len(), 1, "one name, one child");
+    let child = &sub_commands[0];
+    assert_eq!(child.key_name, verb);
+    assert!(
+        child.read_only,
+        "a verb belonging to Windows must not look editable"
+    );
+    // The child keeps the path it really has. Reporting it below the parent
+    // would name a key that does not exist — and hand the delete path a
+    // location it must never touch.
+    assert_eq!(child.registry_path, borrowed.registry_path);
+    assert!(
+        ctxmenu::registry::paths::RegTarget::parse(&child.registry_path).is_err(),
+        "a CommandStore path must not be expressible as a target"
+    );
+}
+
+#[test]
+fn an_unknown_name_in_a_subcommands_list_is_left_out_rather_than_faked() {
+    let _guard = serialized();
+
+    let name = "ctxmenu selftest unknown subcommand";
+    let fixture = Fixture::create(name);
+    CURRENT_USER
+        .create(fixture.target.key_path())
+        .expect("fixture key")
+        .set_string("SubCommands", "Ctxmenu.GibtEsNicht;;  ")
+        .expect("verb list");
+
+    let entry = find_entry(name).expect("the fixture must show up in a Directory scan");
+    let EntryKind::Verb { sub_commands, .. } = &entry.kind else {
+        panic!("expected a verb");
+    };
+    // Windows leaves an unresolvable name out of the menu; a row for it would
+    // report a menu item that is not there. Empty segments likewise.
+    assert!(sub_commands.is_empty(), "got {sub_commands:?}");
 }
 
 #[test]

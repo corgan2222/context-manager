@@ -68,6 +68,10 @@ enum Dialog {
     Confirm {
         plan: Plan,
         needs_elevation: bool,
+        /// How many watched file types the plan reaches beyond the one on
+        /// screen. `None` when nothing in it sits on level 1 or 2 of the
+        /// resolution chain, which is the only case where the question arises.
+        breadth: Option<usize>,
     },
     Running,
     Done(Report),
@@ -243,6 +247,15 @@ pub struct App {
     /// every change — never per frame.
     favourites: Vec<Favourite>,
     favourite_error: Option<String>,
+    /// Index into `favourites` the keyboard is on.
+    ///
+    /// Separate from `focused`, which belongs to the scanned table: this tab
+    /// shows its own list, and the arrow keys used to move a table nobody
+    /// could see while the favourites stayed where they were.
+    favourite_focus: Option<usize>,
+    /// Set when the keyboard moved the focus, so the row can be scrolled into
+    /// view exactly once instead of fighting the mouse wheel every frame.
+    favourite_scroll: bool,
 
     icons: IconCache,
     tr: &'static Strings,
@@ -266,6 +279,86 @@ pub struct App {
     /// loader, the static CRT and the window creation are all inside the
     /// number instead of hiding in front of it.
     first_list_ms: Option<f64>,
+}
+
+/// Is this category read for every file, whatever its type?
+///
+/// Levels 1 and 2 of the resolution chain — `*` and `AllFilesystemObjects` —
+/// are, which is what makes an action on one of them wider than it looks from
+/// inside a single file type.
+fn applies_to_every_file_type(category: &Category) -> bool {
+    matches!(
+        category,
+        Category::AllFiles | Category::AllFilesystemObjects
+    )
+}
+
+/// The count behind the breadth warning, without needing a window.
+///
+/// `None` when the plan touches nothing on level 1 or 2, and when no file
+/// types were scanned at all — a number nobody measured is worse than no
+/// sentence. Registry paths are matched case-insensitively, as Windows does.
+fn breadth_of_plan(plan: &Plan, entries: &[ContextEntry], file_type_count: usize) -> Option<usize> {
+    if file_type_count == 0 {
+        return None;
+    }
+
+    let touched: rustc_hash::FxHashSet<String> = plan
+        .operations
+        .iter()
+        .map(|operation| operation.target.full_path().to_lowercase())
+        .collect();
+
+    entries
+        .iter()
+        .any(|entry| {
+            applies_to_every_file_type(&entry.category)
+                && touched.contains(&entry.registry_path.to_lowercase())
+        })
+        .then_some(file_type_count)
+}
+
+/// What the favourites list was asked to do, by mouse or by keyboard.
+///
+/// One type for both, so a key and the button next to it cannot drift apart:
+/// every action is written once and reached from two places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FavouriteAction {
+    Edit(usize),
+    Place(usize),
+    Remove(usize),
+    /// `true` moves the entry towards the top of the list.
+    Shift(usize, bool),
+}
+
+/// Where a list cursor goes on an arrow key, `Home` or `End`.
+///
+/// Pure, so the rules can be checked without a window. Clamps at both ends
+/// rather than wrapping, and lands on the first row when nothing was selected
+/// yet — the same behaviour the scanned table has had since milestone 4, since
+/// two lists in one window that answer the same key differently is worse than
+/// either rule on its own.
+fn next_cursor(current: Option<usize>, count: usize, movement: Movement) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match (movement, current) {
+        // Home and End say where to go outright; they do not care where the
+        // cursor was, or whether there was one.
+        (Movement::First, _) => 0,
+        (Movement::Last, _) => count - 1,
+        (_, None) => 0,
+        (Movement::Down, Some(index)) => (index + 1).min(count - 1),
+        (Movement::Up, Some(index)) => index.saturating_sub(1),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Movement {
+    Down,
+    Up,
+    First,
+    Last,
 }
 
 /// Drives the window at full speed for a fixed number of frames, scrolling as
@@ -345,6 +438,8 @@ impl App {
             backup_error: None,
             favourites: Vec::new(),
             favourite_error: None,
+            favourite_focus: None,
+            favourite_scroll: false,
             icons: IconCache::new(&cc.egui_ctx),
             tr,
             settings,
@@ -683,6 +778,125 @@ impl App {
         Some(stops[next])
     }
 
+    /// The keyboard for the favourites list.
+    ///
+    /// Arrows, `Home` and `End` move the cursor; `Enter` places the favourite
+    /// — the one thing the whole tab exists for — and `Delete` removes it,
+    /// exactly as the two buttons on the row do. Returns the action so it can
+    /// be applied where the mouse's own actions are, rather than reaching into
+    /// the list from two directions.
+    fn handle_favourite_keys(&mut self, ctx: &egui::Context) -> Option<FavouriteAction> {
+        // Same two guards as the table: a dialog owns the keyboard while it is
+        // up, and so does a text field that has the focus.
+        if self.dialog.is_some() || ctx.memory(|memory| memory.focused()).is_some() {
+            return None;
+        }
+
+        let count = self.favourites.len();
+        if count == 0 {
+            self.favourite_focus = None;
+            return None;
+        }
+        // A removal can leave the cursor past the end of the list.
+        if let Some(index) = self.favourite_focus {
+            self.favourite_focus = Some(index.min(count - 1));
+        }
+
+        let (down, up, home, end, enter, delete) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Home),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::End),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
+            )
+        });
+
+        let movement = match (down, up, home, end) {
+            (true, ..) => Some(Movement::Down),
+            (_, true, ..) => Some(Movement::Up),
+            (_, _, true, _) => Some(Movement::First),
+            (_, _, _, true) => Some(Movement::Last),
+            _ => None,
+        };
+
+        if let Some(movement) = movement {
+            self.favourite_focus = next_cursor(self.favourite_focus, count, movement);
+            self.favourite_scroll = true;
+            return None;
+        }
+
+        let index = self.favourite_focus?;
+        match (enter, delete) {
+            (true, _) => Some(FavouriteAction::Place(index)),
+            (_, true) => Some(FavouriteAction::Remove(index)),
+            _ => None,
+        }
+    }
+
+    /// Carries out one action from the favourites list.
+    ///
+    /// By index rather than by id because that is what the keyboard has; the
+    /// id is resolved here, once, and a stale index simply does nothing rather
+    /// than acting on whichever entry moved into that slot.
+    fn apply_favourite_action(&mut self, action: FavouriteAction) {
+        let index = match action {
+            FavouriteAction::Edit(index)
+            | FavouriteAction::Place(index)
+            | FavouriteAction::Remove(index)
+            | FavouriteAction::Shift(index, _) => index,
+        };
+        let Some(favourite) = self.favourites.get(index).cloned() else {
+            return;
+        };
+
+        match action {
+            FavouriteAction::Edit(_) => {
+                self.dialog = Some(Dialog::Favourite {
+                    draft: Box::new(favourite),
+                    fresh: false,
+                });
+            }
+            FavouriteAction::Place(_) => {
+                // Same rule as the editor: start where the user last was. The
+                // favourites tab has no tree of its own, so this is whatever
+                // they were looking at before coming here — which is exactly
+                // the thing they wanted this tool for.
+                let category = self.category_for_new();
+                self.dialog = Some(Dialog::Place {
+                    favourite: Box::new(favourite),
+                    ext: match &category {
+                        Category::ExtAssoc(ext) | Category::ExtDirect(ext) => ext.clone(),
+                        _ => String::new(),
+                    },
+                    perceived: match &category {
+                        Category::PerceivedType(kind) => kind.clone(),
+                        _ => "image".into(),
+                    },
+                    category,
+                });
+            }
+            FavouriteAction::Remove(_) => {
+                self.after_favourite_change(favourites::remove(&favourite.id));
+            }
+            FavouriteAction::Shift(_, up) => {
+                self.after_favourite_change(favourites::shift(&favourite.id, up));
+                // The cursor follows the entry it was on, or the list would
+                // reorder itself out from under the keyboard.
+                if self.favourite_focus == Some(index) {
+                    let moved = if up {
+                        index.saturating_sub(1)
+                    } else {
+                        (index + 1).min(self.favourites.len().saturating_sub(1))
+                    };
+                    self.favourite_focus = Some(moved);
+                    self.favourite_scroll = true;
+                }
+            }
+        }
+    }
+
     /// Keeps the window title in the language on screen.
     ///
     /// The title is set once when the window is created, before the settings
@@ -882,16 +1096,43 @@ impl App {
     fn propose(&mut self, action: Action) {
         let plan = self.plan_for_selection(action);
         if plan.is_empty() {
-            self.dialog = Some(Dialog::Error(self.tr.msg_no_selection.to_string()));
+            // "Nothing selected" would be a lie when something is: the rows
+            // are simply not expressible as a target, which on this machine
+            // means the CommandStore. Saying which of the two it is saves the
+            // user from clicking again to see whether it worked this time.
+            let message = match self.selected.is_empty() {
+                true => self.tr.msg_no_selection,
+                false => self.tr.msg_nothing_changeable,
+            };
+            self.dialog = Some(Dialog::Error(message.to_string()));
             return;
         }
         // Probing writability touches the registry, so it happens here on the
         // click and not while drawing the dialog.
         let needs_elevation = plan.needs_elevation();
+        let breadth = self.breadth_of(&plan);
         self.dialog = Some(Dialog::Confirm {
             plan,
             needs_elevation,
+            breadth,
         });
+    }
+
+    /// How many watched file types this plan would also reach.
+    ///
+    /// `None` unless something in it sits on level 1 or 2 of the resolution
+    /// chain. That is the case worth a sentence: the file type tab shows the
+    /// entries of `.zip` next to the ones every file gets, they look alike in
+    /// the table, and deleting one of the latter while thinking about `.zip`
+    /// takes it away from all 98 types at once (ToDo 10.4).
+    ///
+    /// Read from the plan rather than from the selection, because the plan is
+    /// what will actually run — an entry that was selected but dropped on the
+    /// way must not produce a warning about something that is not going to
+    /// happen.
+    fn breadth_of(&self, plan: &Plan) -> Option<usize> {
+        let scan = self.scan.as_ref()?;
+        breadth_of_plan(plan, &scan.entries, scan.file_types.len())
     }
 
     /// The category the editor should open on.
@@ -1070,9 +1311,22 @@ impl eframe::App for App {
         // synthetic key presses into this frame's event queue, and a check
         // that runs first would always measure nothing.
         self.drive_bench(&ctx);
+        // The keyboard belongs to the list that is on screen. Until now the
+        // arrows always moved the scanned table, including on the two tabs
+        // that do not show it — so on the favourites tab they moved a
+        // selection nobody could see, and left it moved when the user came
+        // back.
+        let mut favourite_action = None;
         let scroll_to = match std::mem::take(&mut self.scroll_to_top) {
             true => Some(0),
-            false => self.handle_keys(&ctx),
+            false => match self.tab {
+                Tab::Favourites => {
+                    favourite_action = self.handle_favourite_keys(&ctx);
+                    None
+                }
+                Tab::Backups => None,
+                Tab::Categories | Tab::FileTypes | Tab::Programs => self.handle_keys(&ctx),
+            },
         };
 
         self.report_theme_once(ui);
@@ -1093,7 +1347,8 @@ impl eframe::App for App {
                 egui::CentralPanel::default().show(ui, |ui| self.backup_list(ui));
             }
             Tab::Favourites => {
-                egui::CentralPanel::default().show(ui, |ui| self.favourite_list(ui));
+                egui::CentralPanel::default()
+                    .show(ui, |ui| self.favourite_list(ui, favourite_action));
             }
             Tab::FileTypes => {
                 self.file_type_tree(ui);
@@ -1420,7 +1675,7 @@ impl App {
     /// Deliberately not a tree and not a table: this list is short by nature —
     /// it holds what one person reaches for often — and its order is the
     /// user's own, so it is shown exactly as saved.
-    fn favourite_list(&mut self, ui: &mut Ui) {
+    fn favourite_list(&mut self, ui: &mut Ui, from_keyboard: Option<FavouriteAction>) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.heading(self.tr.tab_favourites);
@@ -1452,101 +1707,105 @@ impl App {
 
         // Collected first, applied after the loop: every one of these mutates
         // the list the loop is walking.
-        let mut edit: Option<Favourite> = None;
-        let mut place: Option<Favourite> = None;
-        let mut remove: Option<String> = None;
-        let mut shift: Option<(String, bool)> = None;
+        let mut action = from_keyboard;
+        let mut clicked_row: Option<usize> = None;
+        let focus = self.favourite_focus;
+        let scroll = std::mem::take(&mut self.favourite_scroll);
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let count = self.favourites.len();
                 for (index, favourite) in self.favourites.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.set_min_width(340.0);
-                            ui.strong(&favourite.name);
-                            ui.small(describe(favourite, self.tr));
-                        });
+                    let current = focus == Some(index);
+                    // The cursor has to be visible or the arrow keys look
+                    // broken: the list would move and nothing on screen would
+                    // say so.
+                    let frame = match current {
+                        true => egui::Frame::new()
+                            .fill(ui.visuals().selection.bg_fill)
+                            .inner_margin(egui::Margin::symmetric(4, 2)),
+                        false => egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)),
+                    };
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .small_button(self.tr.fav_remove)
-                                .on_hover_text(self.tr.tip_fav_remove)
-                                .clicked()
-                            {
-                                remove = Some(favourite.id.clone());
-                            }
-                            if ui
-                                .small_button(self.tr.fav_edit)
-                                .on_hover_text(self.tr.tip_fav_edit)
-                                .clicked()
-                            {
-                                edit = Some(favourite.clone());
-                            }
-                            if ui
-                                .add_enabled(
-                                    index + 1 < count,
-                                    egui::Button::new("\u{2193}").small(),
-                                )
-                                .on_hover_text(self.tr.tip_fav_down)
-                                .clicked()
-                            {
-                                shift = Some((favourite.id.clone(), false));
-                            }
-                            if ui
-                                .add_enabled(index > 0, egui::Button::new("\u{2191}").small())
-                                .on_hover_text(self.tr.tip_fav_up)
-                                .clicked()
-                            {
-                                shift = Some((favourite.id.clone(), true));
-                            }
-                            ui.separator();
-                            // The whole point of the list: putting a tool
-                            // where it can be reached.
-                            if ui
-                                .button(self.tr.fav_place)
-                                .on_hover_text(self.tr.tip_fav_place)
-                                .clicked()
-                            {
-                                place = Some(favourite.clone());
-                            }
+                    let row = frame.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.set_min_width(340.0);
+                                ui.strong(&favourite.name);
+                                ui.small(describe(favourite, self.tr));
+                            });
+
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(self.tr.fav_remove)
+                                        .on_hover_text(self.tr.tip_fav_remove)
+                                        .clicked()
+                                    {
+                                        action = Some(FavouriteAction::Remove(index));
+                                    }
+                                    if ui
+                                        .small_button(self.tr.fav_edit)
+                                        .on_hover_text(self.tr.tip_fav_edit)
+                                        .clicked()
+                                    {
+                                        action = Some(FavouriteAction::Edit(index));
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            index + 1 < count,
+                                            egui::Button::new("\u{2193}").small(),
+                                        )
+                                        .on_hover_text(self.tr.tip_fav_down)
+                                        .clicked()
+                                    {
+                                        action = Some(FavouriteAction::Shift(index, false));
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            index > 0,
+                                            egui::Button::new("\u{2191}").small(),
+                                        )
+                                        .on_hover_text(self.tr.tip_fav_up)
+                                        .clicked()
+                                    {
+                                        action = Some(FavouriteAction::Shift(index, true));
+                                    }
+                                    ui.separator();
+                                    // The whole point of the list: putting a
+                                    // tool where it can be reached.
+                                    if ui
+                                        .button(self.tr.fav_place)
+                                        .on_hover_text(self.tr.tip_fav_place)
+                                        .clicked()
+                                    {
+                                        action = Some(FavouriteAction::Place(index));
+                                    }
+                                },
+                            );
                         });
                     });
+
+                    // Clicking a row puts the keyboard on it, so the two ways
+                    // of moving through the list agree on where "here" is.
+                    if row.response.interact(egui::Sense::click()).clicked() {
+                        clicked_row = Some(index);
+                    }
+                    if current && scroll {
+                        ui.scroll_to_rect(row.response.rect, None);
+                    }
                     ui.separator();
                 }
             });
 
-        if let Some(favourite) = edit {
-            self.dialog = Some(Dialog::Favourite {
-                draft: Box::new(favourite),
-                fresh: false,
-            });
+        if let Some(index) = clicked_row {
+            self.favourite_focus = Some(index);
         }
-        if let Some(favourite) = place {
-            // Same rule as the editor: start where the user last was. The
-            // favourites tab has no tree of its own, so this is whatever they
-            // were looking at before coming here — which is exactly the thing
-            // they wanted this tool for.
-            let category = self.category_for_new();
-            self.dialog = Some(Dialog::Place {
-                favourite: Box::new(favourite),
-                ext: match &category {
-                    Category::ExtAssoc(ext) | Category::ExtDirect(ext) => ext.clone(),
-                    _ => String::new(),
-                },
-                perceived: match &category {
-                    Category::PerceivedType(kind) => kind.clone(),
-                    _ => "image".into(),
-                },
-                category,
-            });
-        }
-        if let Some(id) = remove {
-            self.after_favourite_change(favourites::remove(&id));
-        }
-        if let Some((id, up)) = shift {
-            self.after_favourite_change(favourites::shift(&id, up));
+
+        if let Some(action) = action {
+            self.apply_favourite_action(action);
         }
     }
 
@@ -1801,6 +2060,7 @@ impl App {
             Dialog::Confirm {
                 plan,
                 needs_elevation,
+                breadth,
             } => {
                 let mut start = false;
                 let mut cancel = false;
@@ -1835,6 +2095,19 @@ impl App {
                             );
                         } else {
                             ui.label(self.tr.msg_backup_first);
+                        }
+
+                        // The reach of the change, before the list of what it
+                        // touches: a key path says which type it was found
+                        // under, never which types it will be missing from.
+                        if let Some(count) = breadth {
+                            ui.add_space(4.0);
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                self.tr
+                                    .fmt_affects_other_types
+                                    .replace("{}", &count.to_string()),
+                            );
                         }
 
                         if needs_elevation {
@@ -1886,6 +2159,7 @@ impl App {
                     self.dialog = Some(Dialog::Confirm {
                         plan,
                         needs_elevation,
+                        breadth,
                     });
                     keep = false;
                 }
@@ -1909,6 +2183,7 @@ impl App {
             Dialog::Done(report) => {
                 let mut close = false;
                 let mut restore: Option<String> = None;
+                let mut restart = false;
 
                 egui::Window::new(self.tr.detail_title)
                     .collapsible(false)
@@ -1959,9 +2234,21 @@ impl App {
                         ui.add_space(6.0);
                         ui.small(self.tr.msg_restart_explorer);
                         ui.add_space(6.0);
-                        if ui.button(self.tr.btn_cancel).clicked() {
-                            close = true;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui.button(self.tr.btn_cancel).clicked() {
+                                close = true;
+                            }
+                            // Next to the sentence that says a restart is
+                            // needed, because being told what to do and then
+                            // being left to do it by hand is half an answer.
+                            if ui
+                                .button(self.tr.btn_restart_explorer)
+                                .on_hover_text(self.tr.tip_restart_explorer)
+                                .clicked()
+                            {
+                                restart = true;
+                            }
+                        });
                     });
 
                 if let Some(directory) = restore {
@@ -1974,6 +2261,18 @@ impl App {
                             self.dialog = Some(Dialog::Error(format!("{error:#}")));
                             keep = false;
                         }
+                    }
+                }
+                if restart {
+                    // Blocking, for up to the two and a half seconds the wait
+                    // for the taskbar is capped at. A worker thread would buy
+                    // a smoother frame at the price of a second code path for
+                    // reporting the failure, and this runs once, on a click.
+                    if let Err(error) = elevation::restart_explorer() {
+                        self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                        keep = false;
+                    } else {
+                        close = true;
                     }
                 }
                 if !close && keep {
@@ -2323,6 +2622,27 @@ impl App {
                                 self.clear_selection();
                                 self.filter_dirty = true;
                             }
+                        }
+
+                        // Below a separator, and last: these verbs are not on
+                        // anybody's menu. Putting them among the categories
+                        // that are would suggest they were.
+                        let store = Category::CommandStore;
+                        let count = self.category_count(&store);
+                        ui.separator();
+                        let response = ui
+                            .add_enabled_ui(count > 0, |ui| {
+                                ui.selectable_label(
+                                    self.selected_category.as_ref() == Some(&store),
+                                    format!("{}  ({count})", category_label(&store, self.tr)),
+                                )
+                            })
+                            .inner
+                            .on_hover_text(self.tr.tip_command_store);
+                        if response.clicked() {
+                            self.selected_category = Some(store);
+                            self.clear_selection();
+                            self.filter_dirty = true;
                         }
 
                         ui.take_available_space();
@@ -3345,6 +3665,7 @@ fn category_label(category: &Category, tr: &'static Strings) -> &'static str {
         Category::Folder => tr.cat_folder,
         Category::DesktopBackground => tr.cat_desktop_background,
         Category::Drive => tr.cat_drive,
+        Category::CommandStore => tr.cat_command_store,
         // Only reachable from milestone 7 onwards.
         _ => tr.tab_filetypes,
     }
@@ -3879,6 +4200,118 @@ mod tests {
                     "{category:?} fell through to the catch-all arm"
                 );
             }
+        }
+    }
+
+    /// Builds a one-operation plan aimed at a given entry.
+    fn plan_against(entry: &ContextEntry) -> Plan {
+        let target = crate::registry::paths::RegTarget::parse(&entry.registry_path)
+            .expect("a scanned path must parse back");
+        Plan::new(
+            "test",
+            vec![Operation {
+                target,
+                action: Action::Delete,
+                clsid: None,
+                display_name: entry.display_name.clone(),
+            }],
+        )
+    }
+
+    #[test]
+    fn deleting_an_entry_that_applies_to_every_file_says_how_far_it_reaches() {
+        let mut entries = synthetic::scan_result(4).entries;
+        entries[0].category = Category::AllFiles;
+        entries[1].category = Category::AllFilesystemObjects;
+        entries[2].category = Category::ExtAssoc(".zip".into());
+
+        // Level 1 and level 2 both apply to every file, so both warn.
+        assert_eq!(
+            breadth_of_plan(&plan_against(&entries[0]), &entries, 98),
+            Some(98)
+        );
+        assert_eq!(
+            breadth_of_plan(&plan_against(&entries[1]), &entries, 98),
+            Some(98)
+        );
+
+        // An entry that really does belong to one type says nothing: a
+        // warning on every dialog is a warning nobody reads.
+        assert_eq!(
+            breadth_of_plan(&plan_against(&entries[2]), &entries, 98),
+            None
+        );
+    }
+
+    #[test]
+    fn without_a_file_type_scan_there_is_no_number_to_show() {
+        // The command line scans base categories only. Naming a count of zero
+        // types, or inventing one, would both be worse than staying quiet.
+        let mut entries = synthetic::scan_result(2).entries;
+        entries[0].category = Category::AllFiles;
+        assert_eq!(
+            breadth_of_plan(&plan_against(&entries[0]), &entries, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn the_warning_follows_the_plan_not_the_selection() {
+        // An entry that was selected but did not make it into the plan must
+        // not produce a warning about something that will not happen.
+        let mut entries = synthetic::scan_result(3).entries;
+        entries[0].category = Category::AllFiles;
+        entries[1].category = Category::Directory;
+
+        let plan = plan_against(&entries[1]);
+        assert_eq!(breadth_of_plan(&plan, &entries, 98), None);
+    }
+
+    #[test]
+    fn registry_paths_are_matched_case_insensitively() {
+        let mut entries = synthetic::scan_result(2).entries;
+        entries[0].category = Category::AllFiles;
+        let plan = plan_against(&entries[0]);
+        entries[0].registry_path = entries[0].registry_path.to_uppercase();
+
+        assert_eq!(breadth_of_plan(&plan, &entries, 98), Some(98));
+    }
+
+    #[test]
+    fn a_list_cursor_clamps_at_both_ends() {
+        assert_eq!(next_cursor(Some(0), 3, Movement::Up), Some(0));
+        assert_eq!(next_cursor(Some(2), 3, Movement::Down), Some(2));
+        assert_eq!(next_cursor(Some(1), 3, Movement::Down), Some(2));
+        assert_eq!(next_cursor(Some(1), 3, Movement::Up), Some(0));
+    }
+
+    #[test]
+    fn every_key_lands_somewhere_when_nothing_was_selected() {
+        // Pressing a key and having nothing happen reads as a broken list.
+        for movement in [Movement::Down, Movement::Up, Movement::First] {
+            assert_eq!(next_cursor(None, 4, movement), Some(0), "{movement:?}");
+        }
+        assert_eq!(next_cursor(None, 4, Movement::Last), Some(3));
+    }
+
+    #[test]
+    fn home_and_end_ignore_where_the_cursor_was() {
+        assert_eq!(next_cursor(Some(2), 5, Movement::First), Some(0));
+        assert_eq!(next_cursor(Some(2), 5, Movement::Last), Some(4));
+    }
+
+    #[test]
+    fn an_empty_list_has_no_cursor_at_all() {
+        // The index goes straight into `favourites[..]`, so "no rows" must not
+        // produce a zero.
+        for movement in [
+            Movement::Down,
+            Movement::Up,
+            Movement::First,
+            Movement::Last,
+        ] {
+            assert_eq!(next_cursor(None, 0, movement), None, "{movement:?}");
+            assert_eq!(next_cursor(Some(3), 0, movement), None, "{movement:?}");
         }
     }
 

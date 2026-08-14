@@ -107,6 +107,12 @@ pub enum Category {
     ProgId { prog_id: String, from_ext: String },
     /// `.<ext>\shell` — rare, but it exists.
     ExtDirect(String),
+    /// Windows' own stock of verbs, outside `…\Classes` and read-only.
+    ///
+    /// Not a place a menu is built from: an entry here appears only where
+    /// something else names it in a `SubCommands` list. Shown so that a name
+    /// found in such a list can be looked up (ToDo 5.5).
+    CommandStore,
 }
 
 impl Category {
@@ -135,12 +141,17 @@ impl Category {
             Category::ExtAssoc(e) => format!("extassoc:{e}"),
             Category::ProgId { prog_id, .. } => format!("progid:{prog_id}"),
             Category::ExtDirect(e) => format!("ext:{e}"),
+            Category::CommandStore => "commandstore".into(),
         }
     }
 
     pub fn from_slug(s: &str) -> Option<Category> {
         let s = s.to_ascii_lowercase();
-        Category::BASE.iter().find(|c| c.slug() == s).cloned()
+        Category::BASE
+            .iter()
+            .chain(std::iter::once(&Category::CommandStore))
+            .find(|c| c.slug() == s)
+            .cloned()
     }
 
     /// What this entry applies to, in the shortest form that still says it.
