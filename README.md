@@ -223,5 +223,7 @@ Anwendung und nicht auch für die Makro-Bibliotheken des Übersetzers. Die
 fertige Datei braucht deshalb kein „Visual C++ Redistributable" — nachgeprüft
 auf einem frisch installierten Windows 10 ohne jede Zusatzsoftware.
 
-Weiterführend: `HANDOVER.md` hält den Entwicklungsstand fest, die Messwerte und
-die Stellen, an denen Windows sich anders verhält als dokumentiert.
+Zurückgestelltes steht in `maybe_later.md`. Den Entwicklungsstand, die
+Messwerte und die Stellen, an denen Windows sich anders verhält als
+dokumentiert, führt der Autor in Notizen, die nicht Teil dieses Repositoriums
+sind.
