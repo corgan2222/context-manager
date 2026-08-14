@@ -126,3 +126,29 @@ Daran hängt die zweite Form von Untermenüs: ein `SubCommands`-Wert, der
 semikolongetrennt Verben aus dem CommandStore aufzählt. Gezeigt werden heute
 nur Untermenüs aus echten Unterschlüsseln — auf dieser Maschine sind das alle
 fünf vorhandenen.
+
+---
+
+## Drei Prüffälle für die Oberfläche
+
+Nie durchgeführt, und zwar aus einem Grund, der sich nicht wegprogrammieren
+lässt: **sie verändern den Bildschirm des Benutzers.**
+
+| Prüffall | Worauf zu achten wäre |
+|---|---|
+| Skalierung auf **150 %** | Sind Symbole und Schrift scharf, oder wird die 16-Pixel-Vorlage weichgezeichnet? |
+| Fenster auf **Mindestgröße** | Überlappen die Panels, verschwindet die Statuszeile? |
+| **Sprachwechsel** bei geöffnetem Detailbereich | Deutsche Wörter sind länger; abgeschnittene Beschriftungen fallen erst dort auf |
+
+**Warum nicht von hier aus:** eine Bildschirmkopie nimmt auf, was gerade
+obenauf liegt, und auf den Nebenbildschirmen dieser Maschine liegt Privates —
+die Regeln dafür stehen in `CLAUDE.md`. Die Skalierung umzustellen greift
+zudem in die laufende Arbeit ein, und das Fenster auf Mindestgröße zu ziehen
+verlangt eine Maus.
+
+**Was der Benutzer dafür braucht:** nichts als die gebaute `.exe` und eine
+Minute. Der vierte Fall dieser Reihe — das Editor-Formular im
+Untermenü-Modus — ist am 2026-08-15 genau so gelaufen: Fenster geöffnet,
+zwei Bildschirmfotos geschickt, Befund war ein Satz lang und hat neun fehlende
+Glyphen ans Licht gebracht. Das ist die Art, wie diese drei fällig werden,
+wenn sie fällig werden.
