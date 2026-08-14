@@ -126,10 +126,13 @@ pub enum SortBy {
 /// entry plus, optionally, the path down into its `sub_commands` — one index
 /// per nesting level, because Windows allows a submenu inside a submenu.
 ///
-/// Only top-level rows are selectable: a child lives at
-/// `…\shell\<parent>\shell\<child>`, which is deliberately not expressible
-/// as a `RegTarget`, so no action could be applied to it anyway.
-#[derive(Debug, Clone, PartialEq)]
+/// Rows are what the selection holds, children included. That was not always
+/// so: the selection used to be a set of entry indices, which a child has no
+/// way to be, and the comment here justified it by claiming a child's path
+/// could not be expressed as a `RegTarget`. It can — `…\shell\<parent>\shell\
+/// <child>` names one entry and passes every check — so the limitation was
+/// never anything but the shape of the set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Row {
     /// Index into `ScanResult::entries`.
     pub entry: usize,
@@ -145,8 +148,16 @@ impl Row {
         }
     }
 
-    fn is_top(&self) -> bool {
-        self.path.is_empty()
+    /// Does this row contain `other` as a submenu child, at any depth?
+    ///
+    /// Used to drop a child from a plan when its parent is in the same
+    /// selection. Deleting the parent removes the whole subtree, so the
+    /// child's own step would then run against a key that is already gone and
+    /// report a failure the user did not cause.
+    fn is_ancestor_of(&self, other: &Row) -> bool {
+        self.entry == other.entry
+            && self.path.len() < other.path.len()
+            && other.path.starts_with(&self.path)
     }
 }
 
@@ -226,9 +237,9 @@ pub struct App {
     groups: Vec<ProgramGroup>,
     /// Indices into `scan.entries`. Multi-select, because the whole point of
     /// the program view is acting on twenty entries at once.
-    selected: rustc_hash::FxHashSet<usize>,
+    selected: rustc_hash::FxHashSet<Row>,
     /// The row whose details are shown — the last one clicked.
-    focused: Option<usize>,
+    focused: Option<Row>,
     search: String,
 
     dialog: Option<Dialog>,
@@ -449,7 +460,7 @@ struct Bench {
     /// it, which is how this feature was found missing in the first place.
     keys_sent: usize,
     cursor_walked: usize,
-    last_focus: Option<usize>,
+    last_focus: Option<Row>,
 }
 
 impl App {
@@ -779,9 +790,9 @@ impl App {
         // panel and a second click. Only when nothing is selected: an existing
         // selection is the user's and must survive a search or a re-sort.
         if self.focused.is_none()
-            && let Some(first) = self.visible_rows.iter().find(|row| row.is_top())
+            && let Some(first) = self.visible_rows.first()
         {
-            self.focused = Some(first.entry);
+            self.focused = Some(first.clone());
         }
     }
 
@@ -803,24 +814,17 @@ impl App {
             return None;
         }
 
-        let stops: Vec<usize> = self
-            .visible_rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| row.is_top())
-            .map(|(position, _)| position)
-            .collect();
+        // Every visible row, not only the top-level ones: a submenu child is
+        // an entry of its own and the arrows now reach it.
+        let stops: Vec<usize> = (0..self.visible_rows.len()).collect();
         if stops.is_empty() {
             return None;
         }
 
         let current = self
             .focused
-            .and_then(|entry| {
-                self.visible_rows
-                    .iter()
-                    .position(|row| row.is_top() && row.entry == entry)
-            })
+            .as_ref()
+            .and_then(|focused| self.visible_rows.iter().position(|row| row == focused))
             .and_then(|position| stops.iter().position(|p| *p == position));
 
         let (down, up, home, end, extend) = ctx.input_mut(|i| {
@@ -849,13 +853,12 @@ impl App {
             _ => None,
         }?;
 
-        let row = &self.visible_rows[stops[next]];
-        let entry = row.entry;
-        self.focused = Some(entry);
+        let row = self.visible_rows[stops[next]].clone();
+        self.focused = Some(row.clone());
         if !extend {
             self.selected.clear();
         }
-        self.selected.insert(entry);
+        self.selected.insert(row);
 
         // The row to scroll to, in table coordinates.
         Some(stops[next])
@@ -1117,7 +1120,7 @@ impl App {
             if bench.last_focus.is_some() {
                 bench.cursor_walked += 1;
             }
-            bench.last_focus = self.focused;
+            bench.last_focus = self.focused.clone();
         }
 
         if bench.remaining == 0 {
@@ -1262,8 +1265,14 @@ impl App {
         };
 
         let mut operations = Vec::new();
-        for &index in &self.selected {
-            let Some(entry) = scan.entries.get(index) else {
+        for row in &self.selected {
+            // A child whose parent is also selected gets no step of its own:
+            // the parent's delete takes the whole subtree, and a second step
+            // against the same key would report a failure nobody caused.
+            if self.selected.iter().any(|other| other.is_ancestor_of(row)) {
+                continue;
+            }
+            let Some(entry) = resolve(scan, row) else {
                 continue;
             };
             let Ok(target) = crate::registry::paths::RegTarget::parse(&entry.registry_path) else {
@@ -1339,7 +1348,8 @@ impl App {
     fn category_for_new(&self) -> Category {
         let focused = self
             .focused
-            .and_then(|index| self.scan.as_ref()?.entries.get(index));
+            .as_ref()
+            .and_then(|row| resolve(self.scan.as_ref()?, row));
 
         category_for_new_entry(
             focused,
@@ -1358,19 +1368,15 @@ impl App {
     fn backup_now(&mut self) {
         let Some(scan) = &self.scan else { return };
 
-        let indices: Vec<usize> = if self.selected.is_empty() {
-            self.visible_rows
-                .iter()
-                .filter(|row| row.is_top())
-                .map(|row| row.entry)
-                .collect()
+        let rows: Vec<Row> = if self.selected.is_empty() {
+            self.visible_rows.clone()
         } else {
-            self.selected.iter().copied().collect()
+            self.selected.iter().cloned().collect()
         };
 
-        let paths: Vec<String> = indices
+        let paths: Vec<String> = rows
             .iter()
-            .filter_map(|i| scan.entries.get(*i))
+            .filter_map(|row| resolve(scan, row))
             .map(|entry| entry.registry_path.clone())
             .collect();
 
@@ -1743,12 +1749,7 @@ impl App {
                         .on_hover_text(self.tr.tip_select_all)
                         .clicked()
                     {
-                        self.selected = self
-                            .visible_rows
-                            .iter()
-                            .filter(|row| row.is_top())
-                            .map(|row| row.entry)
-                            .collect();
+                        self.selected = self.visible_rows.iter().cloned().collect();
                     }
                     if ui
                         .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
@@ -3115,16 +3116,15 @@ impl App {
                 // few thousand entries this is the difference between a
                 // scrolling list and a slideshow (ToDo 4.5).
                 body.rows(26.0, visible_rows.len(), |mut row| {
-                    let reference = &visible_rows[row.index()];
-                    let index = reference.entry;
-                    let Some(entry) = resolve(scan, reference) else {
+                    let reference = visible_rows[row.index()].clone();
+                    let Some(entry) = resolve(scan, &reference) else {
                         return;
                     };
                     let depth = reference.path.len();
 
                     // Must precede the first cell; it only affects cells added
-                    // after the call. A child is never selected on its own.
-                    row.set_selected(reference.is_top() && selected.contains(&index));
+                    // after the call.
+                    row.set_selected(selected.contains(&reference));
 
                     row.col(|ui| {
                         if let Some(reference) = &entry.icon_ref {
@@ -3181,21 +3181,21 @@ impl App {
                     });
 
                     let response = row.response();
-                    // A click on a submenu child selects its parent rather
-                    // than nothing: the child cannot be acted on by itself,
-                    // but a row that swallows every click looks broken.
+                    // A click selects the row that was clicked — a submenu
+                    // child included. It used to select the child's parent,
+                    // because the selection could only hold whole entries.
                     if response.clicked() {
                         // Ctrl adds to the selection, a plain click replaces
                         // it — the convention every file manager uses.
                         if response.ctx.input(|i| i.modifiers.ctrl) {
-                            if !selected.remove(&index) {
-                                selected.insert(index);
+                            if !selected.remove(&reference) {
+                                selected.insert(reference.clone());
                             }
                         } else {
                             selected.clear();
-                            selected.insert(index);
+                            selected.insert(reference.clone());
                         }
-                        *focused = Some(index);
+                        *focused = Some(reference);
                     }
                 });
             });
@@ -3226,9 +3226,12 @@ impl App {
                 ui.heading(self.tr.detail_title);
                 ui.separator();
 
+                // Through `resolve`, so the detail pane shows the submenu
+                // child that was clicked rather than its parent.
                 let Some(entry) = self
                     .focused
-                    .and_then(|i| self.scan.as_ref().and_then(|s| s.entries.get(i)))
+                    .as_ref()
+                    .and_then(|row| self.scan.as_ref().and_then(|s| resolve(s, row)))
                 else {
                     ui.label(self.tr.detail_nothing_selected);
                     return;
@@ -4344,7 +4347,7 @@ mod tests {
         assert_eq!(rows[2].path, vec![0, 0]);
 
         // Exactly one selectable row: a child key is not a RegTarget.
-        assert_eq!(rows.iter().filter(|r| r.is_top()).count(), 1);
+        assert_eq!(rows.iter().filter(|r| r.path.is_empty()).count(), 1);
     }
 
     #[test]
@@ -4422,6 +4425,89 @@ mod tests {
                 display_name: entry.display_name.clone(),
             }],
         )
+    }
+
+    #[test]
+    fn a_submenu_child_can_be_named_as_a_target() {
+        // The claim the old comment on `Row` got wrong. A child sits at
+        // `…\shell\<parent>\shell\<child>`, and that names exactly one entry.
+        let child = r"HKCU\SOFTWARE\Classes\Directory\shell\Attributes\shell\aShow";
+        let target = crate::registry::paths::RegTarget::parse(child)
+            .expect("a submenu child is a single entry");
+        assert_eq!(target.full_path(), child);
+
+        // Its parent's collection key still is not, which is the distinction
+        // that has to survive: deleting that would take every sibling with it.
+        assert!(
+            crate::registry::paths::RegTarget::parse(
+                r"HKCU\SOFTWARE\Classes\Directory\shell\Attributes\shell"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_child_is_dropped_when_its_parent_is_selected_too() {
+        // Select-all now takes children as well, so this combination is one
+        // click away rather than a curiosity.
+        let parent = Row::top(7);
+        let child = Row {
+            entry: 7,
+            path: vec![1],
+        };
+        let grandchild = Row {
+            entry: 7,
+            path: vec![1, 0],
+        };
+
+        assert!(parent.is_ancestor_of(&child));
+        assert!(parent.is_ancestor_of(&grandchild));
+        assert!(child.is_ancestor_of(&grandchild));
+
+        // Not its own ancestor, not its sibling's, not another entry's.
+        assert!(!parent.is_ancestor_of(&parent));
+        assert!(!child.is_ancestor_of(&parent));
+        assert!(
+            !child.is_ancestor_of(&Row {
+                entry: 7,
+                path: vec![2, 0]
+            }),
+            "a sibling's subtree is not below this child"
+        );
+        assert!(
+            !Row::top(7).is_ancestor_of(&Row {
+                entry: 8,
+                path: vec![0]
+            }),
+            "rows of different entries are unrelated"
+        );
+    }
+
+    #[test]
+    fn the_selection_holds_children_as_well_as_entries() {
+        // A row set, not an index set: the second and third rows below differ
+        // only in their path into `sub_commands`, and an index-based selection
+        // could not tell them apart at all.
+        let mut selection: rustc_hash::FxHashSet<Row> = Default::default();
+        let parent = Row::top(7);
+        let first_child = Row {
+            entry: 7,
+            path: vec![0],
+        };
+        let second_child = Row {
+            entry: 7,
+            path: vec![1],
+        };
+
+        selection.insert(parent.clone());
+        selection.insert(first_child.clone());
+        selection.insert(second_child.clone());
+        assert_eq!(selection.len(), 3, "three distinct rows of one entry");
+
+        selection.remove(&first_child);
+        assert!(selection.contains(&parent), "the parent stays");
+        assert!(selection.contains(&second_child), "the sibling stays");
+        assert!(!selection.contains(&first_child));
     }
 
     #[test]
