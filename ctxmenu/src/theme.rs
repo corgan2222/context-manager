@@ -7,14 +7,17 @@
 use std::ffi::c_void;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Globalization::GetUserDefaultUILanguage;
 use windows::Win32::Graphics::Dwm::{
     DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWINDOWATTRIBUTE, DwmSetWindowAttribute,
 };
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
 use windows::Win32::System::SystemServices::LANG_GERMAN;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
 };
 use windows::core::BOOL;
 
@@ -87,6 +90,102 @@ pub fn set_titlebar_dark(hwnd: HWND, dark: bool) -> bool {
 
         applied
     }
+}
+
+/// Puts the window across the full width of the leftmost screen.
+///
+/// Every automatic run does this, and it is not a preference: on this machine
+/// the main screen at `X=0` is where the user is working, and a window that
+/// opens there interrupts them. The leftmost screen — smallest `X` — is the
+/// one to use.
+///
+/// Works in physical pixels through `SetWindowPos` rather than asking eframe
+/// for a position in logical points. That sidesteps the trap the notes
+/// describe: with four 3840×2160 screens at 150 %, anything that mixes the two
+/// coordinate systems lands two thirds of the way to where it meant to go.
+/// This process is PerMonitorV2 through its manifest, so what Win32 reports
+/// here is real.
+///
+/// Returns what it did, so a caller can report it instead of assuming.
+pub fn place_on_left_screen(hwnd: HWND) -> Option<PlacedWindow> {
+    let work = leftmost_work_area()?;
+    let width = work.right - work.left;
+    let height = work.bottom - work.top;
+
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            work.left,
+            work.top,
+            width,
+            height,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .ok()?;
+    }
+
+    Some(PlacedWindow {
+        x: work.left,
+        y: work.top,
+        width,
+        height,
+    })
+}
+
+/// What `place_on_left_screen` did, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedWindow {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// The work area of the screen with the smallest `X`.
+///
+/// The *work* area, not the full monitor rectangle: the taskbar belongs to the
+/// user, and a window drawn underneath it hides its own status bar.
+fn leftmost_work_area() -> Option<RECT> {
+    let mut best: Option<RECT> = None;
+
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_monitor),
+            LPARAM(std::ptr::addr_of_mut!(best) as isize),
+        );
+    }
+    best
+}
+
+/// Callback for `EnumDisplayMonitors`; keeps the leftmost work area seen.
+unsafe extern "system" fn collect_monitor(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+
+    unsafe {
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            // One unreadable monitor must not end the enumeration; the others
+            // may still hold the answer.
+            return true.into();
+        }
+
+        let best = &mut *(data.0 as *mut Option<RECT>);
+        if best.is_none_or(|current| info.rcWork.left < current.left) {
+            *best = Some(info.rcWork);
+        }
+    }
+
+    true.into()
 }
 
 /// Where Windows keeps the light/dark choice for applications.
@@ -224,6 +323,24 @@ mod tests {
         let from_win32 = system_language();
         let raw = unsafe { GetUserDefaultUILanguage() };
         assert_eq!(from_win32, Language::from_ui_language(raw));
+    }
+
+    #[test]
+    fn the_leftmost_screen_is_never_to_the_right_of_the_main_one() {
+        // The primary screen starts at x=0 by definition, so the leftmost work
+        // area cannot begin to the right of it. On a single-screen machine the
+        // two are the same and this still holds.
+        let work = leftmost_work_area().expect("a machine has at least one screen");
+
+        assert!(
+            work.left <= 0,
+            "leftmost work area starts at {}, right of the primary screen",
+            work.left
+        );
+        assert!(
+            work.right > work.left && work.bottom > work.top,
+            "empty work area: {work:?}"
+        );
     }
 
     #[test]

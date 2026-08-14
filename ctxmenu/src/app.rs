@@ -274,6 +274,8 @@ pub struct App {
     theme_reported: bool,
     /// Running only in the probe mode, and only for as long as it takes.
     theme_probe: Option<ThemeProbe>,
+    /// Still owing the window a move to the leftmost screen.
+    place_left: bool,
     /// Milliseconds from process creation to the first frame that actually
     /// showed rows — the milestone 12 target of under two seconds.
     ///
@@ -532,6 +534,9 @@ impl App {
                 cursor_walked: 0,
                 last_focus: None,
             }),
+            // Every run that started itself goes to the left screen: the
+            // main one is the user's desk.
+            place_left: theme_probe || bench_frames.is_some(),
             theme_probe: theme_probe.then(|| ThemeProbe {
                 stage: ProbeStage::Settling {
                     left: PROBE_SETTLE_FRAMES,
@@ -988,6 +993,35 @@ impl App {
         }
         self.title_language = Some(self.settings.language);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.tr.app_title.to_string()));
+    }
+
+    /// Moves the window to the leftmost screen, once, on automatic runs.
+    ///
+    /// Only for runs nobody started by hand — a probe, a benchmark, a smoke
+    /// test. A window that a person opened belongs wherever that person wants
+    /// it, and dragging it away would be its own kind of rude.
+    ///
+    /// Not done through `ViewportBuilder`, because the handle does not exist
+    /// before the window does; the first frame is the earliest moment this can
+    /// happen at all.
+    fn place_window_once(&mut self) {
+        if !self.place_left {
+            return;
+        }
+        let Some(hwnd) = self.hwnd else { return };
+        self.place_left = false;
+
+        match theme::place_on_left_screen(hwnd) {
+            Some(placed) => crate::errln!(
+                "window_placed: x={} y={} {}x{} physical, leftmost screen",
+                placed.x,
+                placed.y,
+                placed.width,
+                placed.height
+            ),
+            None => crate::errln!("window_placed: FAILED, the window is wherever it opened"),
+        }
+        crate::console::flush();
     }
 
     /// Keeps the DWM title bar in step with the interface.
@@ -1465,6 +1499,7 @@ impl eframe::App for App {
         self.frame_times.push(ctx.input(|i| i.stable_dt));
         self.poll_scan();
         self.icons.poll(&ctx);
+        self.place_window_once();
         self.sync_titlebar(ui);
         self.sync_title(&ctx);
 
