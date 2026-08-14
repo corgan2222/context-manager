@@ -161,6 +161,16 @@ pub fn check(entry: &NewEntry) -> Vec<Problem> {
     problems
 }
 
+/// Can an entry be created for this category at all?
+///
+/// Answered without a key name, so the editor can grey out a choice before
+/// anything else is filled in. `target()` says the same thing but needs the
+/// whole entry, and "why is this button dead" should not depend on a field
+/// three rows further down.
+pub fn category_is_creatable(category: &Category) -> bool {
+    category_relative(category).is_ok()
+}
+
 impl NewEntry {
     /// Where this entry will live.
     pub fn target(&self) -> Result<RegTarget> {
@@ -374,6 +384,35 @@ pub fn suggest_key_name(display_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_freely_chosen_file_type_is_checked_before_it_is_offered() {
+        // The editor lets a file type be typed in now, so these are one click
+        // and one keystroke away rather than unreachable.
+        assert!(category_is_creatable(&Category::Directory));
+        assert!(category_is_creatable(&Category::ExtAssoc(".png".into())));
+        assert!(category_is_creatable(&Category::PerceivedType(
+            "image".into()
+        )));
+
+        // Nothing typed yet: the commonest state of a fresh choice, and the
+        // one that must not reach the registry as `SystemFileAssociations\shell`.
+        assert!(!category_is_creatable(&Category::ExtAssoc(String::new())));
+        assert!(!category_is_creatable(&Category::ExtAssoc("   ".into())));
+        assert!(!category_is_creatable(&Category::ExtAssoc(".".into())));
+        assert!(!category_is_creatable(&Category::ExtAssoc("a b".into())));
+        assert!(!category_is_creatable(&Category::PerceivedType(
+            String::new()
+        )));
+
+        // Still refused, and still on purpose: several extensions share one
+        // ProgID, so an entry there would appear for all of them.
+        assert!(!category_is_creatable(&Category::ProgId {
+            prog_id: "pngfile".into(),
+            from_ext: ".png".into(),
+        }));
+        assert!(!category_is_creatable(&Category::CommandStore));
+    }
 
     fn entry(category: Category, command: &str) -> NewEntry {
         NewEntry {

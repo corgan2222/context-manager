@@ -2549,6 +2549,10 @@ impl App {
             } => {
                 let mut close = false;
                 let mut save = false;
+                // Borrowed out here: the closure below already holds `self`
+                // for `self.tr`, and the cache needs a mutable borrow to queue
+                // an extraction for a reference it has not seen yet.
+                let icons = &mut self.icons;
 
                 egui::Window::new(self.tr.editor_title)
                     .collapsible(false)
@@ -2569,27 +2573,97 @@ impl App {
                                 let chosen = (!Category::BASE.contains(&entry.category))
                                     .then(|| entry.category.clone());
 
-                                egui::ComboBox::from_id_salt("editor-category")
-                                    .selected_text(category_choice_label(&entry.category, self.tr))
-                                    .show_ui(ui, |ui| {
-                                        if let Some(chosen) = &chosen {
-                                            let label = category_choice_label(chosen, self.tr);
-                                            ui.selectable_value(
-                                                &mut entry.category,
-                                                chosen.clone(),
-                                                label,
-                                            );
+                                ui.horizontal(|ui| {
+                                    egui::ComboBox::from_id_salt("editor-category")
+                                        .selected_text(category_choice_label(
+                                            &entry.category,
+                                            self.tr,
+                                        ))
+                                        .show_ui(ui, |ui| {
+                                            if let Some(chosen) = &chosen {
+                                                let label = category_choice_label(chosen, self.tr);
+                                                ui.selectable_value(
+                                                    &mut entry.category,
+                                                    chosen.clone(),
+                                                    label,
+                                                );
+                                                ui.separator();
+                                            }
+                                            for candidate in Category::BASE {
+                                                let label = category_label(&candidate, self.tr);
+                                                ui.selectable_value(
+                                                    &mut entry.category,
+                                                    candidate,
+                                                    label,
+                                                );
+                                            }
+
+                                            // The two that take a value of
+                                            // their own. Without them the only
+                                            // reachable file type was whichever
+                                            // one the user happened to come
+                                            // from, so "I want this for .png"
+                                            // meant going to the file type tab
+                                            // first and finding .png there.
                                             ui.separator();
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(entry.category, Category::ExtAssoc(_)),
+                                                    self.tr.fav_place_ext,
+                                                )
+                                                .clicked()
+                                            {
+                                                entry.category = Category::ExtAssoc(String::new());
+                                            }
+                                            if ui
+                                                .selectable_label(
+                                                    matches!(
+                                                        entry.category,
+                                                        Category::PerceivedType(_)
+                                                    ),
+                                                    self.tr.fav_place_perceived,
+                                                )
+                                                .clicked()
+                                            {
+                                                entry.category =
+                                                    Category::PerceivedType("image".into());
+                                            }
+                                        });
+
+                                    // The value belonging to the choice, right
+                                    // next to it rather than in a row of its
+                                    // own that would be empty most of the time.
+                                    match &entry.category {
+                                        Category::ExtAssoc(current) => {
+                                            let mut ext = current.clone();
+                                            if ui
+                                                .add(
+                                                    egui::TextEdit::singleline(&mut ext)
+                                                        .desired_width(110.0)
+                                                        .hint_text(".png"),
+                                                )
+                                                .changed()
+                                            {
+                                                entry.category = Category::ExtAssoc(ext);
+                                            }
                                         }
-                                        for candidate in Category::BASE {
-                                            let label = category_label(&candidate, self.tr);
-                                            ui.selectable_value(
-                                                &mut entry.category,
-                                                candidate,
-                                                label,
-                                            );
+                                        Category::PerceivedType(current) => {
+                                            let current = current.clone();
+                                            for kind in
+                                                ["image", "video", "audio", "text", "compressed"]
+                                            {
+                                                if ui
+                                                    .selectable_label(current == kind, kind)
+                                                    .clicked()
+                                                {
+                                                    entry.category =
+                                                        Category::PerceivedType(kind.into());
+                                                }
+                                            }
                                         }
-                                    });
+                                        _ => {}
+                                    }
+                                });
                                 ui.end_row();
 
                                 ui.label(self.tr.editor_display_name);
@@ -2625,13 +2699,30 @@ impl App {
                                 ui.end_row();
 
                                 ui.label(self.tr.editor_icon);
-                                let mut icon = entry.icon.clone().unwrap_or_default();
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut icon)
-                                        .desired_width(400.0)
-                                        .hint_text(HINT_ICON),
-                                );
-                                entry.icon = (!icon.trim().is_empty()).then_some(icon);
+                                ui.horizontal(|ui| {
+                                    let mut icon = entry.icon.clone().unwrap_or_default();
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut icon)
+                                            .desired_width(360.0)
+                                            .hint_text(HINT_ICON),
+                                    );
+                                    let icon = icon.trim().to_string();
+
+                                    // What the reference actually resolves to,
+                                    // beside the field that names it. The table
+                                    // has shown these all along; the form that
+                                    // *writes* one showed nothing, so a typo in
+                                    // `shell32.dll,-244` was invisible until
+                                    // the entry sat in the real menu.
+                                    if !icon.is_empty() {
+                                        let texture = icons.get(&icon).clone();
+                                        ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                            texture.id(),
+                                            egui::vec2(16.0, 16.0),
+                                        )));
+                                    }
+                                    entry.icon = (!icon.is_empty()).then_some(icon);
+                                });
                                 ui.end_row();
 
                                 ui.label(self.tr.editor_position);
@@ -2655,19 +2746,28 @@ impl App {
                             });
 
                         ui.add_space(6.0);
-                        match entry.target() {
+                        // Coloured, not merely small. Since a file type can be
+                        // chosen freely, "no extension typed yet" is one click
+                        // away — and a grey line of prose under a form is not
+                        // where anyone looks for the reason a button is dead.
+                        let target = entry.target();
+                        match &target {
                             Ok(target) => {
                                 ui.small(format!("\u{2192} {}", target.full_path()));
                             }
                             Err(error) => {
-                                ui.small(format!("{error:#}"));
+                                ui.colored_label(ui.visuals().error_fg_color, format!("{error:#}"));
                             }
                         }
 
                         // Live, because a warning after the fact is no use: the %1
                         // trap costs an entry that looks right and does nothing.
                         let problems = create::check(&entry);
-                        let blocked = problems.iter().any(Problem::is_error);
+                        // `target` too: an unusable category has to disable the
+                        // button, or the dialog offers to do something it will
+                        // then refuse. The place dialog has always checked
+                        // both; this one only checked half.
+                        let blocked = problems.iter().any(Problem::is_error) || target.is_err();
                         if !problems.is_empty() {
                             ui.add_space(4.0);
                             for problem in &problems {
