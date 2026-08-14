@@ -9,6 +9,10 @@
 # Darf niemals committet werden, auch nicht in einem privaten Repo.
 .mcp.json
 
-# Claude Code, lokal
+# Claude Code, lokal. Arbeitsnotizen, keine Projektdateien: sie bleiben auf
+# der Platte und aus der Versionsverwaltung heraus. Am 2026-08-14 auch
+# rückwirkend aus der Historie getilgt.
 .claude/settings.local.json
+CLAUDE.md
 HANDOVER.md
+handover_mcp2.md
