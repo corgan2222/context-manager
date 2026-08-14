@@ -28,6 +28,9 @@ pub enum Command {
         search: String,
         /// Extension to preselect in the file type tab.
         ext: Option<String>,
+        /// Flip the system theme once while running and report whether the
+        /// window followed. Restores the setting afterwards.
+        theme_probe: bool,
     },
     Scan(ScanArgs),
     /// Group every entry by the program behind it (milestone 8).
@@ -131,6 +134,10 @@ Verwendung / Usage:
   ctxmenu favourite run <id> <datei>
                             Ausfuehren wie ein Klick, Ausgabe auf der Konsole /
                             run as a click would, reporting on the console
+  ctxmenu --theme-probe     Systemthema einmal umschalten und melden, ob das
+                            Fenster folgt; setzt die Einstellung danach zurueck /
+                            flip the system theme once, report whether the
+                            window followed, then restore it
   ctxmenu --smoke           Smoke-Test-Fenster / open the smoke test window
   ctxmenu --help            Diese Hilfe / this help
 
@@ -156,12 +163,24 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             tab: crate::app::Tab::Categories,
             search: String::new(),
             ext: None,
+            theme_probe: false,
         });
     }
 
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
         "--smoke" => return Ok(Command::Smoke),
+        // Takes no value, so it cannot join the loop below.
+        "--theme-probe" => {
+            return Ok(Command::Gui {
+                synthetic: None,
+                bench: None,
+                tab: crate::app::Tab::Categories,
+                search: String::new(),
+                ext: None,
+                theme_probe: true,
+            });
+        }
         "--synthetic" | "--bench" | "--tab" | "--search" | "--ext" => {
             let mut synthetic = None;
             let mut bench = None;
@@ -205,6 +224,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 tab,
                 search,
                 ext,
+                theme_probe: false,
             });
         }
         "programs" => return Ok(Command::Programs),

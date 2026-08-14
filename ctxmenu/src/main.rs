@@ -92,9 +92,9 @@ fn main() -> ExitCode {
             tab,
             search,
             ext,
-        } => {
-            app::run(synthetic, bench, tab, search, ext).map_err(|e| anyhow::anyhow!("eframe: {e}"))
-        }
+            theme_probe,
+        } => app::run(synthetic, bench, tab, search, ext, theme_probe)
+            .map_err(|e| anyhow::anyhow!("eframe: {e}")),
         cli::Command::Scan(args) => cli::run_scan(args),
         cli::Command::Programs => cli::run_programs(),
         cli::Command::FileType(ext) => cli::run_file_type(&ext),

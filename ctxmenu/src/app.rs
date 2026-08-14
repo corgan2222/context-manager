@@ -272,6 +272,8 @@ pub struct App {
     frame_times: FrameTimes,
     bench: Option<Bench>,
     theme_reported: bool,
+    /// Running only in the probe mode, and only for as long as it takes.
+    theme_probe: Option<ThemeProbe>,
     /// Milliseconds from process creation to the first frame that actually
     /// showed rows — the milestone 12 target of under two seconds.
     ///
@@ -368,6 +370,73 @@ enum Movement {
 /// only checkable by looking at the window and believing it. Scrolling is part
 /// of it: a virtualized table is cheap precisely because it rebuilds only the
 /// visible rows, and that rebuild is what has to stay cheap.
+/// How many frames the probe lets pass before it flips the setting.
+///
+/// The first frames carry window creation and the first scan; a reading taken
+/// there would record a window still settling rather than a steady state.
+const PROBE_SETTLE_FRAMES: usize = 30;
+
+/// How long to wait for the switch to arrive, in frames.
+///
+/// `WM_SETTINGCHANGE` is broadcast synchronously but every window on the
+/// desktop gets it first, so the answer is not in the next frame. At roughly
+/// 8 ms per frame this is about two seconds — long past anything observed,
+/// short enough that a probe that fails still ends.
+const PROBE_WAIT_FRAMES: usize = 240;
+
+/// One reading of everything the theme touches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ThemeReading {
+    /// What Windows told egui, via winit's `ThemeChanged`.
+    system: Option<egui::Theme>,
+    /// What egui resolved it to, after the preference is applied.
+    dark_mode: bool,
+    /// What this program last pushed to DWM for the title bar.
+    titlebar: Option<bool>,
+}
+
+impl ThemeReading {
+    fn take(ctx: &egui::Context, ui: &Ui, titlebar: Option<bool>) -> Self {
+        Self {
+            system: ctx.system_theme(),
+            dark_mode: ui.visuals().dark_mode,
+            titlebar,
+        }
+    }
+}
+
+impl std::fmt::Display for ThemeReading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "system={:?} dark_mode={} titlebar_dark={:?}",
+            self.system, self.dark_mode, self.titlebar
+        )
+    }
+}
+
+/// Drives the theme probe: settle, flip, watch, restore.
+struct ThemeProbe {
+    stage: ProbeStage,
+    frames: usize,
+}
+
+enum ProbeStage {
+    /// Letting the window reach a steady state before anything is measured.
+    Settling { left: usize },
+    /// The setting is flipped and the guard is holding the way back.
+    Waiting {
+        before: ThemeReading,
+        left: usize,
+        /// Restores the system setting when the probe is dropped. Boxed only
+        /// to keep the enum's variants from differing wildly in size, and
+        /// never read: holding it *is* what it does, and dropping the probe is
+        /// what puts the desktop back.
+        #[allow(dead_code)]
+        guard: Box<theme::SystemThemeGuard>,
+    },
+}
+
 struct Bench {
     warmup: usize,
     remaining: usize,
@@ -395,6 +464,9 @@ impl App {
         // so that tab can be measured at all: without a selection it shows
         // nothing, and its one real fault was invisible from outside.
         start_ext: Option<String>,
+        // Runs the runtime theme switch probe instead of waiting for a user to
+        // change the setting by hand.
+        theme_probe: bool,
     ) -> Self {
         install_fonts(&cc.egui_ctx);
 
@@ -459,6 +531,12 @@ impl App {
                 keys_sent: 0,
                 cursor_walked: 0,
                 last_focus: None,
+            }),
+            theme_probe: theme_probe.then(|| ThemeProbe {
+                stage: ProbeStage::Settling {
+                    left: PROBE_SETTLE_FRAMES,
+                },
+                frames: 0,
             }),
         };
 
@@ -1033,6 +1111,94 @@ impl App {
         }
     }
 
+    /// Advances the theme probe, if one is running.
+    ///
+    /// Answers the one question the handover kept open: does
+    /// `ThemePreference::System` follow a theme switch made **while the window
+    /// is up**? Only the startup case was ever proven, and proving this one by
+    /// hand needs somebody to sit in front of the Settings app at the right
+    /// moment — which is why it stayed open through twelve milestones.
+    ///
+    /// The probe flips the setting itself, waits, and puts it back. Both
+    /// halves are reported separately, because they fail separately: egui
+    /// repaints its own widgets, while the title bar is drawn by DWM and only
+    /// changes if this program asks it to.
+    fn drive_theme_probe(&mut self, ctx: &egui::Context, ui: &Ui) {
+        let Some(probe) = &mut self.theme_probe else {
+            return;
+        };
+        ctx.request_repaint();
+        probe.frames += 1;
+
+        match &mut probe.stage {
+            ProbeStage::Settling { left } => {
+                *left -= 1;
+                if *left > 0 {
+                    return;
+                }
+                let before = ThemeReading::take(ctx, ui, self.titlebar_dark);
+                match theme::SystemThemeGuard::flip() {
+                    Ok((guard, now_light)) => {
+                        crate::errln!(
+                            "theme_probe: before {before}; flipped system to {}",
+                            match now_light {
+                                true => "light",
+                                false => "dark",
+                            }
+                        );
+                        crate::console::flush();
+                        probe.stage = ProbeStage::Waiting {
+                            before,
+                            left: PROBE_WAIT_FRAMES,
+                            guard: Box::new(guard),
+                        };
+                    }
+                    Err(error) => {
+                        crate::errln!("theme_probe: could not write the setting: {error:#}");
+                        crate::console::flush();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+
+            ProbeStage::Waiting { before, left, .. } => {
+                let now = ThemeReading::take(ctx, ui, self.titlebar_dark);
+                let reacted = now.system != before.system;
+                *left -= 1;
+
+                if !reacted && *left > 0 {
+                    return;
+                }
+
+                let before = *before;
+                let frames = probe.frames;
+                // Dropping the probe restores the setting through the guard,
+                // before this process can be closed or killed.
+                self.theme_probe = None;
+
+                crate::errln!("theme_probe: after {now}");
+                crate::errln!(
+                    "theme_probe: system_theme_followed={} egui_repainted_dark_mode={} titlebar_followed={} frames={frames}",
+                    reacted,
+                    now.dark_mode != before.dark_mode,
+                    now.titlebar != before.titlebar,
+                );
+                crate::errln!(
+                    "theme_probe: verdict={}",
+                    match (reacted, now.dark_mode != before.dark_mode) {
+                        (true, true) => "ThemePreference::System follows a runtime switch",
+                        (true, false) =>
+                            "system theme arrived but the visuals did not change — check the preference",
+                        _ =>
+                            "no reaction: the RegNotifyChangeKeyValue fallback from ToDo 9.1 is due",
+                    }
+                );
+                crate::console::flush();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
     /// Clears the selection and takes the view back to the top.
     ///
     /// Called whenever the list is about to show a different set — another
@@ -1311,6 +1477,9 @@ impl eframe::App for App {
         // synthetic key presses into this frame's event queue, and a check
         // that runs first would always measure nothing.
         self.drive_bench(&ctx);
+        // After `sync_titlebar` above, so a reading of the title bar reflects
+        // this frame rather than the previous one.
+        self.drive_theme_probe(&ctx, ui);
         // The keyboard belongs to the list that is on screen. Until now the
         // arrows always moved the scanned table, including on the two tabs
         // that do not show it — so on the favourites tab they moved a
@@ -3916,6 +4085,7 @@ pub fn run(
     start_tab: Tab,
     start_search: String,
     start_ext: Option<String>,
+    theme_probe: bool,
 ) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -3936,6 +4106,7 @@ pub fn run(
                 start_tab,
                 start_search.clone(),
                 start_ext.clone(),
+                theme_probe,
             )))
         }),
     )
