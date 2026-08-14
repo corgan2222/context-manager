@@ -228,6 +228,7 @@ pub struct Strings {
     pub fault_percent_one: &'static str,
     pub fault_ampersand: &'static str,
     pub fmt_fault_position: &'static str,
+    pub fmt_restored: &'static str,
 }
 
 pub static DE: Strings = Strings {
@@ -430,6 +431,7 @@ pub static DE: Strings = Strings {
     fault_percent_one: "In einer Hintergrund-Kategorie bleibt %1 leer — hier gehört %V hin.",
     fault_ampersand: "Ein & erzeugt im Menü einen Zugriffsbuchstaben; für ein echtes Und-Zeichen && schreiben.",
     fmt_fault_position: "Position „{}“ ist ungewöhnlich; belegt sind oben und unten.",
+    fmt_restored: "{} Schlüssel zurückgespielt.",
 };
 
 pub static EN: Strings = Strings {
@@ -632,6 +634,7 @@ pub static EN: Strings = Strings {
     fault_percent_one: "%1 stays empty in a background category; %V belongs here.",
     fault_ampersand: "An & becomes an accelerator in the menu; write && for a literal ampersand.",
     fmt_fault_position: "Position \"{}\" is unusual; only top and bottom are verified.",
+    fmt_restored: "{} keys restored.",
 };
 
 /// The two tables side by side, for checks that must cover both.
@@ -834,6 +837,7 @@ fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         fault_percent_one,
         fault_ampersand,
         fmt_fault_position,
+        fmt_restored,
     ]
 }
 

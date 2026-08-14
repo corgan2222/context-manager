@@ -72,6 +72,9 @@ enum Dialog {
     Running,
     Done(Report),
     Error(String),
+    /// Something worked. Its own variant because announcing a finished backup
+    /// in a red window titled "Error" is its own small betrayal.
+    Note(String),
     /// The form for one favourite.
     Favourite {
         draft: Box<Favourite>,
@@ -249,6 +252,8 @@ pub struct App {
     hwnd: Option<HWND>,
     /// Last dark-mode state pushed to DWM, so the call happens on change only.
     titlebar_dark: Option<bool>,
+    /// Language the window title currently carries.
+    title_language: Option<Language>,
     titlebar_supported: bool,
 
     frame_times: FrameTimes,
@@ -345,6 +350,7 @@ impl App {
             settings,
             hwnd,
             titlebar_dark: None,
+            title_language: None,
             titlebar_supported: true,
             frame_times: FrameTimes::default(),
             theme_reported: false,
@@ -677,6 +683,21 @@ impl App {
         Some(stops[next])
     }
 
+    /// Keeps the window title in the language on screen.
+    ///
+    /// The title is set once when the window is created, before the settings
+    /// are read, so it started life German whatever the setting said — the one
+    /// caption that switching the language did not reach. Sent on change only:
+    /// a viewport command every frame would be a message to the window manager
+    /// sixty times a second for nothing.
+    fn sync_title(&mut self, ctx: &egui::Context) {
+        if self.title_language == Some(self.settings.language) {
+            return;
+        }
+        self.title_language = Some(self.settings.language);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.tr.app_title.to_string()));
+    }
+
     /// Keeps the DWM title bar in step with the interface.
     fn sync_titlebar(&mut self, ui: &Ui) {
         let dark = ui.visuals().dark_mode;
@@ -810,10 +831,17 @@ impl App {
 
     /// Builds a plan from the current selection.
     ///
-    /// Read-only entries are dropped rather than attempted: offering an action
-    /// that is certain to fail wastes a backup and a UAC prompt on nothing.
-    /// For COM handlers the block action needs the CLSID, so an entry without
-    /// one is skipped too.
+    /// Two kinds of row are dropped: one whose path is not a `RegTarget` — a
+    /// submenu container, say — and, for block and unblock, one without a
+    /// CLSID, since blocking is a COM-handler mechanism and a static verb has
+    /// no equivalent.
+    ///
+    /// A **read-only** row is deliberately *not* dropped. An earlier version of
+    /// this comment claimed it was, on the grounds that a doomed step wastes a
+    /// backup and a prompt. It costs a line in the report instead, and that is
+    /// the better trade: the user selected the row, and "it failed, here is
+    /// why" beats a row that silently never happened. `read_only` is measured,
+    /// not guessed, and an elevated run can write what an ordinary one cannot.
     fn plan_for_selection(&self, action: Action) -> Plan {
         let Some(scan) = &self.scan else {
             return Plan::new("leer", Vec::new());
@@ -1031,6 +1059,7 @@ impl eframe::App for App {
         self.poll_scan();
         self.icons.poll(&ctx);
         self.sync_titlebar(ui);
+        self.sync_title(&ctx);
 
         if self.filter_dirty {
             self.rebuild_visible();
@@ -1953,6 +1982,29 @@ impl App {
                 keep = false;
             }
 
+            Dialog::Note(message) => {
+                let mut close = false;
+                egui::Window::new(self.tr.title_note)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.label(&message);
+                        ui.add_space(6.0);
+                        if ui
+                            .button(self.tr.btn_close)
+                            .on_hover_text(self.tr.tip_cancel)
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                if !close {
+                    self.dialog = Some(Dialog::Note(message));
+                }
+                keep = false;
+            }
+
             Dialog::Error(message) => {
                 let mut close = false;
                 egui::Window::new(self.tr.title_error)
@@ -2746,6 +2798,8 @@ impl App {
             return;
         }
 
+        let mut restore: Option<std::path::PathBuf> = None;
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2758,7 +2812,20 @@ impl App {
                     ))
                     .id_salt(path)
                     .show(ui, |ui| {
-                        ui.label(path.display().to_string());
+                        ui.horizontal(|ui| {
+                            ui.label(path.display().to_string());
+                            // The delete tooltip has been promising this
+                            // button since it was written; until now the only
+                            // way back was the result dialog of the very
+                            // action one wanted to undo, or the command line.
+                            if ui
+                                .button(self.tr.btn_restore)
+                                .on_hover_text(self.tr.tip_restore)
+                                .clicked()
+                            {
+                                restore = Some(path.clone());
+                            }
+                        });
                         for entry in &manifest.entries {
                             ui.label(format!("  {}", entry.registry_path));
                         }
@@ -2776,6 +2843,20 @@ impl App {
                     });
                 }
             });
+
+        // Applied after the loop, which is walking the list this replaces.
+        if let Some(path) = restore {
+            match backup::restore(&path) {
+                Ok(count) => {
+                    elevation::notify_shell();
+                    self.dialog = Some(Dialog::Note(
+                        self.tr.fmt_restored.replace("{}", &count.to_string()),
+                    ));
+                    self.filter_dirty = true;
+                }
+                Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
+            }
+        }
     }
 }
 
