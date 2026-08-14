@@ -17,6 +17,32 @@ use super::paths::RegTarget;
 /// Keeps `reg.exe` from flashing a console window (ToDo 13.1).
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// How often an operation that lost a race with a file handle is retried.
+///
+/// Both retrying places here fight the same opponent — a scanner holding a
+/// file or directory that was created microseconds ago — so they get the same
+/// budget. The export used to stop after three attempts and 240 ms while
+/// directory creation persisted for two seconds, and there was never a reason
+/// for the export to give up first.
+const RETRY_ATTEMPTS: usize = 20;
+
+/// Base step of the backoff. Attempt `n` waits `STEP * (n + 1)`, so twenty
+/// attempts spread over about two seconds rather than hammering.
+const RETRY_STEP: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// How long to wait before attempt `next`, or `None` when none follows.
+///
+/// Pure so the total budget is asserted in a test instead of estimated in a
+/// comment — and so the last attempt provably does not sleep. Waiting after
+/// the final try is time added to a failure the caller is already waiting for.
+fn retry_delay(
+    next: usize,
+    limit: usize,
+    step: std::time::Duration,
+) -> Option<std::time::Duration> {
+    (next < limit).then(|| step * next as u32)
+}
+
 /// Proof that specific keys were exported before anything was changed.
 ///
 /// The only way to obtain one is [`export`]. [`super::write::delete_tree`]
@@ -214,12 +240,26 @@ fn export_one(full: &str, file: &Path) -> Result<Option<String>> {
     }
 
     let mut last = None;
-    for attempt in 0..3 {
+    for attempt in 0..RETRY_ATTEMPTS {
         match run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
-            None => return Ok(None),
+            None => {
+                // Reported, not silently swallowed: how often this happens and
+                // on which attempt it clears is the only way the number above
+                // stops being a guess. Silence here means it never retried.
+                if attempt > 0 {
+                    crate::errln!(
+                        "backup_export_retry: succeeded on attempt {} for {full}",
+                        attempt + 1
+                    );
+                }
+                return Ok(None);
+            }
             Some(reason) => {
                 last = Some(reason);
-                std::thread::sleep(std::time::Duration::from_millis(40 * (attempt + 1)));
+                match retry_delay(attempt + 1, RETRY_ATTEMPTS, RETRY_STEP) {
+                    Some(delay) => std::thread::sleep(delay),
+                    None => break,
+                }
             }
         }
     }
@@ -258,12 +298,20 @@ fn key_is_absent(full: &str) -> bool {
 /// costs nothing and turns a lost backup into a slightly later one.
 fn create_root(root: &Path) -> Result<()> {
     let mut last = None;
-    for attempt in 0..20 {
+    for attempt in 0..RETRY_ATTEMPTS {
         match std::fs::create_dir_all(root) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                if attempt > 0 {
+                    crate::errln!("backup_root_retry: succeeded on attempt {}", attempt + 1);
+                }
+                return Ok(());
+            }
             Err(error) => {
                 last = Some(error);
-                std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1)));
+                match retry_delay(attempt + 1, RETRY_ATTEMPTS, RETRY_STEP) {
+                    Some(delay) => std::thread::sleep(delay),
+                    None => break,
+                }
             }
         }
     }
@@ -396,6 +444,42 @@ fn sanitize(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_attempt_does_not_sleep() {
+        // The bug this replaced: three attempts, three sleeps. The third one
+        // was 120 ms of pure delay in front of a failure the caller was
+        // already waiting for.
+        assert_eq!(
+            retry_delay(RETRY_ATTEMPTS, RETRY_ATTEMPTS, RETRY_STEP),
+            None
+        );
+        assert!(retry_delay(RETRY_ATTEMPTS - 1, RETRY_ATTEMPTS, RETRY_STEP).is_some());
+    }
+
+    #[test]
+    fn the_retry_budget_is_about_two_seconds() {
+        // Long enough to outlast a scanner holding a freshly written file,
+        // short enough that a genuinely broken export still answers. Asserted
+        // rather than described, because the two constants are easy to change
+        // without noticing what they add up to.
+        let total: std::time::Duration = (0..RETRY_ATTEMPTS)
+            .filter_map(|attempt| retry_delay(attempt + 1, RETRY_ATTEMPTS, RETRY_STEP))
+            .sum();
+
+        assert!(
+            (1900..=2200).contains(&total.as_millis()),
+            "retry budget is {} ms",
+            total.as_millis()
+        );
+    }
+
+    #[test]
+    fn the_backoff_grows_instead_of_hammering() {
+        let first = retry_delay(1, RETRY_ATTEMPTS, RETRY_STEP).expect("a second attempt follows");
+        let later = retry_delay(10, RETRY_ATTEMPTS, RETRY_STEP).expect("an eleventh follows");
+        assert!(later > first, "{later:?} should be longer than {first:?}");
+    }
 
     #[test]
     fn sanitising_keeps_names_recognisable_and_legal() {
