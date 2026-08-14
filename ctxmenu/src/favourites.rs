@@ -231,6 +231,10 @@ impl Favourite {
             }),
             position: None,
             extended: false,
+            // A favourite is one tool and one command line, so it is one
+            // entry. Grouping several favourites under a submenu would be a
+            // different feature and a different decision.
+            children: Vec::new(),
         }
     }
 

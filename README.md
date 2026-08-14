@@ -36,6 +36,10 @@ switchable at runtime; this README is German only.*
 - **Eigene Einträge anlegen** mit Anzeigename, Befehl, Symbol, Position und
   Umschalt-Sichtbarkeit. Immer in `HKCU`, also ohne Administratorrechte und
   ohne Risiko für andere Konten.
+- **Auch als Untermenü.** Statt eines Befehls bekommt der Eintrag eine Liste
+  von Untereinträgen, die im Menü aufklappt. Die Reihenfolge im Formular ist
+  die im Menü — Windows sortiert Registry-Schlüssel alphabetisch, deshalb
+  nummeriert das Werkzeug sie beim Schreiben durch.
 - **Favoriten: der Werkzeugkasten.** Ein Programm oder ein Webtool einmal
   eintragen, und es bleibt. Von dort aus landet es mit einem Klick in jeder
   Kategorie oder bei einem bestimmten Dateityp. Aus dem Reiter *Programme*
@@ -172,6 +176,10 @@ ctxmenu backups                          Sicherungen auflisten
 ctxmenu restore "<verzeichnis>"          Sicherung zurückspielen
 ctxmenu create --category directory --name "Mit Editor öffnen"
                --command "\"C:\Windows\notepad.exe\" \"%1\""
+ctxmenu create --category directory --name "Werkzeuge"
+               --sub "Öffnen|\"C:\Windows\notepad.exe\" \"%1\""
+               --sub "Anzeigen|cmd /c dir \"%1\" & pause"
+                                         Untermenü statt einem Befehl
 ctxmenu created                          eigene Einträge auflisten
 ctxmenu favourites                       Favoriten auflisten
 ctxmenu favourite add --name "PNG verkleinern"

@@ -176,6 +176,98 @@ fn a_deleted_key_comes_back_from_its_backup() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
+/// What the editor writes as a submenu, read back by the scanner.
+///
+/// Both halves in one test on purpose. The form's promise is not "a key with
+/// these three values" but "an entry that opens onto its children in the right
+/// order", and only the scanner can say whether that arrived. It also settles
+/// the one question the shape of the keys cannot: the registry hands subkeys
+/// back alphabetically, so a submenu whose children are meant to keep the
+/// order they were typed in has to carry that order in their names.
+#[test]
+fn a_submenu_written_by_the_editor_comes_back_as_a_cascading_entry() {
+    use ctxmenu::registry::create::{self, NewChild, NewEntry};
+
+    let _guard = serialized();
+    let name = "ctxmenu selftest submenu";
+
+    // Deliberately in the order that is *not* alphabetical: without the
+    // numbered key names the menu would show Anton first.
+    let children: Vec<NewChild> = ["Zebra", "Anton"]
+        .iter()
+        .enumerate()
+        .map(|(index, display)| NewChild {
+            key_name: create::suggest_child_key_name(index, display),
+            display_name: (*display).into(),
+            command: format!(r#""C:\Windows\system32\cmd.exe" /c echo {display}"#),
+            icon: None,
+        })
+        .collect();
+
+    let entry = NewEntry {
+        category: Category::Directory,
+        key_name: name.into(),
+        display_name: "Selbsttest-Untermenü".into(),
+        command: String::new(),
+        icon: None,
+        position: None,
+        extended: false,
+        children: children.clone(),
+    };
+
+    let target = create::create(&entry).expect("HKCU takes an entry without elevation");
+    // Same reason as `Fixture`: an assertion below unwinds, and a stray
+    // submenu in the user's real folder menu is a rude way to fail.
+    struct Cleanup(RegTarget);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = CURRENT_USER.remove_tree(self.0.key_path());
+            let _ = ctxmenu::registry::create::forget_target(&self.0);
+        }
+    }
+    let cleanup = Cleanup(target.clone());
+
+    let found = find_entry(name).expect("the submenu must show up in a Directory scan");
+    let EntryKind::Verb {
+        command,
+        sub_commands,
+    } = &found.kind
+    else {
+        panic!("expected a verb");
+    };
+
+    assert_eq!(found.display_name, "Selbsttest-Untermenü");
+    assert!(
+        command.is_none(),
+        "a submenu runs nothing itself, so it has no command line"
+    );
+    assert_eq!(sub_commands.len(), 2, "got {sub_commands:?}");
+
+    // The order the user chose, not the one the registry would produce.
+    assert_eq!(sub_commands[0].display_name, "Zebra");
+    assert_eq!(sub_commands[1].display_name, "Anton");
+
+    for (child, written) in sub_commands.iter().zip(&children) {
+        let EntryKind::Verb { command, .. } = &child.kind else {
+            panic!("expected a verb");
+        };
+        assert_eq!(command.as_deref(), Some(written.command.as_str()));
+        // A child is addressable in its own right — that is what makes it
+        // selectable and deletable in the window.
+        assert_eq!(
+            child.registry_path,
+            format!(r"{}\shell\{}", target.full_path(), written.key_name)
+        );
+        assert!(RegTarget::parse(&child.registry_path).is_ok());
+    }
+
+    drop(cleanup);
+    assert!(
+        !write::exists(&target),
+        "the fixture cleans up after itself"
+    );
+}
+
 /// The second kind of cascading menu: `SubCommands` names verbs that live in
 /// the CommandStore instead of below the entry itself (ToDo 5.5).
 ///

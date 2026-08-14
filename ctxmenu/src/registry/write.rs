@@ -10,6 +10,7 @@ use windows_registry::LOCAL_MACHINE;
 
 use super::backup::BackupToken;
 use super::paths::{self, RegTarget};
+use crate::model::Scope;
 
 /// Deletes a key and everything below it.
 ///
@@ -35,6 +36,36 @@ pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
         })?;
 
     Ok(())
+}
+
+/// Removes a key this program created moments ago, without a backup token.
+///
+/// The single delete in this code base with no backup behind it, and the
+/// reason is that there is nothing to back up: [`super::create::create`]
+/// refuses a target that already exists, so everything this removes was
+/// written by the very call that is now failing. Leaving it there would put a
+/// submenu with no entries into the user's context menu — visible, useless,
+/// and looking exactly like a fault in Explorer.
+///
+/// Restricted to the user's own hive, which is the only place `create` writes.
+/// A caller that manages to hand this an HKLM target has a bug, and the bug
+/// should stop here rather than take a machine-wide key with it.
+pub fn remove_own_new_key(target: &RegTarget) -> Result<()> {
+    if target.scope() != Scope::User {
+        bail!(
+            "Nur eigene HKCU-Schlüssel / own HKCU keys only: {}",
+            target.full_path()
+        );
+    }
+
+    paths::root_key(target.scope())
+        .remove_tree(target.key_path())
+        .with_context(|| {
+            format!(
+                "Zurücknehmen fehlgeschlagen / could not roll back: {}",
+                target.full_path()
+            )
+        })
 }
 
 /// Does this key currently exist?
@@ -231,8 +262,33 @@ fn require_blocked_backup(token: &BackupToken) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Scope;
     use crate::registry::backup;
+
+    #[test]
+    fn the_rollback_delete_stays_inside_the_users_own_hive() {
+        // The one delete here with no backup behind it. What makes it safe is
+        // that `create` writes HKCU and nowhere else, so a caller handing this
+        // a machine-wide target has a bug — and the bug has to stop here
+        // rather than take a system key with it.
+        let machine = RegTarget::below_classes(Scope::Machine, r"Directory\shell\ctxmenu_nonsense")
+            .expect("a test path names an entry");
+        assert!(remove_own_new_key(&machine).is_err());
+
+        // Its own throwaway class, for the same reason as the test below: the
+        // scanner tests enumerate `Directory\shell` in parallel.
+        let own =
+            RegTarget::below_classes(Scope::User, r"ctxmenu_selftest_rollback\shell\ctxmenu_gone")
+                .expect("a test path names an entry");
+        paths::root_key(Scope::User)
+            .create(own.key_path())
+            .expect("HKCU is writable");
+
+        remove_own_new_key(&own).expect("a key this program just wrote");
+        assert!(!exists(&own));
+
+        let _ =
+            paths::root_key(Scope::User).remove_tree(r"SOFTWARE\Classes\ctxmenu_selftest_rollback");
+    }
 
     #[test]
     fn a_token_for_another_key_does_not_authorise_a_delete() {

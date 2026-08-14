@@ -21,7 +21,7 @@ use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
 use crate::program::group::{self, ProgramGroup};
 use crate::program::identity::NameResolver;
 use crate::registry::backup::{self, BackupManifest};
-use crate::registry::create::{self, Fault, NewEntry, Problem};
+use crate::registry::create::{self, Fault, NewChild, NewEntry, Problem};
 use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
 use crate::settings::{Language, Settings, ThemeChoice};
@@ -1738,6 +1738,7 @@ impl App {
                                 icon: None,
                                 position: None,
                                 extended: false,
+                                children: Vec::new(),
                             }),
                             recorded: create::recorded().unwrap_or_default(),
                         });
@@ -2666,6 +2667,38 @@ impl App {
                                 });
                                 ui.end_row();
 
+                                // Before the name, because it decides what the
+                                // rest of the form even asks for: a submenu has
+                                // no command line of its own.
+                                ui.label(self.tr.editor_kind);
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .selectable_label(
+                                            !entry.is_submenu(),
+                                            self.tr.editor_kind_single,
+                                        )
+                                        .clicked()
+                                    {
+                                        entry.children.clear();
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            entry.is_submenu(),
+                                            self.tr.editor_kind_submenu,
+                                        )
+                                        .on_hover_text(self.tr.tip_editor_submenu)
+                                        .clicked()
+                                        && entry.children.is_empty()
+                                    {
+                                        // A submenu with no children is a menu
+                                        // item that opens onto nothing, so the
+                                        // mode starts with one empty row rather
+                                        // than with an invalid entry.
+                                        entry.children.push(empty_child());
+                                    }
+                                });
+                                ui.end_row();
+
                                 ui.label(self.tr.editor_display_name);
                                 let before = entry.display_name.clone();
                                 ui.add(
@@ -2690,13 +2723,25 @@ impl App {
                                 );
                                 ui.end_row();
 
-                                ui.label(self.tr.editor_command);
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut entry.command)
-                                        .desired_width(400.0)
-                                        .hint_text(HINT_COMMAND),
-                                );
-                                ui.end_row();
+                                // Hidden rather than greyed out for a submenu:
+                                // the value would not be written, and a field
+                                // that quietly does nothing is worse than an
+                                // absent one.
+                                if !entry.is_submenu() {
+                                    ui.label(self.tr.editor_command);
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut entry.command)
+                                            .desired_width(400.0)
+                                            .hint_text(HINT_COMMAND),
+                                    );
+                                    ui.end_row();
+                                } else {
+                                    ui.label(self.tr.editor_children);
+                                    ui.vertical(|ui| {
+                                        children_editor(ui, &mut entry.children, icons, self.tr);
+                                    });
+                                    ui.end_row();
+                                }
 
                                 ui.label(self.tr.editor_icon);
                                 ui.horizontal(|ui| {
@@ -3933,6 +3978,113 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
 ///
 /// The checking modules report a cause rather than a sentence — they also feed
 /// the console, which has no language setting — so the sentence is built here.
+/// A fresh, empty row of the submenu list.
+fn empty_child() -> NewChild {
+    NewChild {
+        // Derived from the position in the list every frame, so there is
+        // nothing to fill in here (see `children_editor`).
+        key_name: String::new(),
+        display_name: String::new(),
+        command: String::new(),
+        icon: None,
+    }
+}
+
+/// The rows of a submenu: name, command, icon, and the order.
+///
+/// Its own function because the editor dialog is long enough already, and
+/// because the order needs three deferred actions — a list cannot be
+/// rearranged while it is being iterated over.
+fn children_editor(
+    ui: &mut Ui,
+    children: &mut Vec<NewChild>,
+    icons: &mut IconCache,
+    tr: &'static Strings,
+) {
+    let mut move_up = None;
+    let mut move_down = None;
+    let mut remove = None;
+    let count = children.len();
+
+    for (index, child) in children.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut child.display_name)
+                    .desired_width(150.0)
+                    .hint_text(tr.editor_child_name_hint),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut child.command)
+                    .desired_width(240.0)
+                    .hint_text(HINT_COMMAND),
+            );
+
+            let mut icon = child.icon.clone().unwrap_or_default();
+            ui.add(
+                egui::TextEdit::singleline(&mut icon)
+                    .desired_width(110.0)
+                    .hint_text(HINT_ICON),
+            );
+            let icon = icon.trim().to_string();
+            // Same preview as the entry's own icon field, for the same
+            // reason: a typo in `shell32.dll,-244` is invisible otherwise.
+            if !icon.is_empty() {
+                let texture = icons.get(&icon).clone();
+                ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                    texture.id(),
+                    egui::vec2(16.0, 16.0),
+                )));
+            }
+            child.icon = (!icon.is_empty()).then_some(icon);
+
+            if ui
+                .add_enabled(index > 0, egui::Button::new("\u{2191}"))
+                .on_hover_text(tr.tip_child_up)
+                .clicked()
+            {
+                move_up = Some(index);
+            }
+            if ui
+                .add_enabled(index + 1 < count, egui::Button::new("\u{2193}"))
+                .on_hover_text(tr.tip_child_down)
+                .clicked()
+            {
+                move_down = Some(index);
+            }
+            // The last one stays: an empty submenu is not a state this form
+            // can write, and "single entry" above is the way back.
+            if ui
+                .add_enabled(count > 1, egui::Button::new("\u{2715}"))
+                .on_hover_text(tr.tip_child_remove)
+                .clicked()
+            {
+                remove = Some(index);
+            }
+        });
+    }
+
+    if let Some(index) = move_up {
+        children.swap(index, index - 1);
+    }
+    if let Some(index) = move_down {
+        children.swap(index, index + 1);
+    }
+    if let Some(index) = remove {
+        children.remove(index);
+    }
+
+    if ui.button(tr.editor_child_add).clicked() {
+        children.push(empty_child());
+    }
+
+    // The key name is the order — the registry hands subkeys back in
+    // alphabetical order whatever order they were written in — so it is
+    // derived here rather than typed, and re-derived after every move.
+    for (index, child) in children.iter_mut().enumerate() {
+        child.key_name = create::suggest_child_key_name(index, &child.display_name);
+    }
+}
+
 fn fault_text(fault: &Fault, tr: &'static Strings) -> String {
     match fault {
         Fault::MissingKeyName => tr.fault_key_name.to_string(),
@@ -3942,6 +4094,10 @@ fn fault_text(fault: &Fault, tr: &'static Strings) -> String {
         Fault::PercentOneInBackground => tr.fault_percent_one.to_string(),
         Fault::AmpersandInDisplayName => tr.fault_ampersand.to_string(),
         Fault::UnusualPosition(value) => tr.fmt_fault_position.replace("{}", value),
+        Fault::CommandBesideSubmenu => tr.fault_command_in_submenu.to_string(),
+        Fault::ChildMissingDisplayName(n) => tr.fmt_fault_child_name.replace("{}", &n.to_string()),
+        Fault::ChildMissingCommand(n) => tr.fmt_fault_child_command.replace("{}", &n.to_string()),
+        Fault::DuplicateChildKeyName(name) => tr.fmt_fault_child_duplicate.replace("{}", name),
     }
 }
 
@@ -4327,6 +4483,7 @@ mod tests {
                 icon: None,
                 position: None,
                 extended: false,
+                children: Vec::new(),
             };
             assert!(
                 entry.target().is_ok(),

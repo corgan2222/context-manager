@@ -27,11 +27,55 @@ pub struct NewEntry {
     /// subkeys alphabetically and nothing else influences the base order.
     pub key_name: String,
     pub display_name: String,
+    /// Empty when this entry is a submenu: a cascading parent runs nothing
+    /// itself, its children do.
     pub command: String,
     pub icon: Option<String>,
     pub position: Option<String>,
     /// Only visible while Shift is held.
     pub extended: bool,
+    /// Children of a cascading menu, or empty for an ordinary entry.
+    ///
+    /// `serde(default)` because every entry written before 2026-08-15 has no
+    /// such field, and an `entries.json` from then still has to read.
+    #[serde(default)]
+    pub children: Vec<NewChild>,
+}
+
+/// One entry inside a submenu.
+///
+/// Its own type rather than a nested [`NewEntry`]: a child has no category (it
+/// lives wherever its parent does), no `Position` (the submenu is positioned,
+/// not its contents), and no children of its own. Windows does allow deeper
+/// nesting — the scanner follows it — but this editor offers exactly one
+/// level, and a type that cannot express more cannot write more by accident.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewChild {
+    /// Derived from the position in the list, not typed: subkeys come back
+    /// alphabetically, so the name *is* the order (see
+    /// [`suggest_child_key_name`]).
+    pub key_name: String,
+    pub display_name: String,
+    pub command: String,
+    pub icon: Option<String>,
+}
+
+impl NewEntry {
+    /// A cascading menu rather than a single entry.
+    pub fn is_submenu(&self) -> bool {
+        !self.children.is_empty()
+    }
+
+    /// Every command line this entry is going to write.
+    ///
+    /// A submenu's own `command` field is deliberately not among them: it does
+    /// not reach the registry, so checking its contents would be checking
+    /// something nobody will ever run.
+    fn commands(&self) -> impl Iterator<Item = &str> {
+        let own = (!self.is_submenu()).then_some(self.command.as_str());
+        own.into_iter()
+            .chain(self.children.iter().map(|c| c.command.as_str()))
+    }
 }
 
 /// What is wrong, without saying it in any particular language.
@@ -52,6 +96,13 @@ pub enum Fault {
     AmpersandInDisplayName,
     /// A `Position` value other than Top or Bottom.
     UnusualPosition(String),
+    /// A submenu carries no command of its own; the value would be dropped.
+    CommandBesideSubmenu,
+    /// Numbers are 1-based: they name a row of the form, not an index.
+    ChildMissingDisplayName(usize),
+    ChildMissingCommand(usize),
+    /// Two children would end up in the same registry key.
+    DuplicateChildKeyName(String),
 }
 
 impl Fault {
@@ -78,6 +129,20 @@ impl Fault {
             Fault::UnusualPosition(value) => format!(
                 "Position {value:?} ist ungewöhnlich; belegt sind Top und Bottom. / \
                  unusual Position; only Top and Bottom are verified."
+            ),
+            Fault::CommandBesideSubmenu => {
+                "Ein Untermenü führt selbst nichts aus; der Befehl wird nicht geschrieben. / \
+                 a submenu runs nothing itself; the command will not be written."
+                    .into()
+            }
+            Fault::ChildMissingDisplayName(n) => {
+                format!("Untereintrag {n} hat keinen Anzeigenamen / submenu entry {n} has no name")
+            }
+            Fault::ChildMissingCommand(n) => {
+                format!("Untereintrag {n} hat keinen Befehl / submenu entry {n} has no command")
+            }
+            Fault::DuplicateChildKeyName(name) => format!(
+                "Zwei Untereinträge heißen {name:?} / two submenu entries are called {name:?}"
             ),
         }
     }
@@ -136,19 +201,29 @@ pub fn check(entry: &NewEntry) -> Vec<Problem> {
         problems.push(Problem::Error(Fault::MissingDisplayName));
     }
 
-    if entry.command.trim().is_empty() {
+    if entry.is_submenu() {
+        // Not an error: the entry is writable, the command is simply not part
+        // of it. Said out loud rather than swallowed, because a command line
+        // that vanishes without a word is indistinguishable from one that was
+        // written and does not work.
+        if !entry.command.trim().is_empty() {
+            problems.push(Problem::Warning(Fault::CommandBesideSubmenu));
+        }
+        problems.extend(child_problems(entry));
+    } else if entry.command.trim().is_empty() {
         problems.push(Problem::Error(Fault::MissingCommand));
     }
 
-    // The one that actually catches people out.
-    if is_background(&entry.category)
-        && entry.command.contains("%1")
-        && !entry.command.contains("%V")
-    {
+    // The one that actually catches people out. Reported once however many
+    // commands carry it: the cause and the cure are the same for all of them,
+    // and ten identical lines below a form are read as one anyway.
+    if is_background(&entry.category) && entry.commands().any(uses_percent_one_wrongly) {
         problems.push(Problem::Warning(Fault::PercentOneInBackground));
     }
 
-    if entry.display_name.contains('&') {
+    if entry.display_name.contains('&')
+        || entry.children.iter().any(|c| c.display_name.contains('&'))
+    {
         problems.push(Problem::Warning(Fault::AmpersandInDisplayName));
     }
 
@@ -156,6 +231,53 @@ pub fn check(entry: &NewEntry) -> Vec<Problem> {
         && !matches!(position.as_str(), "Top" | "Bottom")
     {
         problems.push(Problem::Warning(Fault::UnusualPosition(position.clone())));
+    }
+
+    problems
+}
+
+/// `%1` where the clicked object never provides one.
+fn uses_percent_one_wrongly(command: &str) -> bool {
+    command.contains("%1") && !command.contains("%V")
+}
+
+/// What is wrong inside a submenu.
+///
+/// The children are what a cascading entry consists of, so a missing name or
+/// command in one of them is as much an error as it is on a single entry —
+/// only it has to say *which* one, hence the 1-based numbers.
+fn child_problems(entry: &NewEntry) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
+    for (index, child) in entry.children.iter().enumerate() {
+        let number = index + 1;
+
+        if child.display_name.trim().is_empty() {
+            problems.push(Problem::Error(Fault::ChildMissingDisplayName(number)));
+        }
+        if child.command.trim().is_empty() {
+            problems.push(Problem::Error(Fault::ChildMissingCommand(number)));
+        }
+
+        let key = child.key_name.trim();
+        if key.is_empty() {
+            problems.push(Problem::Error(Fault::MissingKeyName));
+        } else if key.contains(['\\', '/']) {
+            problems.push(Problem::Error(Fault::BackslashInKeyName));
+        }
+
+        // Registry key names are case-insensitive, so two children differing
+        // only in capitalisation are one key: the second would overwrite the
+        // first and the menu would be one entry short, with nothing to say why.
+        let folded = key.to_lowercase();
+        if !folded.is_empty() {
+            if seen.contains(&folded) {
+                problems.push(Problem::Error(Fault::DuplicateChildKeyName(key.into())));
+            } else {
+                seen.push(folded);
+            }
+        }
     }
 
     problems
@@ -259,6 +381,26 @@ pub fn create(entry: &NewEntry) -> Result<RegTarget> {
         );
     }
 
+    // All or nothing: a submenu whose children failed halfway through is a
+    // menu item that opens onto an empty box, and nobody asked for that. The
+    // `exists` check above refused an existing key, so everything below the
+    // target was written by this call and taking it back destroys nothing.
+    if let Err(error) = write_tree(entry, &target) {
+        let _ = super::write::remove_own_new_key(&target);
+        return Err(error);
+    }
+
+    // Best effort: a failure here costs the Windows 11 handler its knowledge
+    // of this entry, but the entry itself is already in place and working.
+    if let Err(error) = record(entry) {
+        return Err(error.context("entries.json"));
+    }
+
+    Ok(target)
+}
+
+/// Writes the key, its values and whatever hangs below it.
+fn write_tree(entry: &NewEntry, target: &RegTarget) -> Result<()> {
     let key = CURRENT_USER.create(target.key_path()).with_context(|| {
         format!(
             "Anlegen fehlgeschlagen / could not create {}",
@@ -266,7 +408,21 @@ pub fn create(entry: &NewEntry) -> Result<RegTarget> {
         )
     })?;
 
-    key.set_string("", entry.display_name.trim())?;
+    if entry.is_submenu() {
+        // Measured across every `SubCommands` key under both classes roots on
+        // this machine: all 15 submenu parents name themselves in `MUIVerb`,
+        // not one of them has a default value, and not one has a `command`
+        // subkey. A single entry keeps the default value — that is the form
+        // the milestone 10 acceptance test photographed in the VM.
+        key.set_string("MUIVerb", entry.display_name.trim())?;
+        // The marker itself. Empty means "this is a submenu and my children
+        // are in my own `shell` subkey"; a *non-empty* value would name verbs
+        // in the CommandStore, which is a different mechanism.
+        key.set_string("SubCommands", "")?;
+    } else {
+        key.set_string("", entry.display_name.trim())?;
+    }
+
     if let Some(icon) = &entry.icon
         && !icon.trim().is_empty()
     {
@@ -279,18 +435,46 @@ pub fn create(entry: &NewEntry) -> Result<RegTarget> {
         key.set_string("Extended", "")?;
     }
 
-    CURRENT_USER
-        .create(format!(r"{}\command", target.key_path()))
-        .and_then(|command| command.set_string("", entry.command.trim()))
-        .context("command-Unterschlüssel / command subkey")?;
-
-    // Best effort: a failure here costs the Windows 11 handler its knowledge
-    // of this entry, but the entry itself is already in place and working.
-    if let Err(error) = record(entry) {
-        return Err(error.context("entries.json"));
+    if entry.is_submenu() {
+        for child in &entry.children {
+            write_child(target, child)?;
+        }
+    } else {
+        CURRENT_USER
+            .create(format!(r"{}\command", target.key_path()))
+            .and_then(|command| command.set_string("", entry.command.trim()))
+            .context("command-Unterschlüssel / command subkey")?;
     }
 
-    Ok(target)
+    Ok(())
+}
+
+/// One child of a submenu: `<parent>\shell\<key>` and its `command`.
+fn write_child(parent: &RegTarget, child: &NewChild) -> Result<()> {
+    let path = format!(r"{}\shell\{}", parent.key_path(), child.key_name.trim());
+
+    let key = CURRENT_USER.create(&path).with_context(|| {
+        format!(
+            "Untereintrag anlegen fehlgeschlagen / could not create submenu entry: {}",
+            child.display_name.trim()
+        )
+    })?;
+
+    // `MUIVerb` again, for the same measured reason: all 21 children of the
+    // real submenus on this machine carry it, none carries a default value.
+    key.set_string("MUIVerb", child.display_name.trim())?;
+    if let Some(icon) = &child.icon
+        && !icon.trim().is_empty()
+    {
+        key.set_string("Icon", icon.trim())?;
+    }
+
+    CURRENT_USER
+        .create(format!(r"{path}\command"))
+        .and_then(|command| command.set_string("", child.command.trim()))
+        .with_context(|| format!("command-Unterschlüssel / command subkey: {path}"))?;
+
+    Ok(())
 }
 
 /// `%LOCALAPPDATA%\ctxmenu\entries.json`
@@ -369,15 +553,34 @@ pub fn forget(category: &Category, key_name: &str) -> Result<()> {
 /// Prefixed because the key name is the only lever on the base order, and a
 /// tool's own entries should at least sort together.
 pub fn suggest_key_name(display_name: &str) -> String {
+    format!("ctxmenu_{}", sanitise(display_name))
+}
+
+/// The key name for the n-th child of a submenu, counted from zero.
+///
+/// Numbered, and not left to the user, because the key name *is* the order:
+/// the registry hands subkeys back alphabetically no matter which order they
+/// were written in, so a child moved up in the form has to be renamed to move
+/// up in the menu. Both foreign tools on this machine that ship a submenu do
+/// exactly this — MarkItDown numbers `01_save, 02_clip, 03_open`, the
+/// Attributes menu letters `aShow, bReset, cReadOnlySet`.
+///
+/// Two digits, so ten children do not sort in front of two.
+pub fn suggest_child_key_name(index: usize, display_name: &str) -> String {
+    format!("{:02}_{}", index + 1, sanitise(display_name))
+}
+
+/// A display name reduced to something a registry key can be called.
+fn sanitise(display_name: &str) -> String {
     let cleaned: String = display_name
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect();
     let trimmed = cleaned.trim_matches('_');
     if trimmed.is_empty() {
-        "ctxmenu_eintrag".into()
+        "eintrag".into()
     } else {
-        format!("ctxmenu_{}", trimmed.chars().take(48).collect::<String>())
+        trimmed.chars().take(48).collect()
     }
 }
 
@@ -423,6 +626,16 @@ mod tests {
             icon: None,
             position: None,
             extended: false,
+            children: Vec::new(),
+        }
+    }
+
+    fn child(display_name: &str, command: &str) -> NewChild {
+        NewChild {
+            key_name: suggest_child_key_name(0, display_name),
+            display_name: display_name.into(),
+            command: command.into(),
+            icon: None,
         }
     }
 
@@ -578,6 +791,149 @@ mod tests {
     }
 
     #[test]
+    fn a_submenu_needs_no_command_of_its_own_but_its_children_do() {
+        let mut e = entry(Category::Directory, "");
+        // Without children this is the old rule and still an error.
+        assert!(check(&e).iter().any(Problem::is_error));
+
+        e.children = vec![child("Erster", r#""C:\t.exe" "%1""#)];
+        assert!(
+            !check(&e).iter().any(Problem::is_error),
+            "a submenu is complete without a command line: {:?}",
+            check(&e)
+        );
+
+        // A child without one is exactly as broken as an entry without one,
+        // and the message has to say which row.
+        e.children.push(child("Zweiter", "  "));
+        e.children[1].key_name = suggest_child_key_name(1, "Zweiter");
+        assert!(
+            check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::ChildMissingCommand(2))),
+            "got {:?}",
+            check(&e)
+        );
+
+        // Nameless likewise, and numbered the same way: rows, not indices.
+        e.children[1] = child("", "x");
+        e.children[1].key_name = suggest_child_key_name(1, "");
+        assert!(
+            check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::ChildMissingDisplayName(2)))
+        );
+    }
+
+    #[test]
+    fn a_command_beside_a_submenu_is_said_out_loud_rather_than_dropped() {
+        // It is not written — a submenu parent has no `command` subkey — and a
+        // command line that disappears without a word looks exactly like one
+        // that was written and does not work.
+        let mut e = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        e.children = vec![child("Erster", "x")];
+
+        let problems = check(&e);
+        assert!(!problems.iter().any(Problem::is_error));
+        assert!(
+            problems
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::CommandBesideSubmenu))
+        );
+    }
+
+    #[test]
+    fn two_children_that_would_share_one_key_are_refused() {
+        // Registry key names are case-insensitive, so these are one key: the
+        // second would overwrite the first and the menu would be one entry
+        // short with nothing to say why.
+        let mut e = entry(Category::Directory, "");
+        e.children = vec![child("Doppelt", "a"), child("Doppelt", "b")];
+        e.children[1].key_name = e.children[0].key_name.to_uppercase();
+
+        assert!(
+            check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::DuplicateChildKeyName(_)))
+        );
+    }
+
+    #[test]
+    fn the_percent_one_warning_follows_the_commands_that_are_really_written() {
+        // The trap is in the children now, and the parent's own command field
+        // is not written at all — so it must neither trigger the warning nor
+        // hide it.
+        let mut e = entry(Category::DirectoryBackground, r#""C:\t.exe" "%V""#);
+        e.children = vec![child("Kind", r#""C:\t.exe" "%1""#)];
+        assert!(
+            check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::PercentOneInBackground)),
+            "a child's %1 is the same trap as the parent's"
+        );
+
+        // The other way round: the ignored parent command carries %1, every
+        // child is correct. Warning about it would be warning about a value
+        // nobody will ever run.
+        let mut e = entry(Category::DirectoryBackground, r#""C:\t.exe" "%1""#);
+        e.children = vec![child("Kind", r#""C:\t.exe" "%V""#)];
+        assert!(
+            !check(&e)
+                .iter()
+                .any(|p| matches!(p.fault(), Fault::PercentOneInBackground))
+        );
+    }
+
+    #[test]
+    fn child_key_names_carry_the_order_the_user_chose() {
+        // The registry hands subkeys back alphabetically whatever order they
+        // were written in, so the number in front is the whole mechanism.
+        let names = ["Zebra", "Anton"];
+        let keys: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| suggest_child_key_name(i, name))
+            .collect();
+
+        assert_eq!(keys, ["01_Zebra", "02_Anton"]);
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted, keys,
+            "sorted alphabetically, Zebra still comes first"
+        );
+
+        // Two digits, or ten children would sort in front of two.
+        assert_eq!(suggest_child_key_name(9, "x"), "10_x");
+        assert!(suggest_child_key_name(1, "10_x") < suggest_child_key_name(9, "a"));
+
+        // A row with no name yet must still produce a usable key.
+        assert_eq!(suggest_child_key_name(0, "  "), "01_eintrag");
+        assert!(!suggest_child_key_name(0, r"a\b").contains('\\'));
+    }
+
+    #[test]
+    fn an_entries_json_written_before_submenus_still_reads() {
+        // `entries.json` is the user's file and predates this field; a strict
+        // deserialiser would make the editor's "already created" list empty
+        // and, later, cost the Windows 11 handler every entry it knows.
+        let old = r#"[{
+            "category": "Directory",
+            "key_name": "ctxmenu_alt",
+            "display_name": "Alt",
+            "command": "cmd /c echo alt",
+            "icon": null,
+            "position": null,
+            "extended": false
+        }]"#;
+
+        let parsed: Vec<NewEntry> = serde_json::from_str(old).expect("old records still read");
+        assert_eq!(parsed.len(), 1);
+        assert!(!parsed[0].is_submenu());
+        assert!(parsed[0].children.is_empty());
+    }
+
+    #[test]
     fn the_suggested_key_name_is_usable_as_one() {
         assert_eq!(
             suggest_key_name("Mit Tool öffnen"),
@@ -585,6 +941,138 @@ mod tests {
         );
         assert_eq!(suggest_key_name("  &  "), "ctxmenu_eintrag");
         assert!(!suggest_key_name(r"a\b/c").contains('\\'));
+    }
+
+    /// Removes an invented file-type branch when the test ends.
+    ///
+    /// `Drop` rather than a line at the end of the test body: a failing
+    /// assertion unwinds, and a key under a made-up extension would then stay
+    /// in the user's registry for good. The extension is invented precisely so
+    /// that these tests write where no real menu can see them — unlike
+    /// `Directory\shell`, which is the menu the user gets on every folder.
+    struct Branch(&'static str);
+
+    impl Drop for Branch {
+        fn drop(&mut self) {
+            let _ = CURRENT_USER.remove_tree(format!(
+                r"SOFTWARE\Classes\SystemFileAssociations\{}",
+                self.0
+            ));
+        }
+    }
+
+    #[test]
+    fn a_submenu_is_written_as_muiverb_with_an_empty_subcommands() {
+        // The measured shape, not an invented one: of the 15 submenu parents
+        // on this machine every single one names itself in `MUIVerb`, carries
+        // an empty `SubCommands` and has no `command` subkey at all.
+        const EXT: &str = ".ctxmenu_selftest_submenu";
+        let _branch = Branch(EXT);
+
+        let mut e = entry(Category::ExtAssoc(EXT.into()), "");
+        e.key_name = "ctxmenu_submenu".into();
+        e.display_name = "Selbsttest".into();
+        e.children = vec![
+            child("Zebra", "cmd /c echo z"),
+            child("Anton", "cmd /c echo a"),
+        ];
+        for (index, c) in e.children.iter_mut().enumerate() {
+            c.key_name = suggest_child_key_name(index, &c.display_name);
+        }
+        e.children[1].icon = Some(r"%SystemRoot%\system32\shell32.dll,-244".into());
+
+        let target = e.target().expect("creatable");
+        // `write_tree` rather than `create`: this is about the registry shape,
+        // and `create` would also write the user's `entries.json`.
+        write_tree(&e, &target).expect("HKCU is writable without elevation");
+
+        let key = CURRENT_USER
+            .open(target.key_path())
+            .expect("parent written");
+        assert_eq!(
+            key.get_string("MUIVerb").ok().as_deref(),
+            Some("Selbsttest")
+        );
+        assert_eq!(
+            key.get_string("SubCommands").ok().as_deref(),
+            Some(""),
+            "empty is the marker; a value would name CommandStore verbs instead"
+        );
+        assert!(
+            key.get_string("").ok().is_none_or(|v| v.is_empty()),
+            "a submenu parent has no default value"
+        );
+        assert!(
+            CURRENT_USER
+                .open(format!(r"{}\command", target.key_path()))
+                .is_err(),
+            "a submenu runs nothing itself"
+        );
+
+        // The children, in the order they were entered rather than the order
+        // the registry would sort them in on its own.
+        let shell = CURRENT_USER
+            .open(format!(r"{}\shell", target.key_path()))
+            .expect("children live in the parent's own shell subkey");
+        let names: Vec<String> = shell.keys().expect("enumerable").collect();
+        assert_eq!(names, ["01_Zebra", "02_Anton"]);
+
+        let first = shell.open("01_Zebra").expect("first child");
+        assert_eq!(first.get_string("MUIVerb").ok().as_deref(), Some("Zebra"));
+        assert_eq!(
+            first
+                .open("command")
+                .and_then(|c| c.get_string(""))
+                .ok()
+                .as_deref(),
+            Some("cmd /c echo z")
+        );
+        assert!(
+            shell
+                .open("02_Anton")
+                .and_then(|c| c.get_string("Icon"))
+                .is_ok(),
+            "a child keeps its own icon"
+        );
+    }
+
+    #[test]
+    fn a_child_that_cannot_be_written_takes_the_half_built_submenu_with_it() {
+        // Otherwise the user is left with a menu item that opens onto an empty
+        // box — and nobody asked for one.
+        const EXT: &str = ".ctxmenu_selftest_rollback";
+        let _branch = Branch(EXT);
+
+        let mut e = entry(Category::ExtAssoc(EXT.into()), "");
+        e.key_name = "ctxmenu_rollback".into();
+        e.children = vec![
+            child("Gut", "cmd /c echo ok"),
+            NewChild {
+                // Past the 255 character limit for a key name, so the write
+                // fails at the second child with the first already in place.
+                key_name: "x".repeat(600),
+                display_name: "Zu lang".into(),
+                command: "cmd /c echo no".into(),
+                icon: None,
+            },
+        ];
+
+        let target = e.target().expect("creatable");
+        assert!(
+            create(&e).is_err(),
+            "a 600 character key name cannot be written"
+        );
+        assert!(
+            !crate::registry::write::exists(&target),
+            "the half-written submenu must be gone, parent included"
+        );
+        assert!(
+            !recorded()
+                .expect("readable")
+                .iter()
+                .any(|r| r.key_name == e.key_name),
+            "a failed write must not be recorded as created"
+        );
     }
 
     #[test]

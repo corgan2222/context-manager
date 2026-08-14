@@ -118,6 +118,13 @@ Verwendung / Usage:
                  [--extended]
                             Eigenen Eintrag in HKCU anlegen /
                             create your own entry in HKCU
+                 --sub \"<text>|<zeile>\" [--sub-icon <ref>] ...
+                            Statt --command: Untermenue, ein --sub je
+                            Untereintrag, getrennt am ersten senkrechten
+                            Strich; --sub-icon gilt dem davorstehenden --sub /
+                            instead of --command: a submenu, one --sub per
+                            child, split at the first vertical bar; --sub-icon
+                            applies to the --sub before it
   ctxmenu created           Selbst angelegte Eintraege auflisten /
                             list entries created by this tool
   ctxmenu favourites        Favoriten auflisten / list favourites
@@ -275,7 +282,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             return parse_favourite(&args[1..]).map(Command::Favourite);
         }
         "create" => {
-            use crate::registry::create::NewEntry;
+            use crate::registry::create::{NewChild, NewEntry};
             let mut entry = NewEntry {
                 category: Category::Directory,
                 key_name: String::new(),
@@ -284,6 +291,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 icon: None,
                 position: None,
                 extended: false,
+                children: Vec::new(),
             };
 
             let mut rest = args[1..].iter();
@@ -305,6 +313,35 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     "--key" => entry.key_name = value.clone(),
                     "--command" => entry.command = value.clone(),
                     "--icon" => entry.icon = Some(value.clone()),
+                    // Split at the *first* bar, so a command may contain more
+                    // of them: `--sub "Auflisten|cmd /c dir | more"` is a
+                    // display name and a pipeline, not three fields.
+                    "--sub" => {
+                        let (name, command) = value.split_once('|').with_context(|| {
+                            format!(
+                                "--sub erwartet \"Anzeigename|Befehl\" / expects \
+                                 \"display name|command\": {value}"
+                            )
+                        })?;
+                        entry.children.push(NewChild {
+                            // Filled in below, once the order is known.
+                            key_name: String::new(),
+                            display_name: name.trim().to_string(),
+                            command: command.trim().to_string(),
+                            icon: None,
+                        });
+                    }
+                    // Belongs to the `--sub` in front of it. A flag of its own
+                    // rather than a third field, because a command line may
+                    // contain bars and an icon path may contain anything.
+                    "--sub-icon" => {
+                        let child = entry.children.last_mut().with_context(|| {
+                            "--sub-icon gehört zu einem vorangehenden --sub / \
+                             --sub-icon belongs to a preceding --sub"
+                                .to_string()
+                        })?;
+                        child.icon = Some(value.clone());
+                    }
                     "--position" => {
                         entry.position = Some(match value.to_ascii_lowercase().as_str() {
                             "top" | "oben" => "Top".to_string(),
@@ -318,6 +355,12 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
 
             if entry.key_name.trim().is_empty() {
                 entry.key_name = crate::registry::create::suggest_key_name(&entry.display_name);
+            }
+            // The child key names carry the order, so they are derived from
+            // the order the flags came in rather than taken from the user.
+            for (index, child) in entry.children.iter_mut().enumerate() {
+                child.key_name =
+                    crate::registry::create::suggest_child_key_name(index, &child.display_name);
             }
             return Ok(Command::Create(Box::new(entry)));
         }
@@ -691,7 +734,14 @@ pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
     crate::elevation::notify_shell();
 
     crate::outln!("Angelegt / created: {}", target.full_path());
-    crate::outln!("  {} -> {}", entry.display_name, entry.command);
+    if entry.is_submenu() {
+        crate::outln!("  {} \u{25b8}", entry.display_name);
+        for child in &entry.children {
+            crate::outln!("    {} -> {}", child.display_name, child.command);
+        }
+    } else {
+        crate::outln!("  {} -> {}", entry.display_name, entry.command);
+    }
     crate::outln!("  entries.json: {}", create::entries_path()?.display());
     Ok(())
 }
@@ -710,7 +760,13 @@ pub fn run_created() -> Result<()> {
             .map(|t| t.full_path())
             .unwrap_or_else(|_| "?".into());
         crate::outln!("{:<28} {}", entry.display_name, location);
-        crate::outln!("    {}", entry.command);
+        if entry.is_submenu() {
+            for child in &entry.children {
+                crate::outln!("    \u{21b3} {:<22} {}", child.display_name, child.command);
+            }
+        } else {
+            crate::outln!("    {}", entry.command);
+        }
     }
     Ok(())
 }
@@ -1028,6 +1084,13 @@ pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
     crate::outln!("Backup: {}", token.directory().display());
 
     write::delete_tree(&target, &token)?;
+    // The key is gone, so the record of having created it has to go too. The
+    // plan path has done this all along (`plan.rs`); this one had not, so a
+    // key deleted from the command line stayed listed in `entries.json` — and
+    // that file is what the Windows 11 handler of ToDo 14 is meant to read.
+    // Best effort, like there: the deletion succeeded, and failing to tidy the
+    // bookkeeping is not a failed deletion.
+    let _ = crate::registry::create::forget_target(&target);
     crate::outln!("Gelöscht / deleted: {}", target.full_path());
     crate::outln!(
         "Zurückholen mit / restore with: ctxmenu restore \"{}\"",
@@ -1237,6 +1300,49 @@ mod tests {
         assert_eq!(entry.key_name, "ctxmenu_Hier_öffnen");
         // A flag taking no value must not swallow the next one.
         assert!(entry.command.contains("%V"));
+    }
+
+    #[test]
+    fn a_submenu_is_assembled_from_repeated_sub_flags() {
+        let Command::Create(entry) = parse_args(&[
+            "create",
+            "--category",
+            "directory",
+            "--name",
+            "Werkzeuge",
+            "--sub",
+            "Zebra|cmd /c dir | more",
+            "--sub-icon",
+            r"shell32.dll,-244",
+            "--sub",
+            "Anton|cmd /c echo a",
+        ])
+        .unwrap() else {
+            panic!("expected a create command");
+        };
+
+        assert!(entry.is_submenu());
+        assert_eq!(entry.children.len(), 2);
+        // Split at the *first* bar, so a pipeline survives in the command.
+        assert_eq!(entry.children[0].display_name, "Zebra");
+        assert_eq!(entry.children[0].command, "cmd /c dir | more");
+        // The icon belongs to the `--sub` in front of it, not to the entry.
+        assert_eq!(entry.children[0].icon.as_deref(), Some("shell32.dll,-244"));
+        assert!(entry.children[1].icon.is_none());
+
+        // Numbered in the order the flags came in, because that number is the
+        // only thing that decides the order in the menu.
+        assert_eq!(entry.children[0].key_name, "01_Zebra");
+        assert_eq!(entry.children[1].key_name, "02_Anton");
+    }
+
+    #[test]
+    fn a_malformed_sub_flag_is_refused_rather_than_guessed_at() {
+        // No bar at all: guessing which half is the command would produce an
+        // entry that looks right and does nothing.
+        assert!(parse_args(&["create", "--name", "x", "--sub", "ohne Strich"]).is_err());
+        // An icon with no entry to belong to.
+        assert!(parse_args(&["create", "--name", "x", "--sub-icon", "a.dll,0"]).is_err());
     }
 
     #[test]
