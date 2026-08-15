@@ -68,6 +68,112 @@ pub fn save(services: &[Service]) -> Result<()> {
     std::fs::write(&path, text).with_context(|| format!("{}", path.display()))
 }
 
+/// Addresses worth trying for a description, best guess first.
+///
+/// What a user has in the clipboard is the page they were just reading —
+/// `http://host:1349/api/docs/#tag/tools`, which is documentation for people and
+/// not the document this program can read. Asking them to find the machine
+/// readable one would mean explaining what `openapi.json` is; guessing costs one
+/// failed request each and covers every generator seen so far.
+pub fn spec_candidates(url: &str) -> Vec<String> {
+    let url = url.trim().split('#').next().unwrap_or("").trim_end();
+    if url.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = vec![url.to_string()];
+    // Already a document: nothing to guess.
+    let tail = url.rsplit('/').next().unwrap_or("");
+    if tail.ends_with(".json") || tail.ends_with(".yaml") || tail.ends_with(".yml") {
+        return out;
+    }
+
+    let base = url.trim_end_matches('/');
+    for name in ["openapi.json", "swagger.json", "openapi.yaml"] {
+        out.push(format!("{base}/{name}"));
+    }
+
+    // And from the root, for services that document under one path and publish
+    // under another.
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        let origin = format!("{scheme}://{host}");
+        for path in [
+            "/openapi.json",
+            "/swagger.json",
+            "/api/openapi.json",
+            "/api-docs",
+            "/v3/api-docs",
+        ] {
+            let candidate = format!("{origin}{path}");
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+    }
+
+    out
+}
+
+/// Fetches the description of a service and reads its tools.
+///
+/// Returns the address that actually answered along with the tools, so the
+/// service can remember it and the next refresh is one request rather than six.
+pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
+    let candidates = spec_candidates(&service.spec_url);
+    if candidates.is_empty() {
+        anyhow::bail!("Keine Adresse angegeben / no address given");
+    }
+    if !service.allow_insecure
+        && candidates
+            .first()
+            .is_some_and(|url| url.starts_with("http://"))
+    {
+        anyhow::bail!(
+            "Unverschlüsseltes http:// ist für diesen Dienst nicht erlaubt / \
+             unencrypted http:// is not allowed for this service"
+        );
+    }
+
+    let headers: Vec<crate::favourites::Header> = service.auth_header.clone().into_iter().collect();
+
+    let mut first_error = None;
+    for candidate in candidates {
+        let body = match crate::webtool::http::fetch(&candidate, &headers) {
+            Ok(body) => body,
+            Err(error) => {
+                first_error.get_or_insert_with(|| format!("{error:#}"));
+                continue;
+            }
+        };
+        // HTML answers with 200 as happily as JSON does, so the parse is what
+        // decides whether this address was the right one.
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+            continue;
+        };
+        let tools = spec::tools(&value);
+        if !tools.is_empty() {
+            return Ok((candidate, tools));
+        }
+        // A readable description without a single file endpoint is an answer,
+        // not a miss: it means this service has nothing for a right-click.
+        if value.get("paths").is_some() {
+            return Ok((candidate, tools));
+        }
+    }
+
+    match first_error {
+        Some(error) => anyhow::bail!(
+            "Keine lesbare Beschreibung gefunden. Erster Fehler: {error} / \
+             no readable description found"
+        ),
+        None => anyhow::bail!(
+            "Unter dieser Adresse steht keine OpenAPI-Beschreibung / \
+             no OpenAPI description at this address"
+        ),
+    }
+}
+
 /// A readable, stable id from a name — the same rule favourites use.
 pub fn id_for(name: &str) -> String {
     let mut id: String = name
@@ -272,6 +378,29 @@ mod tests {
                 suffix: ".neu".into()
             }
         );
+    }
+
+    #[test]
+    fn the_page_a_user_copies_leads_to_the_document_this_program_needs() {
+        let list = spec_candidates("http://192.168.2.11:1349/api/docs/#tag/tools");
+
+        // The fragment is gone — it addresses a place on a page, not a resource.
+        assert_eq!(list[0], "http://192.168.2.11:1349/api/docs/");
+        assert!(list.contains(&"http://192.168.2.11:1349/api/docs/openapi.json".into()));
+        assert!(list.contains(&"http://192.168.2.11:1349/openapi.json".into()));
+        assert!(list.contains(&"http://192.168.2.11:1349/v3/api-docs".into()));
+    }
+
+    #[test]
+    fn an_address_that_already_names_a_document_is_not_guessed_at() {
+        let list = spec_candidates("https://transmute.sh/openapi.json");
+        assert_eq!(list, vec!["https://transmute.sh/openapi.json"]);
+    }
+
+    #[test]
+    fn nothing_is_tried_for_an_empty_address() {
+        assert!(spec_candidates("   ").is_empty());
+        assert!(spec_candidates("#tag/tools").is_empty());
     }
 
     #[test]

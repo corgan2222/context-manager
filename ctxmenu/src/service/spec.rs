@@ -173,18 +173,61 @@ fn read_operation(path: &str, method: &str, operation: &Value) -> Option<Tool> {
     })
 }
 
+/// Form fields that are plumbing rather than settings.
+///
+/// Measured on SnapOtter (2026-08-15): every one of its 232 endpoints carries a
+/// `clientJobId` beside its real options, for progress reporting this program
+/// does not use. Since `serde_json` keeps an object's properties in alphabetical
+/// order, `clientJobId` came first and was offered as *the* setting of the tool
+/// — with the wrong prose next to it, which is how it was noticed.
+const PLUMBING: &[&str] = &[
+    "clientjobid",
+    "jobid",
+    "job_id",
+    "requestid",
+    "request_id",
+    "callbackurl",
+    "callback_url",
+    "webhook",
+    "webhookurl",
+    "async",
+];
+
+/// Names that mean "this is where the settings go", best first.
+const SETTINGS_NAMES: &[&str] = &["settings", "options", "params", "parameters", "config"];
+
 /// What the endpoint wants beside the file, in the most useful form available.
 fn read_settings(
     properties: &serde_json::Map<String, Value>,
     file_field: &str,
     required: &[&str],
 ) -> Settings {
-    let Some((name, value)) = properties
+    let candidates: Vec<(&String, &Value)> = properties
         .iter()
-        .find(|(name, _)| name.as_str() != file_field)
-    else {
+        .filter(|(name, _)| name.as_str() != file_field)
+        .filter(|(name, _)| !PLUMBING.contains(&name.to_lowercase().as_str()))
+        .collect();
+
+    // A name the service itself uses for its options beats alphabetical luck;
+    // a described object beats a bare string; otherwise the first one left.
+    let picked = SETTINGS_NAMES
+        .iter()
+        .find_map(|wanted| {
+            candidates
+                .iter()
+                .find(|(name, _)| name.to_lowercase() == *wanted)
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|(_, value)| value.get("properties").is_some())
+        })
+        .or_else(|| candidates.first());
+
+    let Some((name, value)) = picked else {
         return Settings::None;
     };
+    let (name, value) = (*name, *value);
 
     // A described object is the good case: every property becomes an input.
     if let Some(fields) = read_fields(value, required) {
@@ -365,6 +408,70 @@ mod tests {
                 description: Some("JSON string with options".into())
             }
         );
+    }
+
+    #[test]
+    fn a_progress_field_is_not_mistaken_for_the_settings_of_a_tool() {
+        // Exactly the shape SnapOtter sends, alphabetical order and all: the
+        // plumbing field sorts before the real one, and taking the first field
+        // that was not the file put the wrong prose on screen.
+        let spec = serde_json::json!({
+            "paths": {
+                "/api/v1/tools/audio/aac-to-mp3": {
+                    "post": {
+                        "tags": ["Tools"],
+                        "summary": "AAC to MP3",
+                        "requestBody": { "content": { "multipart/form-data": { "schema": {
+                            "type": "object",
+                            "required": ["file"],
+                            "properties": {
+                                "file": { "type": "string", "format": "binary" },
+                                "clientJobId": {
+                                    "type": "string",
+                                    "description": "Client-provided job ID for SSE progress tracking"
+                                },
+                                "settings": {
+                                    "type": "string",
+                                    "description": "Dedicated AAC to MP3 converter."
+                                }
+                            }
+                        }}}},
+                        "responses": { "200": { "description": "ok" } }
+                    }
+                }
+            }
+        });
+
+        let found = tools(&spec);
+        assert_eq!(
+            found[0].settings,
+            Settings::Text {
+                field: "settings".into(),
+                description: Some("Dedicated AAC to MP3 converter.".into())
+            }
+        );
+    }
+
+    #[test]
+    fn an_endpoint_whose_only_extra_field_is_plumbing_wants_nothing() {
+        let spec = serde_json::json!({
+            "paths": { "/x": { "post": {
+                "summary": "X",
+                "requestBody": { "content": { "multipart/form-data": { "schema": {
+                    "type": "object",
+                    "required": ["file"],
+                    "properties": {
+                        "file": { "type": "string", "format": "binary" },
+                        "clientJobId": { "type": "string" }
+                    }
+                }}}},
+                "responses": { "200": { "description": "ok" } }
+            }}}
+        });
+
+        let found = tools(&spec);
+        assert_eq!(found[0].settings, Settings::None);
+        assert_eq!(found[0].usable, Usable::Yes);
     }
 
     #[test]

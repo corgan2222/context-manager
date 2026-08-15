@@ -197,6 +197,51 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
     Ok(answer)
 }
 
+/// Fetches a document, with whatever headers it needs to be allowed to.
+///
+/// Separate from `download` because a service description often sits behind the
+/// same key as the service itself, and separate from `send` because a GET with
+/// an empty `Content-Type` line is a request some servers answer with 400.
+pub fn fetch(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
+    let target = Url::parse(url)?;
+
+    let session = Handle::session()?;
+    unsafe { WinHttpSetTimeouts(session.0, 10_000, 15_000, 60_000, 120_000) }
+        .context("WinHttpSetTimeouts")?;
+    let connect = Handle::connect(&session, &target)?;
+    let request = Handle::request(&connect, &target, "GET")?;
+
+    if !headers.is_empty() {
+        let mut lines = String::new();
+        for header in headers {
+            lines.push_str(&format!("{}: {}\r\n", header.name, header.value));
+        }
+        let wide: Vec<u16> = lines.encode_utf16().collect();
+        unsafe { WinHttpAddRequestHeaders(request.0, &wide, WINHTTP_ADDREQ_FLAG_ADD) }
+            .context("WinHttpAddRequestHeaders")?;
+    }
+
+    unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }.context("WinHttpSendRequest")?;
+    unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }
+        .context("WinHttpReceiveResponse")?;
+
+    let status = status_of(&request)?;
+    if !(200..300).contains(&status) {
+        let body = body_of(&request).unwrap_or_default();
+        let hint = String::from_utf8_lossy(&body);
+        let hint = hint.trim();
+        bail!(
+            "Die Beschreibung antwortete mit {status} / the description answered {status}{}",
+            match hint.is_empty() {
+                true => String::new(),
+                false => format!(": {}", &hint[..hint.len().min(300)]),
+            }
+        );
+    }
+
+    body_of(&request)
+}
+
 /// Fetches a result the service pointed at.
 pub fn download(url: &str) -> Result<Vec<u8>> {
     let target = Url::parse(url)?;

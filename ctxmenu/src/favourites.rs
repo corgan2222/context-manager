@@ -426,6 +426,36 @@ pub fn add(mut favourite: Favourite) -> Result<String> {
     Ok(id)
 }
 
+/// Adds a whole batch in one write, replacing any that are already there.
+///
+/// One file write rather than one per tool: installing a category of a service
+/// is fifty favourites at once, and fifty read-modify-write cycles would leave
+/// half a tool box behind if one of them failed. Replacing rather than refusing
+/// on a known id is what makes "install this category again after a refresh"
+/// mean "bring these up to date" — the ids a service builds are stable.
+///
+/// Returns how many were new.
+pub fn add_many(batch: Vec<Favourite>) -> Result<usize> {
+    let mut list = load()?;
+    let mut fresh = 0;
+
+    for mut favourite in batch {
+        if favourite.id.trim().is_empty() {
+            favourite.id = free_id(&favourite.name, &list);
+        }
+        match list.iter_mut().find(|old| old.id == favourite.id) {
+            Some(slot) => *slot = favourite,
+            None => {
+                fresh += 1;
+                list.push(favourite);
+            }
+        }
+    }
+
+    save(&list)?;
+    Ok(fresh)
+}
+
 /// Replaces one by id, keeping its position.
 pub fn update(favourite: Favourite) -> Result<()> {
     let mut list = load()?;

@@ -24,6 +24,7 @@ use crate::registry::backup::{self, BackupManifest};
 use crate::registry::create::{self, Fault, NewChild, NewEntry, Problem};
 use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
+use crate::service::{self, Service, spec};
 use crate::settings::{Language, Settings, ThemeChoice};
 use crate::theme;
 
@@ -33,6 +34,7 @@ pub enum Tab {
     FileTypes,
     Programs,
     Favourites,
+    Services,
     Backups,
 }
 
@@ -45,11 +47,16 @@ impl Tab {
             "filetypes" | "dateitypen" => Some(Tab::FileTypes),
             "programs" | "programme" => Some(Tab::Programs),
             "favourites" | "favoriten" => Some(Tab::Favourites),
+            "services" | "dienste" => Some(Tab::Services),
             "backups" | "sicherungen" => Some(Tab::Backups),
             _ => None,
         }
     }
 }
+
+/// What the worker sends back after fetching a description: the address that
+/// answered, and the tools read out of it — or why neither happened.
+type FetchedSpec = Result<(String, Vec<spec::Tool>), String>;
 
 /// Placeholder shown in the empty command field.
 const HINT_COMMAND: &str = "\"C:\\Windows\\notepad.exe\" \"%1\"";
@@ -60,6 +67,17 @@ const HINT_PROGRAM: &str = "C:\\Program Files\\Werkzeug\\werkzeug.exe";
 const HINT_ARGS: &str = "--flag \"%1\"";
 const HINT_URL: &str = "https://squoosh.app";
 const HINT_ENDPOINT: &str = "https://api.tinify.com/shrink";
+/// Placeholders in the service form.
+const HINT_SERVICE_NAME: &str = "SnapOtter";
+const HINT_SPEC_URL: &str = "http://192.168.2.11:1349/api/docs/";
+const HINT_KEY: &str = "Bearer si_...";
+const HINT_RESULT_PATH: &str = "downloadUrl";
+const HINT_SETTINGS: &str = "{\"width\": 1920}";
+/// What the result of a service tool is called next to the original.
+///
+/// One suffix for every tool of every service: the alternative is asking a
+/// hundred times, and the tool's own name is already in the menu entry.
+const SERVICE_SUFFIX: &str = ".neu";
 
 /// A modal question or report.
 enum Dialog {
@@ -83,6 +101,11 @@ enum Dialog {
     Favourite {
         draft: Box<Favourite>,
         /// Adding rather than editing; decides between insert and replace.
+        fresh: bool,
+    },
+    /// The form for one service — an address, a key, and how it answers.
+    Service {
+        draft: Box<Service>,
         fresh: bool,
     },
     /// "Where should this favourite appear?" — the one decision left once a
@@ -797,6 +820,35 @@ pub struct App {
     /// view exactly once instead of fighting the mouse wheel every frame.
     favourite_scroll: bool,
 
+    /// The services a favourite can be made from (`services.json`).
+    services: Vec<Service>,
+    service_error: Option<String>,
+    /// Index into `services` whose tools are on screen.
+    service_focus: Option<usize>,
+    /// The tools of the focused service, as its description listed them.
+    ///
+    /// Not persisted: a description is fetched again when it is wanted, and
+    /// keeping a copy would mean showing tools the service no longer has.
+    service_tools: Vec<spec::Tool>,
+    /// Which tools are ticked, by index into `service_tools`.
+    service_picked: rustc_hash::FxHashSet<usize>,
+    /// What was typed into the settings field of a tool, by the same index.
+    /// Used where the description only says "a string, and here is what may go
+    /// in it" — the common case.
+    service_settings: rustc_hash::FxHashMap<usize, String>,
+    /// One entry per typed field of a tool that came with a real schema, keyed
+    /// by tool index and field name. Everything is held as text and converted
+    /// on saving, so a half-typed number is not a state this has to model.
+    service_fields: rustc_hash::FxHashMap<(usize, String), String>,
+    /// Which tool has its settings unfolded. One at a time: a hundred open
+    /// forms is a wall of text, and only the ticked ones matter anyway.
+    service_open: Option<usize>,
+    /// Filters the tool list. With 351 endpoints the list is unusable without
+    /// it, and it is the first thing anyone reaches for.
+    service_search: String,
+    /// Receives a fetched description: the address that answered and its tools.
+    service_rx: Option<Receiver<FetchedSpec>>,
+
     icons: IconCache,
     /// The Feather characters the bar draws, resolved at startup.
     glyphs: Glyphs,
@@ -1072,6 +1124,17 @@ impl App {
             favourite_error: None,
             favourite_focus: None,
             favourite_scroll: false,
+            // Same reasoning as the favourites: a small file, read once.
+            services: service::load().unwrap_or_default(),
+            service_error: None,
+            service_focus: None,
+            service_tools: Vec::new(),
+            service_picked: rustc_hash::FxHashSet::default(),
+            service_settings: rustc_hash::FxHashMap::default(),
+            service_fields: rustc_hash::FxHashMap::default(),
+            service_open: None,
+            service_search: String::new(),
+            service_rx: None,
             icons: IconCache::new(&cc.egui_ctx),
             glyphs: Glyphs::load(),
             logo: None,
@@ -1303,7 +1366,7 @@ impl App {
                 .map(|g| g.entry_indices.clone())
                 .unwrap_or_default(),
 
-            Tab::Backups | Tab::Favourites => Vec::new(),
+            Tab::Backups | Tab::Favourites | Tab::Services => Vec::new(),
         };
 
         let needle = self.search.trim().to_lowercase();
@@ -2168,13 +2231,14 @@ impl eframe::App for App {
                     favourite_action = self.handle_favourite_keys(&ctx);
                     None
                 }
-                Tab::Backups => None,
+                Tab::Backups | Tab::Services => None,
                 Tab::Categories | Tab::FileTypes | Tab::Programs => self.handle_keys(&ctx),
             },
         };
 
         self.report_theme_once(ui);
         self.poll_action(&ctx);
+        self.poll_services();
 
         self.top_bar(ui, &ctx);
         self.action_bar(ui, &ctx);
@@ -2194,6 +2258,10 @@ impl eframe::App for App {
             Tab::Favourites => {
                 egui::CentralPanel::default()
                     .show(ui, |ui| self.favourite_list(ui, favourite_action));
+            }
+            Tab::Services => {
+                self.service_list(ui);
+                egui::CentralPanel::default().show(ui, |ui| self.service_tools_panel(ui));
             }
             Tab::FileTypes => {
                 self.file_type_tree(ui);
@@ -2231,6 +2299,7 @@ impl App {
                     (Tab::FileTypes, self.tr.tab_filetypes),
                     (Tab::Programs, self.tr.tab_programs),
                     (Tab::Favourites, self.tr.tab_favourites),
+                    (Tab::Services, self.tr.tab_services),
                     (Tab::Backups, self.tr.tab_backups),
                 ] {
                     if ui.selectable_label(self.tab == tab, label).clicked() {
@@ -2246,6 +2315,9 @@ impl App {
                             // frame, and again after every change: the file is
                             // also written by the `--favourite` runner.
                             self.reload_favourites();
+                        }
+                        if tab == Tab::Services {
+                            self.reload_services();
                         }
                     }
                 }
@@ -2274,7 +2346,8 @@ impl App {
                 // Drawn on every tab, greyed on the two that keep their own
                 // lists: dropping a widget shifts the automatic ids of the ones
                 // after it, and the search box is one of those.
-                let on_entries = !matches!(self.tab, Tab::Backups | Tab::Favourites);
+                let on_entries =
+                    !matches!(self.tab, Tab::Backups | Tab::Favourites | Tab::Services);
                 if ui
                     .add_enabled(
                         on_entries,
@@ -2434,7 +2507,7 @@ impl App {
         // Both of these tabs act on their own list, not on scanned entries;
         // a bar full of buttons that would apply to nothing is worse than no
         // bar at all.
-        if matches!(self.tab, Tab::Backups | Tab::Favourites) {
+        if matches!(self.tab, Tab::Backups | Tab::Favourites | Tab::Services) {
             return;
         }
 
@@ -2716,6 +2789,649 @@ impl App {
         match outcome {
             Ok(()) => self.reload_favourites(),
             Err(error) => self.favourite_error = Some(format!("{error:#}")),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Services
+    // -----------------------------------------------------------------------
+
+    fn reload_services(&mut self) {
+        match service::load() {
+            Ok(list) => {
+                self.services = list;
+                self.service_error = None;
+            }
+            Err(error) => {
+                self.services.clear();
+                self.service_error = Some(format!("{error:#}"));
+            }
+        }
+    }
+
+    /// Fetches one service's description on a thread.
+    ///
+    /// On a thread because it is six requests in the worst case over a network
+    /// this program knows nothing about, and the frame path may not wait for
+    /// that (ToDo 4.3). Measured against SnapOtter on 2026-08-15: 351 paths,
+    /// several megabytes of JSON.
+    fn start_service_fetch(&mut self, index: usize, ctx: &egui::Context) {
+        let Some(service) = self.services.get(index).cloned() else {
+            return;
+        };
+        self.service_tools.clear();
+        self.service_picked.clear();
+        self.service_open = None;
+        self.service_error = None;
+
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let outcome = service::tools_of(&service).map_err(|error| format!("{error:#}"));
+            let _ = tx.send(outcome);
+            ctx.request_repaint();
+        });
+        self.service_rx = Some(rx);
+    }
+
+    fn poll_services(&mut self) {
+        let Some(rx) = &self.service_rx else { return };
+        let Ok(outcome) = rx.try_recv() else { return };
+        self.service_rx = None;
+
+        match outcome {
+            Ok((address, tools)) => {
+                self.service_tools = tools;
+                // The address that answered is kept, so the next refresh is one
+                // request instead of six guesses.
+                if let Some(index) = self.service_focus
+                    && let Some(service) = self.services.get_mut(index)
+                    && service.spec_url != address
+                {
+                    service.spec_url = address;
+                    let _ = service::save(&self.services);
+                }
+            }
+            Err(error) => self.service_error = Some(error),
+        }
+    }
+
+    /// Left panel of the services tab: which service, and the buttons for it.
+    fn service_list(&mut self, ui: &mut Ui) {
+        let mut fetch = None;
+        let mut edit = None;
+        let mut remove = None;
+        let mut new_service = false;
+
+        egui::Panel::left("services")
+            .resizable(true)
+            .default_size(260.0)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.heading(self.tr.tab_services);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(self.tr.svc_new)
+                            .on_hover_text(self.tr.tip_svc_new)
+                            .clicked()
+                        {
+                            new_service = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                if self.services.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(self.tr.svc_empty);
+                    ui.add_space(8.0);
+                    // Not `small`: this is the text that explains what the tab
+                    // is for, and the one place someone actually reads. It was
+                    // already reported once as too small elsewhere.
+                    ui.label(self.tr.svc_empty_hint);
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (index, service) in self.services.iter().enumerate() {
+                            let current = self.service_focus == Some(index);
+                            if ui
+                                .add(egui::Button::selectable(current, &service.name))
+                                .on_hover_text(&service.spec_url)
+                                .clicked()
+                                && !current
+                            {
+                                fetch = Some(index);
+                            }
+                            if current {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .small_button(self.tr.svc_refresh)
+                                        .on_hover_text(self.tr.tip_svc_refresh)
+                                        .clicked()
+                                    {
+                                        fetch = Some(index);
+                                    }
+                                    if ui
+                                        .small_button(self.tr.fav_edit)
+                                        .on_hover_text(self.tr.tip_svc_edit)
+                                        .clicked()
+                                    {
+                                        edit = Some(index);
+                                    }
+                                    if ui
+                                        .small_button(self.tr.fav_remove)
+                                        .on_hover_text(self.tr.tip_svc_remove)
+                                        .clicked()
+                                    {
+                                        remove = Some(index);
+                                    }
+                                });
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+            });
+
+        if new_service {
+            self.dialog = Some(Dialog::Service {
+                draft: Box::new(blank_service()),
+                fresh: true,
+            });
+        }
+        if let Some(index) = edit
+            && let Some(service) = self.services.get(index)
+        {
+            self.dialog = Some(Dialog::Service {
+                draft: Box::new(service.clone()),
+                fresh: false,
+            });
+        }
+        if let Some(index) = remove {
+            self.services.remove(index);
+            // The favourites made from it stay: they work on their own, and
+            // silently deleting a menu entry the user is still using would be
+            // the worst possible reading of "remove this service".
+            self.service_focus = None;
+            self.service_tools.clear();
+            self.service_picked.clear();
+            if let Err(error) = service::save(&self.services) {
+                self.service_error = Some(format!("{error:#}"));
+            }
+        }
+        if let Some(index) = fetch {
+            self.service_focus = Some(index);
+            let ctx = ui.ctx().clone();
+            self.start_service_fetch(index, &ctx);
+        }
+    }
+
+    /// Centre of the services tab: the tools, grouped the way the service
+    /// groups them, with a tick box each.
+    fn service_tools_panel(&mut self, ui: &mut Ui) {
+        ui.add_space(4.0);
+
+        if let Some(error) = &self.service_error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+            ui.separator();
+        }
+
+        if self.service_focus.is_none() {
+            ui.add_space(12.0);
+            ui.label(self.tr.svc_pick_service);
+            return;
+        }
+        if self.service_rx.is_some() {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(self.tr.svc_loading);
+            });
+            return;
+        }
+        if self.service_tools.is_empty() {
+            ui.add_space(12.0);
+            ui.label(self.tr.svc_no_tools);
+            return;
+        }
+
+        let mut create = false;
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.service_search)
+                    .hint_text(self.tr.svc_search_hint)
+                    .desired_width(220.0),
+            );
+            ui.separator();
+            ui.label(
+                self.tr
+                    .fmt_svc_counts
+                    .replacen("{}", &self.service_tools.len().to_string(), 1)
+                    .replacen("{}", &self.service_picked.len().to_string(), 1),
+            );
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        !self.service_picked.is_empty(),
+                        egui::Button::new(self.tr.svc_create),
+                    )
+                    .on_hover_text(self.tr.tip_svc_create)
+                    .on_disabled_hover_text(self.tr.tip_svc_create_none)
+                    .clicked()
+                {
+                    create = true;
+                }
+                if ui
+                    .add_enabled(
+                        !self.service_picked.is_empty(),
+                        egui::Button::new(self.tr.svc_clear),
+                    )
+                    .clicked()
+                {
+                    self.service_picked.clear();
+                }
+            });
+        });
+        ui.separator();
+
+        let needle = self.service_search.to_lowercase();
+        let groups = group_tools(&self.service_tools, &needle, self.tr.svc_group_other);
+
+        if groups.is_empty() {
+            ui.add_space(12.0);
+            ui.label(self.tr.svc_nothing_found);
+            return;
+        }
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (tag, indices) in groups {
+                    let picked = indices
+                        .iter()
+                        .filter(|index| self.service_picked.contains(index))
+                        .count();
+                    let title = match picked {
+                        0 => format!("{tag}  ({})", indices.len()),
+                        _ => format!("{tag}  ({}/{})", picked, indices.len()),
+                    };
+
+                    egui::CollapsingHeader::new(title)
+                        .id_salt(("svc-group", &tag))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            // A whole category at once: the reason for grouping
+                            // in the first place.
+                            ui.horizontal(|ui| {
+                                if ui.small_button(self.tr.svc_pick_all).clicked() {
+                                    for index in &indices {
+                                        if self.service_tools[*index].usable
+                                            != spec::Usable::Asynchronous
+                                        {
+                                            self.service_picked.insert(*index);
+                                        }
+                                    }
+                                }
+                                if ui.small_button(self.tr.svc_pick_none).clicked() {
+                                    for index in &indices {
+                                        self.service_picked.remove(index);
+                                    }
+                                }
+                            });
+                            ui.add_space(2.0);
+
+                            for index in indices {
+                                self.service_tool_row(ui, index);
+                            }
+                        });
+                }
+            });
+
+        if create {
+            self.create_picked_tools();
+        }
+    }
+
+    /// One tool: tick box, name, and whatever it wants filled in.
+    fn service_tool_row(&mut self, ui: &mut Ui, index: usize) {
+        let tool = self.service_tools[index].clone();
+        let usable = tool.usable != spec::Usable::Asynchronous;
+        let mut ticked = self.service_picked.contains(&index);
+
+        ui.horizontal(|ui| {
+            let box_ = ui.add_enabled(usable, egui::Checkbox::new(&mut ticked, &tool.summary));
+            let box_ = match usable {
+                true => box_.on_hover_text(&tool.path),
+                // Greyed with the reason rather than hidden: "why is this one
+                // missing" is a worse question than "why is this one grey".
+                false => box_.on_disabled_hover_text(self.tr.tip_svc_async),
+            };
+            if box_.changed() {
+                match ticked {
+                    true => self.service_picked.insert(index),
+                    false => self.service_picked.remove(&index),
+                };
+            }
+
+            if !usable {
+                ui.small(self.tr.svc_async);
+            } else if tool.settings != spec::Settings::None {
+                let open = self.service_open == Some(index);
+                if ui
+                    .small_button(match open {
+                        true => self.tr.svc_settings_hide,
+                        false => self.tr.svc_settings_show,
+                    })
+                    .on_hover_text(self.tr.tip_svc_settings)
+                    .clicked()
+                {
+                    self.service_open = match open {
+                        true => None,
+                        false => Some(index),
+                    };
+                }
+                if self.service_settings_filled(index, &tool) {
+                    ui.small(self.tr.svc_settings_set);
+                }
+            }
+        });
+
+        if self.service_open == Some(index) {
+            ui.indent(("svc-settings", index), |ui| {
+                self.service_settings_form(ui, index, &tool);
+            });
+        }
+    }
+
+    /// Whether anything was typed for this tool.
+    fn service_settings_filled(&self, index: usize, tool: &spec::Tool) -> bool {
+        match &tool.settings {
+            spec::Settings::None => false,
+            spec::Settings::Text { .. } => self
+                .service_settings
+                .get(&index)
+                .is_some_and(|value| !value.trim().is_empty()),
+            spec::Settings::Fields { fields, .. } => fields.iter().any(|field| {
+                self.service_fields
+                    .get(&(index, field.name.clone()))
+                    .is_some_and(|value| !value.trim().is_empty())
+            }),
+        }
+    }
+
+    /// The form for one tool's settings — typed where the description said
+    /// enough to type them, a text box with the service's own prose where it
+    /// did not.
+    fn service_settings_form(&mut self, ui: &mut Ui, index: usize, tool: &spec::Tool) {
+        match &tool.settings {
+            spec::Settings::None => {}
+            spec::Settings::Text { description, .. } => {
+                if let Some(text) = description {
+                    // The service's own prose, at reading size: it is the only
+                    // place that says what may go in the box below.
+                    ui.add(egui::Label::new(shorten(text, 1200)).wrap());
+                    ui.add_space(2.0);
+                }
+                let value = self.service_settings.entry(index).or_default();
+                ui.add(
+                    egui::TextEdit::multiline(value)
+                        .desired_rows(3)
+                        .desired_width(760.0)
+                        .hint_text(HINT_SETTINGS),
+                );
+                ui.small(self.tr.svc_settings_json);
+            }
+            spec::Settings::Fields { fields, .. } => {
+                egui::Grid::new(("svc-fields", index))
+                    .num_columns(2)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        for field in fields {
+                            let label = match field.required {
+                                true => format!("{} *", field.name),
+                                false => field.name.clone(),
+                            };
+                            let label = ui.label(label);
+                            if let Some(text) = &field.description {
+                                label.on_hover_text(shorten(text, 400));
+                            }
+
+                            let key = (index, field.name.clone());
+                            let value = self.service_fields.entry(key).or_default();
+                            match &field.kind {
+                                spec::FieldKind::Flag => {
+                                    let mut on = value == "true";
+                                    if ui.checkbox(&mut on, "").changed() {
+                                        *value = on.to_string();
+                                    }
+                                }
+                                spec::FieldKind::Choice(options) => {
+                                    egui::ComboBox::from_id_salt((
+                                        "svc-choice",
+                                        index,
+                                        &field.name,
+                                    ))
+                                    .selected_text(value.clone())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(value, String::new(), "—");
+                                        for option in options {
+                                            ui.selectable_value(
+                                                value,
+                                                option.clone(),
+                                                option.as_str(),
+                                            );
+                                        }
+                                    });
+                                }
+                                spec::FieldKind::Number { minimum, maximum } => {
+                                    ui.add(
+                                        egui::TextEdit::singleline(value)
+                                            .desired_width(120.0)
+                                            .hint_text(number_hint(*minimum, *maximum)),
+                                    );
+                                }
+                                spec::FieldKind::Text => {
+                                    ui.add(egui::TextEdit::singleline(value).desired_width(220.0));
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+            }
+        }
+    }
+
+    /// Turns every ticked tool into a favourite, in one go.
+    fn create_picked_tools(&mut self) {
+        let Some(service) = self
+            .service_focus
+            .and_then(|index| self.services.get(index))
+        else {
+            return;
+        };
+
+        let mut picked: Vec<usize> = self.service_picked.iter().copied().collect();
+        // The order the description listed them in, so the menu reads the way
+        // the service's own documentation does.
+        picked.sort_unstable();
+
+        let mut made = Vec::new();
+        for index in picked {
+            let Some(tool) = self.service_tools.get(index) else {
+                continue;
+            };
+            let settings = match &tool.settings {
+                spec::Settings::None => None,
+                spec::Settings::Text { .. } => self
+                    .service_settings
+                    .get(&index)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                spec::Settings::Fields { fields, .. } => settings_json(fields, &|name| {
+                    self.service_fields.get(&(index, name.to_string())).cloned()
+                }),
+            };
+            made.push(service::favourite_for(
+                service,
+                tool,
+                settings,
+                SERVICE_SUFFIX,
+            ));
+        }
+
+        let count = made.len();
+        match favourites::add_many(made) {
+            Ok(fresh) => {
+                self.reload_favourites();
+                self.service_picked.clear();
+                self.dialog = Some(Dialog::Note(
+                    self.tr
+                        .fmt_svc_created
+                        .replacen("{}", &count.to_string(), 1)
+                        .replacen("{}", &(count - fresh).to_string(), 1),
+                ));
+            }
+            Err(error) => self.service_error = Some(format!("{error:#}")),
+        }
+    }
+
+    /// The form for one service.
+    fn service_dialog(&mut self, ui: &mut Ui, mut draft: Box<Service>, fresh: bool) {
+        let mut save = false;
+        let mut close = false;
+
+        egui::Window::new(match fresh {
+            true => self.tr.svc_new,
+            false => self.tr.svc_edit,
+        })
+        .collapsible(false)
+        .resizable(true)
+        .default_width(620.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            egui::Grid::new("service-form")
+                .num_columns(2)
+                .spacing([10.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(self.tr.svc_name);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.name)
+                            .desired_width(420.0)
+                            .hint_text(HINT_SERVICE_NAME),
+                    );
+                    ui.end_row();
+
+                    ui.label(self.tr.svc_address);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.spec_url)
+                            .desired_width(420.0)
+                            .hint_text(HINT_SPEC_URL),
+                    );
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.small(self.tr.svc_address_help);
+                    ui.end_row();
+
+                    let mut header = draft.auth_header.take().unwrap_or(Header {
+                        name: "Authorization".into(),
+                        value: String::new(),
+                    });
+                    ui.label(self.tr.svc_key);
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut header.name)
+                                .desired_width(140.0)
+                                .hint_text("Authorization"),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut header.value)
+                                .desired_width(300.0)
+                                .hint_text(HINT_KEY),
+                        );
+                    });
+                    ui.end_row();
+                    // An empty value means no key at all, which is the normal
+                    // case for a public service.
+                    draft.auth_header = match header.value.trim().is_empty() {
+                        true => None,
+                        false => Some(header),
+                    };
+
+                    ui.label("");
+                    ui.small(self.tr.svc_key_help);
+                    ui.end_row();
+
+                    ui.label(self.tr.svc_result);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.result_path)
+                            .desired_width(220.0)
+                            .hint_text(HINT_RESULT_PATH),
+                    );
+                    ui.end_row();
+
+                    ui.label("");
+                    ui.small(self.tr.svc_result_help);
+                    ui.end_row();
+                });
+
+            ui.add_space(4.0);
+            ui.checkbox(&mut draft.allow_insecure, self.tr.fav_allow_insecure);
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                let ready = !draft.name.trim().is_empty() && !draft.spec_url.trim().is_empty();
+                if ui
+                    .add_enabled(ready, egui::Button::new(self.tr.fav_save))
+                    .on_disabled_hover_text(self.tr.svc_needs_name)
+                    .clicked()
+                {
+                    save = true;
+                }
+                if ui.button(self.tr.btn_cancel).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        match (save, close) {
+            (true, _) => {
+                let mut service = *draft;
+                service.name = service.name.trim().to_string();
+                service.spec_url = service.spec_url.trim().to_string();
+                if service.id.trim().is_empty() {
+                    service.id = service::id_for(&service.name);
+                }
+
+                let index = match self.services.iter().position(|old| old.id == service.id) {
+                    Some(index) => {
+                        self.services[index] = service;
+                        index
+                    }
+                    None => {
+                        self.services.push(service);
+                        self.services.len() - 1
+                    }
+                };
+                match service::save(&self.services) {
+                    Ok(()) => {
+                        self.dialog = None;
+                        self.service_focus = Some(index);
+                        // Straight into fetching: adding a service and then
+                        // having to press a second button to see what it can do
+                        // is a step with no decision in it.
+                        let ctx = ui.ctx().clone();
+                        self.start_service_fetch(index, &ctx);
+                    }
+                    Err(error) => self.service_error = Some(format!("{error:#}")),
+                }
+            }
+            (_, true) => self.dialog = None,
+            _ => self.dialog = Some(Dialog::Service { draft, fresh }),
         }
     }
 
@@ -3327,6 +4043,11 @@ impl App {
                 keep = false;
             }
 
+            Dialog::Service { draft, fresh } => {
+                self.service_dialog(ui, draft, fresh);
+                keep = false;
+            }
+
             Dialog::Place {
                 favourite,
                 category,
@@ -3881,7 +4602,7 @@ impl App {
                     // of selected rows and shoved every button beside it
                     // sideways; an icon that moves cannot be aimed at. Down
                     // here the line is free to change length.
-                    if !matches!(self.tab, Tab::Backups | Tab::Favourites) {
+                    if !matches!(self.tab, Tab::Backups | Tab::Favourites | Tab::Services) {
                         ui.separator();
                         let state = selection_state(self.scan.as_ref(), &self.selected);
                         ui.label(selection_summary(self.tr, &state));
@@ -5215,6 +5936,111 @@ fn blank_favourite() -> Favourite {
             args: String::new(),
         },
     }
+}
+
+/// An empty service to start from.
+fn blank_service() -> Service {
+    Service {
+        id: String::new(),
+        name: String::new(),
+        spec_url: String::new(),
+        auth_header: None,
+        // A service worth adding this way is usually one on the local network,
+        // and that is exactly where there is no certificate.
+        allow_insecure: true,
+        result_path: String::new(),
+    }
+}
+
+/// The tools of a service, grouped the way the service groups them.
+///
+/// Order matters twice over: the groups appear in the order their first tool
+/// does, and the tools inside a group keep the order the description listed
+/// them in — which is the order the service's own documentation shows.
+fn group_tools<'a>(
+    tools: &'a [spec::Tool],
+    needle: &str,
+    other: &'a str,
+) -> Vec<(String, Vec<usize>)> {
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (index, tool) in tools.iter().enumerate() {
+        if !needle.is_empty() && !matches_tool(tool, needle) {
+            continue;
+        }
+        let tag = tool.tag.clone().unwrap_or_else(|| other.to_string());
+        match groups.iter_mut().find(|(name, _)| *name == tag) {
+            Some((_, list)) => list.push(index),
+            None => groups.push((tag, vec![index])),
+        }
+    }
+    groups
+}
+
+/// Whether a tool answers a search. `needle` is already lower case.
+fn matches_tool(tool: &spec::Tool, needle: &str) -> bool {
+    tool.summary.to_lowercase().contains(needle)
+        || tool.path.to_lowercase().contains(needle)
+        || tool
+            .tag
+            .as_deref()
+            .is_some_and(|tag| tag.to_lowercase().contains(needle))
+}
+
+/// The typed fields of a tool as the JSON object the service expects.
+///
+/// Only what was filled in: leaving a field empty has to mean "the service
+/// decides", not "send an empty string" — several of them refuse the latter.
+/// Numbers and flags are written as numbers and flags, because a schema that
+/// declares `integer` will not take `"1920"`.
+fn settings_json(
+    fields: &[spec::Field],
+    value_of: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let mut object = serde_json::Map::new();
+    for field in fields {
+        let Some(raw) = value_of(&field.name) else {
+            continue;
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let value = match &field.kind {
+            spec::FieldKind::Flag => serde_json::Value::Bool(raw == "true"),
+            spec::FieldKind::Number { .. } => match raw.parse::<f64>() {
+                // A number that does not parse travels as the text it is: the
+                // service's own error message says more than a silent drop.
+                Ok(number) => serde_json::json!(number),
+                Err(_) => serde_json::Value::String(raw.to_string()),
+            },
+            _ => serde_json::Value::String(raw.to_string()),
+        };
+        object.insert(field.name.clone(), value);
+    }
+    match object.is_empty() {
+        true => None,
+        false => Some(serde_json::Value::Object(object).to_string()),
+    }
+}
+
+/// The range a number field accepts, as a hint inside the empty box.
+fn number_hint(minimum: Option<f64>, maximum: Option<f64>) -> String {
+    match (minimum, maximum) {
+        (Some(low), Some(high)) => format!("{low} \u{2013} {high}"),
+        (Some(low), None) => format!("\u{2265} {low}"),
+        (None, Some(high)) => format!("\u{2264} {high}"),
+        (None, None) => String::new(),
+    }
+}
+
+/// Cuts a service's own prose down to something a panel can hold.
+fn shorten(text: &str, limit: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(limit).collect();
+    format!("{cut}\u{2026}")
 }
 
 /// One line saying what a favourite is and where it points.
@@ -6707,6 +7533,131 @@ mod tests {
 
     fn rows(indices: &[usize]) -> rustc_hash::FxHashSet<Row> {
         indices.iter().map(|index| Row::top(*index)).collect()
+    }
+
+    fn tool(summary: &str, tag: Option<&str>) -> spec::Tool {
+        spec::Tool {
+            path: format!("/api/v1/tools/{}", summary.to_lowercase()),
+            method: "POST".into(),
+            tag: tag.map(str::to_string),
+            summary: summary.into(),
+            description: None,
+            file_field: "file".into(),
+            settings: spec::Settings::None,
+            usable: spec::Usable::Yes,
+        }
+    }
+
+    #[test]
+    fn tools_group_the_way_the_service_groups_them_and_keep_its_order() {
+        let tools = vec![
+            tool("Compress", Some("Image")),
+            tool("Merge", Some("PDF")),
+            tool("Resize", Some("Image")),
+            tool("Convert", None),
+        ];
+
+        let groups = group_tools(&tools, "", "Sonstige");
+
+        // Groups in the order their first tool appeared, tools in the order the
+        // description listed them.
+        assert_eq!(groups[0].0, "Image");
+        assert_eq!(groups[0].1, vec![0, 2]);
+        assert_eq!(groups[1].0, "PDF");
+        assert_eq!(groups[2].0, "Sonstige", "an untagged tool lands in other");
+        assert_eq!(groups[2].1, vec![3]);
+    }
+
+    #[test]
+    fn a_search_covers_name_path_and_group_and_drops_empty_groups() {
+        let tools = vec![tool("Compress", Some("Image")), tool("Merge", Some("PDF"))];
+
+        assert_eq!(group_tools(&tools, "compress", "-").len(), 1);
+        // By path: every tool's path carries its name here.
+        assert_eq!(group_tools(&tools, "/api/v1/tools/merge", "-")[0].0, "PDF");
+        // By group: the whole group answers.
+        assert_eq!(group_tools(&tools, "image", "-")[0].1, vec![0]);
+        assert!(group_tools(&tools, "nothing like this", "-").is_empty());
+    }
+
+    #[test]
+    fn typed_settings_travel_as_the_types_the_description_declared() {
+        let fields = vec![
+            spec::Field {
+                name: "width".into(),
+                kind: spec::FieldKind::Number {
+                    minimum: Some(1.0),
+                    maximum: Some(8000.0),
+                },
+                required: false,
+                description: None,
+            },
+            spec::Field {
+                name: "grayscale".into(),
+                kind: spec::FieldKind::Flag,
+                required: false,
+                description: None,
+            },
+            spec::Field {
+                name: "format".into(),
+                kind: spec::FieldKind::Choice(vec!["webp".into(), "png".into()]),
+                required: false,
+                description: None,
+            },
+            spec::Field {
+                name: "untouched".into(),
+                kind: spec::FieldKind::Text,
+                required: false,
+                description: None,
+            },
+        ];
+
+        let json = settings_json(&fields, &|name| match name {
+            "width" => Some("1920".into()),
+            "grayscale" => Some("true".into()),
+            "format" => Some("webp".into()),
+            // Left empty on screen, and therefore not sent at all.
+            _ => Some("   ".into()),
+        })
+        .expect("three fields were filled in");
+
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["width"], 1920.0, "a number, not the string \"1920\"");
+        assert_eq!(value["grayscale"], true);
+        assert_eq!(value["format"], "webp");
+        assert!(
+            value.get("untouched").is_none(),
+            "an empty field means the service decides, not an empty string"
+        );
+    }
+
+    #[test]
+    fn a_form_nobody_filled_in_sends_nothing_at_all() {
+        let fields = vec![spec::Field {
+            name: "width".into(),
+            kind: spec::FieldKind::Text,
+            required: false,
+            description: None,
+        }];
+        assert_eq!(settings_json(&fields, &|_| None), None);
+    }
+
+    #[test]
+    fn the_range_of_a_number_is_offered_as_far_as_it_is_known() {
+        assert_eq!(number_hint(Some(1.0), Some(100.0)), "1 \u{2013} 100");
+        assert_eq!(number_hint(Some(1.0), None), "\u{2265} 1");
+        assert_eq!(number_hint(None, Some(100.0)), "\u{2264} 100");
+        assert_eq!(number_hint(None, None), "");
+    }
+
+    #[test]
+    fn shortening_never_splits_a_character() {
+        // Four characters, seven bytes: a byte-wise cut would panic here.
+        assert_eq!(
+            shorten("\u{e4}\u{f6}\u{fc}\u{df}", 2),
+            "\u{e4}\u{f6}\u{2026}"
+        );
+        assert_eq!(shorten("  kurz  ", 40), "kurz");
     }
 
     #[test]
