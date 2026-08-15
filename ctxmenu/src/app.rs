@@ -210,6 +210,100 @@ fn push_with_children(rows: &mut Vec<Row>, entry: &ContextEntry, row: Row) {
     }
 }
 
+/// The Feather glyphs this window draws, looked up once at startup.
+///
+/// `try_icon` searches a generated table of some three hundred names. Doing that
+/// per button per frame is exactly the work ToDo 4.3 keeps out of the frame
+/// path, and resolving here has a second benefit: a name a later version of the
+/// pack drops turns into a visible blank the moment the window opens, rather
+/// than staying unnoticed until somebody looks at that one button.
+///
+/// Named `Glyphs` and not `Icons` because `App::icons` is already the cache of
+/// bitmaps pulled out of executables — these are characters in a font.
+#[derive(Debug, Clone, Copy)]
+struct Glyphs {
+    select_all: char,
+    select_none: char,
+    visible: char,
+    hidden: char,
+    always: char,
+    shift_only: char,
+    free: char,
+    blocked: char,
+    top: char,
+    bottom: char,
+    no_position: char,
+    delete: char,
+    rescan: char,
+    new: char,
+    backup: char,
+}
+
+impl Glyphs {
+    /// The names, in one place, so the test below can walk the same list.
+    const NAMES: [&'static str; 15] = [
+        "check-circle",
+        "circle",
+        "eye",
+        "eye-off",
+        "menu",
+        "chevrons-up",
+        "shield",
+        "shield-off",
+        "arrow-up-circle",
+        "arrow-down-circle",
+        "code",
+        "trash-2",
+        "refresh-cw",
+        "plus",
+        "save",
+    ];
+
+    fn load() -> Self {
+        let mut glyphs = Self::NAMES.iter().map(|name| feather(name));
+        let mut next = || glyphs.next().unwrap_or(' ');
+        Glyphs {
+            select_all: next(),
+            select_none: next(),
+            visible: next(),
+            hidden: next(),
+            always: next(),
+            shift_only: next(),
+            free: next(),
+            blocked: next(),
+            top: next(),
+            bottom: next(),
+            no_position: next(),
+            delete: next(),
+            rescan: next(),
+            new: next(),
+            backup: next(),
+        }
+    }
+}
+
+/// One Feather glyph by name, or a space when the pack has no such icon.
+///
+/// A space rather than a panic or a replacement character: a missing icon is a
+/// cosmetic problem, and a tool that refuses to start over one would be worse
+/// than a button with a gap in front of its label.
+fn feather(name: &str) -> char {
+    iconflow::try_icon(
+        iconflow::Pack::Feather,
+        name,
+        iconflow::Style::Regular,
+        iconflow::Size::Regular,
+    )
+    .ok()
+    .and_then(|icon| char::from_u32(icon.codepoint))
+    .unwrap_or(' ')
+}
+
+/// An icon in front of its label, the shape every button in the bar takes.
+fn labelled(icon: char, text: &str) -> String {
+    format!("{icon}  {text}")
+}
+
 /// Whether the selected rows agree on one property, and on what.
 ///
 /// A segmented switch can only light one segment when every selected row is in
@@ -262,6 +356,138 @@ struct SelectionState {
     /// is their state it should be showing.
     blocked: Agreement<bool>,
     position: Agreement<Option<String>>,
+}
+
+/// Everything this entry can actually be told to do, in menu order.
+///
+/// "Can" is meant strictly: only the direction that would change something, and
+/// only mechanisms this kind of entry has. A hidden entry is offered Show and
+/// not Hide; a static verb has no CLSID and is not offered blocking at all;
+/// a COM handler gets no position, because the scanner does not even read one
+/// for a `shellex` key and setting it would be invisible.
+///
+/// This is what the bar's greyed-out switches say in the negative, said once
+/// more in the affirmative — and the two must not disagree, which is why both
+/// go through `clsid_of`.
+fn actions_for(entry: &ContextEntry) -> Vec<Action> {
+    let mut out = Vec::new();
+
+    out.push(match entry.hidden {
+        true => Action::Show,
+        false => Action::Hide,
+    });
+    out.push(match entry.extended {
+        true => Action::AlwaysShow,
+        false => Action::ShiftOnly,
+    });
+
+    if clsid_of(entry).is_some() {
+        let blocked = matches!(entry.kind, EntryKind::ShellEx { blocked: true, .. });
+        out.push(match blocked {
+            true => Action::Unblock,
+            false => Action::Block,
+        });
+    }
+
+    if matches!(entry.kind, EntryKind::Verb { .. }) {
+        for value in [Some("Top"), Some("Bottom"), None] {
+            if entry.position.as_deref() != value {
+                out.push(Action::SetPosition(value.map(str::to_string)));
+            }
+        }
+    }
+
+    out.push(Action::Delete);
+    out
+}
+
+/// An action as a menu line: what it does, not what it is called internally.
+fn menu_label(action: &Action, tr: &'static Strings) -> String {
+    match action {
+        // `action_label` says "Position" for all three, which is fine as a
+        // dialog title and useless as a menu line.
+        Action::SetPosition(value) => {
+            let where_to = match value.as_deref() {
+                Some("Top") => tr.pos_top,
+                Some("Bottom") => tr.pos_bottom,
+                _ => tr.pos_default,
+            };
+            format!("{}: {where_to}", tr.act_position)
+        }
+        other => action_label(other, tr).to_string(),
+    }
+}
+
+/// The icon a menu line carries, matching the switch that does the same thing.
+fn menu_glyph(action: &Action, glyphs: &Glyphs) -> char {
+    match action {
+        Action::Hide => glyphs.hidden,
+        Action::Show => glyphs.visible,
+        Action::ShiftOnly => glyphs.shift_only,
+        Action::AlwaysShow => glyphs.always,
+        Action::Block => glyphs.blocked,
+        Action::Unblock => glyphs.free,
+        Action::SetPosition(value) => match value.as_deref() {
+            Some("Top") => glyphs.top,
+            Some("Bottom") => glyphs.bottom,
+            _ => glyphs.no_position,
+        },
+        Action::Delete => glyphs.delete,
+    }
+}
+
+/// What a click on `row` does to the selection.
+///
+/// The three ways Explorer reads a click, and the reason this is a function of
+/// its own rather than a branch inside the table closure: it is the one piece
+/// of the table that can be checked without a window.
+///
+/// - plain: this row alone, and the anchor moves here
+/// - Ctrl: toggle this row, and the anchor moves here
+/// - Shift: everything from the anchor to here, the anchor staying put; with
+///   Ctrl held as well the range is added instead of replacing
+fn apply_click(
+    selected: &mut rustc_hash::FxHashSet<Row>,
+    anchor: &mut Option<Row>,
+    visible: &[Row],
+    row: &Row,
+    ctrl: bool,
+    shift: bool,
+) {
+    let span = shift
+        .then(|| {
+            let from = anchor
+                .as_ref()
+                .and_then(|start| visible.iter().position(|candidate| candidate == start))?;
+            let to = visible.iter().position(|candidate| candidate == row)?;
+            Some(match from <= to {
+                true => (from, to),
+                false => (to, from),
+            })
+        })
+        .flatten();
+
+    if let Some((first, last)) = span {
+        if !ctrl {
+            selected.clear();
+        }
+        for row in &visible[first..=last] {
+            selected.insert(row.clone());
+        }
+        // Deliberately not moved: after Shift-clicking row 20, a second
+        // Shift-click on row 5 has to select 5..20, not 5..5.
+        return;
+    }
+
+    if ctrl {
+        if !selected.remove(row) {
+            selected.insert(row.clone());
+        }
+    } else {
+        selected.clear();
+        selected.insert(row.clone());
+    }
+    *anchor = Some(row.clone());
 }
 
 /// Sums up the selection for the action bar.
@@ -371,6 +597,13 @@ pub struct App {
     selected: rustc_hash::FxHashSet<Row>,
     /// The row whose details are shown — the last one clicked.
     focused: Option<Row>,
+    /// Where a Shift-click measures from.
+    ///
+    /// Not the same as `focused`, and Explorer keeps them apart for a reason:
+    /// after Shift-clicking row 20 the focus is on 20, but a second Shift-click
+    /// on row 5 must still select 5..20 rather than 5..5. A plain or Ctrl click
+    /// moves the anchor, Shift never does.
+    anchor: Option<Row>,
     search: String,
 
     dialog: Option<Dialog>,
@@ -405,6 +638,8 @@ pub struct App {
     favourite_scroll: bool,
 
     icons: IconCache,
+    /// The Feather characters the bar draws, resolved at startup.
+    glyphs: Glyphs,
     tr: &'static Strings,
     settings: Settings,
 
@@ -650,6 +885,7 @@ impl App {
             groups: Vec::new(),
             selected: rustc_hash::FxHashSet::default(),
             focused: None,
+            anchor: None,
             search: start_search,
             dialog: None,
             action_rx: None,
@@ -665,6 +901,7 @@ impl App {
             favourite_focus: None,
             favourite_scroll: false,
             icons: IconCache::new(&cc.egui_ctx),
+            glyphs: Glyphs::load(),
             tr,
             settings,
             hwnd,
@@ -1008,6 +1245,9 @@ impl App {
         self.focused = Some(row.clone());
         if !extend {
             self.selected.clear();
+            // Arrowing to a row without Shift is the same statement as clicking
+            // it: this is where a later Shift-click measures from.
+            self.anchor = Some(row.clone());
         }
         self.selected.insert(row);
 
@@ -1394,6 +1634,7 @@ impl App {
     fn clear_selection(&mut self) {
         self.selected.clear();
         self.focused = None;
+        self.anchor = None;
         self.scroll_to_top = true;
     }
 
@@ -1822,7 +2063,10 @@ impl App {
                 ui.separator();
 
                 if ui
-                    .add_enabled(!self.scanning, egui::Button::new(self.tr.btn_rescan))
+                    .add_enabled(
+                        !self.scanning,
+                        egui::Button::new(labelled(self.glyphs.rescan, self.tr.btn_rescan)),
+                    )
                     .on_hover_text(self.tr.tip_rescan)
                     .on_disabled_hover_text(self.tr.tip_rescan)
                     .clicked()
@@ -1842,7 +2086,10 @@ impl App {
                 // after it, and the search box is one of those.
                 let on_entries = !matches!(self.tab, Tab::Backups | Tab::Favourites);
                 if ui
-                    .add_enabled(on_entries, egui::Button::new(self.tr.editor_new))
+                    .add_enabled(
+                        on_entries,
+                        egui::Button::new(labelled(self.glyphs.new, self.tr.editor_new)),
+                    )
                     .on_hover_text(self.tr.tip_editor_new)
                     .on_disabled_hover_text(self.tr.tip_entry_tabs_only)
                     .clicked()
@@ -1867,7 +2114,10 @@ impl App {
                 // program, and until this button existed a backup only ever
                 // happened as a side effect of changing something.
                 if ui
-                    .add_enabled(on_entries, egui::Button::new(self.tr.btn_backup_now))
+                    .add_enabled(
+                        on_entries,
+                        egui::Button::new(labelled(self.glyphs.backup, self.tr.btn_backup_now)),
+                    )
                     .on_hover_text(self.tr.tip_backup_now)
                     .on_disabled_hover_text(self.tr.tip_entry_tabs_only)
                     .clicked()
@@ -1980,6 +2230,7 @@ impl App {
         let state = selection_state(self.scan.as_ref(), &self.selected);
         let any = state.count > 0;
         let tr = self.tr;
+        let glyphs = self.glyphs;
 
         // Gathered here and acted on after the panel closes. `propose` swaps
         // the dialog out, and doing that halfway through drawing the bar would
@@ -1995,17 +2246,22 @@ impl App {
                 // button are wider than this window has to be, and the old bar
                 // ran off the right edge instead of moving to a second line.
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(selection_summary(tr, &state));
-
+                    // No count and no hint here any more: both moved to the
+                    // status bar. A line whose text grows and shrinks with the
+                    // selection pushed every button beside it sideways, so the
+                    // icons never sat still long enough to be aimed at.
                     if ui
-                        .button(tr.btn_select_all)
+                        .button(labelled(glyphs.select_all, tr.btn_select_all))
                         .on_hover_text(tr.tip_select_all)
                         .clicked()
                     {
                         select_all = true;
                     }
                     if ui
-                        .add_enabled(any, egui::Button::new(tr.btn_select_none))
+                        .add_enabled(
+                            any,
+                            egui::Button::new(labelled(glyphs.select_none, tr.btn_select_none)),
+                        )
                         .on_hover_text(tr.tip_select_none)
                         .on_disabled_hover_text(tr.tip_select_none)
                         .clicked()
@@ -2015,7 +2271,7 @@ impl App {
 
                     ui.separator();
 
-                    if let Some(action) = switch_groups(ui, tr, &state) {
+                    if let Some(action) = switch_groups(ui, tr, &glyphs, &state) {
                         wanted = Some(action);
                     }
 
@@ -2024,7 +2280,8 @@ impl App {
                     // Visually set apart: this is the one action a backup cannot
                     // be shrugged off for.
                     let delete = egui::Button::new(
-                        egui::RichText::new(tr.btn_delete).color(ui.visuals().error_fg_color),
+                        egui::RichText::new(labelled(glyphs.delete, tr.btn_delete))
+                            .color(ui.visuals().error_fg_color),
                     );
                     if ui
                         .add_enabled(any, delete)
@@ -3206,6 +3463,17 @@ impl App {
                             .fmt_shown
                             .replace("{}", &self.visible_rows.len().to_string()),
                     );
+
+                    // The selection is reported here rather than above the
+                    // table. Up there its text grew and shrank with the number
+                    // of selected rows and shoved every button beside it
+                    // sideways; an icon that moves cannot be aimed at. Down
+                    // here the line is free to change length.
+                    if !matches!(self.tab, Tab::Backups | Tab::Favourites) {
+                        ui.separator();
+                        let state = selection_state(self.scan.as_ref(), &self.selected);
+                        ui.label(selection_summary(self.tr, &state));
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3653,15 +3921,19 @@ impl App {
             icons,
             selected,
             focused,
+            anchor,
+            glyphs,
             tr,
             bench,
             sort,
             ..
         } = self;
+        let glyphs = &*glyphs;
         let mut new_sort: Option<SortBy> = None;
         // Filled by a double click or the context menu, acted on after the
         // table is done: `self` is borrowed field by field in here.
         let mut open: Option<ContextEntry> = None;
+        let mut menu_action: Option<Action> = None;
 
         let Some(scan) = scan else {
             ui.centered_and_justified(|ui| {
@@ -3824,29 +4096,76 @@ impl App {
                     // child included. It used to select the child's parent,
                     // because the selection could only hold whole entries.
                     if response.clicked() {
-                        // Ctrl adds to the selection, a plain click replaces
-                        // it — the convention every file manager uses.
-                        if response.ctx.input(|i| i.modifiers.ctrl) {
-                            if !selected.remove(&reference) {
-                                selected.insert(reference.clone());
-                            }
-                        } else {
-                            selected.clear();
-                            selected.insert(reference.clone());
-                        }
+                        let keys = response.ctx.input(|i| i.modifiers);
+                        apply_click(
+                            selected,
+                            anchor,
+                            visible_rows,
+                            &reference,
+                            keys.ctrl,
+                            keys.shift,
+                        );
+                        // The focus follows the click even when the anchor
+                        // stays put, so the detail pane shows the row under the
+                        // pointer rather than the one a range started at.
                         *focused = Some(reference.clone());
                     }
 
-                    // Double click opens the entry, and the right button
-                    // offers the same thing in words — the two ways everybody
-                    // tries first, and until now neither did anything.
+                    // Double click opens the entry — the way everybody tries
+                    // first, and for a while the only one that did anything.
                     if response.double_clicked() {
                         open = Some(entry.clone());
                     }
+
+                    // Right-clicking a row that is not part of the selection
+                    // makes it the selection first. Otherwise the menu would
+                    // list what this row can do and then do it to twenty other
+                    // rows, which is how Explorer would never behave.
+                    if response.secondary_clicked() && !selected.contains(&reference) {
+                        selected.clear();
+                        selected.insert(reference.clone());
+                        *anchor = Some(reference.clone());
+                        *focused = Some(reference.clone());
+                    }
+
                     response.context_menu(|ui| {
+                        // Said out loud, because the menu is opened on one row
+                        // and acts on all of them.
+                        if selected.len() > 1 {
+                            ui.label(
+                                egui::RichText::new(
+                                    tr.fmt_selected_count
+                                        .replace("{}", &selected.len().to_string()),
+                                )
+                                .weak()
+                                .small(),
+                            );
+                            ui.separator();
+                        }
+
                         if ui.button(tr.ctx_open_entry).clicked() {
                             open = Some(entry.clone());
                             ui.close();
+                        }
+                        ui.separator();
+
+                        for action in actions_for(entry) {
+                            let label =
+                                labelled(menu_glyph(&action, glyphs), &menu_label(&action, tr));
+                            let delete = matches!(action, Action::Delete);
+                            if delete {
+                                ui.separator();
+                            }
+                            let text = match delete {
+                                true => {
+                                    egui::RichText::new(label).color(ui.visuals().error_fg_color)
+                                }
+                                false => egui::RichText::new(label),
+                            };
+                            if ui.button(text).clicked() {
+                                menu_action = Some(action);
+                                ui.close();
+                            }
                         }
                     });
                 });
@@ -3860,6 +4179,13 @@ impl App {
                 recorded: Vec::new(),
                 existing: Some(entry.registry_path.clone()),
             });
+        }
+
+        // Through the same `propose` the bar uses, so a menu line and a switch
+        // reach the same confirmation, the same backup and the same elevation
+        // path. The menu is another way in, not a second implementation.
+        if let Some(action) = menu_action {
+            self.propose(action);
         }
 
         if let Some(column) = new_sort {
@@ -5080,7 +5406,12 @@ fn selection_summary(tr: &'static Strings, state: &SelectionState) -> String {
 /// there used to be a button per direction — `Hide` here, `Show` a row below in
 /// a smaller size — there is now one group per axis that also answers the
 /// question the buttons never did: which end are these entries at right now?
-fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> Option<Action> {
+fn switch_groups(
+    ui: &mut Ui,
+    tr: &'static Strings,
+    glyphs: &Glyphs,
+    state: &SelectionState,
+) -> Option<Action> {
     let mut wanted = None;
 
     // With nothing selected every group is off for the same reason, so they
@@ -5089,13 +5420,18 @@ fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> O
 
     if let Some(index) = switch_group(
         ui,
-        "👁",
         mixed_marker(tr, state.hidden == Agreement::Mixed),
         &group_tip(tr.group_visibility, tr.tip_group_visibility),
         needs_rows,
         &[
-            (tr.seg_visible, state.hidden == Agreement::Same(false)),
-            (tr.seg_hidden, state.hidden == Agreement::Same(true)),
+            (
+                labelled(glyphs.visible, tr.seg_visible),
+                state.hidden == Agreement::Same(false),
+            ),
+            (
+                labelled(glyphs.hidden, tr.seg_hidden),
+                state.hidden == Agreement::Same(true),
+            ),
         ],
     ) {
         wanted = Some(match index {
@@ -5104,17 +5440,22 @@ fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> O
         });
     }
 
-    // The same arrow the table draws on an entry that carries `Extended`, so
-    // the badge in the row and the switch that changes it are one vocabulary.
+    ui.separator();
+
     if let Some(index) = switch_group(
         ui,
-        "⇧",
         mixed_marker(tr, state.extended == Agreement::Mixed),
         &group_tip(tr.group_shift, tr.tip_group_shift),
         needs_rows,
         &[
-            (tr.seg_always, state.extended == Agreement::Same(false)),
-            (tr.seg_shift_only, state.extended == Agreement::Same(true)),
+            (
+                labelled(glyphs.always, tr.seg_always),
+                state.extended == Agreement::Same(false),
+            ),
+            (
+                labelled(glyphs.shift_only, tr.seg_shift_only),
+                state.extended == Agreement::Same(true),
+            ),
         ],
     ) {
         wanted = Some(match index {
@@ -5123,21 +5464,26 @@ fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> O
         });
     }
 
+    ui.separator();
+
     // Blocking is a COM-handler mechanism, so a selection of static verbs
     // cannot use it. The old bar offered the button anyway and answered with
     // an error window after the click; the reason is known before it.
     let blocking = needs_rows.or((state.blockable == 0).then_some(tr.tip_needs_clsid));
-    // Not the padlock: that one already means "read-only" in the table, and
-    // two meanings for one symbol is worse than no symbol.
     if let Some(index) = switch_group(
         ui,
-        "🚫",
         mixed_marker(tr, state.blocked == Agreement::Mixed),
         &group_tip(tr.group_systemwide, tr.tip_group_systemwide),
         blocking,
         &[
-            (tr.seg_free, state.blocked == Agreement::Same(false)),
-            (tr.seg_blocked, state.blocked == Agreement::Same(true)),
+            (
+                labelled(glyphs.free, tr.seg_free),
+                state.blocked == Agreement::Same(false),
+            ),
+            (
+                labelled(glyphs.blocked, tr.seg_blocked),
+                state.blocked == Agreement::Same(true),
+            ),
         ],
     ) {
         wanted = Some(match index {
@@ -5146,23 +5492,22 @@ fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> O
         });
     }
 
+    ui.separator();
+
     // Both values verified on Windows 10 by writing probe verbs and
     // photographing a real right-click: an entry with Top rises above
     // alphabetically earlier siblings, one with Bottom sinks below everything.
     // Three coarse blocks are all Windows actually gives.
     let at = |value: Option<&str>| state.position == Agreement::Same(value.map(str::to_string));
-    let top = format!("↑ {}", tr.pos_top);
-    let bottom = format!("↓ {}", tr.pos_bottom);
     if let Some(index) = switch_group(
         ui,
-        "↕",
         mixed_marker(tr, state.position == Agreement::Mixed),
         &group_tip(tr.group_position, tr.tip_position),
         needs_rows,
         &[
-            (tr.pos_default, at(None)),
-            (&top, at(Some("Top"))),
-            (&bottom, at(Some("Bottom"))),
+            (labelled(glyphs.no_position, tr.pos_default), at(None)),
+            (labelled(glyphs.top, tr.pos_top), at(Some("Top"))),
+            (labelled(glyphs.bottom, tr.pos_bottom), at(Some("Bottom"))),
         ],
     ) {
         wanted = Some(Action::SetPosition(match index {
@@ -5175,11 +5520,12 @@ fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> O
     wanted
 }
 
-/// One titled group of segments, drawn as a unit.
+/// One group of segments, allocated as a unit so it cannot break in half.
 ///
-/// `ui.group` rather than loose widgets for two reasons: the frame is the only
-/// thing on screen saying that these are four groups and not nine buttons, and
-/// it keeps a title with its own segments when the bar wraps to a second line.
+/// No frame around it: the segments carry an icon each, and a box drawn around
+/// every pair turned the bar into four boxes competing with the buttons inside
+/// them. What holds a group together now is that it is allocated in one piece,
+/// with a plain separator between groups.
 ///
 /// A lit segment is where the selection already is, so clicking it would ask
 /// for a change that has already happened. It stays clickable rather than
@@ -5187,60 +5533,47 @@ fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> O
 /// clicking, to bring the rest into line.
 fn switch_group(
     ui: &mut Ui,
-    symbol: &str,
     mixed: Option<&str>,
     tip: &str,
     reason: Option<&str>,
-    segments: &[(&str, bool)],
+    segments: &[(String, bool)],
 ) -> Option<usize> {
     // A wrapping row breaks between widgets whose width it is told in advance,
-    // and `ui.group` never tells it: the frame takes the rest of the line and
-    // reports what it used afterwards. Measured at 1267 points, that pushed the
-    // last two groups off the right edge instead of onto a second line — the
-    // same complaint the old bar earned. Reserving the measured width first
-    // gives the row something to decide with.
-    let needed = group_width(ui, symbol, mixed, segments);
-    // The height has to be reserved too, and honestly: with zero the groups
-    // came out as a staircase, each one starting a little lower than the last,
-    // because a wrapping row aligns what it is given and was given nothing.
+    // and a group of loose buttons never tells it one — each button decides for
+    // itself and the group can come apart across two lines. Measured at 1267
+    // points before this: the last two groups hung over the right edge instead
+    // of moving down. Reserving the measured size first gives the row something
+    // to decide with, and the height has to be part of it — with zero the
+    // groups came out as a staircase, each starting lower than the last.
+    let needed = group_width(ui, mixed, segments);
     let height = group_height(ui);
     let mut clicked = None;
     ui.allocate_ui_with_layout(
         egui::vec2(needed, height),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            ui.group(|ui| {
-                // The symbol at full size and the words small beside it. Both
-                // in one small label — which is what this was at first — turned
-                // the symbol into a speck: the part meant to be recognisable at
-                // a glance was the least legible thing in the group.
-                let spacing = ui.spacing().item_spacing.x;
-                ui.spacing_mut().item_spacing.x = 3.0;
-                ui.label(symbol);
-                // Only when the rows disagree. A group carrying its name in
-                // words was wider than the name was worth — the segments say
-                // what the choice is, and the name is one hover away. "gemischt"
-                // is not: without it a mixed selection, where no segment lights
-                // up, looks exactly like an empty one.
-                if let Some(mixed) = mixed {
-                    ui.label(egui::RichText::new(mixed).weak().small());
+            // Only when the rows disagree: without the word, a mixed selection —
+            // where no segment lights up — looks exactly like an empty one.
+            if let Some(mixed) = mixed {
+                ui.label(egui::RichText::new(mixed).weak().small());
+            }
+            for (index, (label, current)) in segments.iter().enumerate() {
+                // `Button::selectable`, not `SelectableLabel`: egui 0.36 folded
+                // the second into the first, and the tab row above takes the
+                // same shape through `ui.selectable_label`.
+                let response = ui
+                    .add_enabled(
+                        reason.is_none(),
+                        egui::Button::selectable(*current, label.as_str()),
+                    )
+                    .on_hover_text(tip)
+                    // A greyed-out control that explains nothing is the thing
+                    // this whole bar was rebuilt to get rid of.
+                    .on_disabled_hover_text(reason.unwrap_or(tip));
+                if response.clicked() {
+                    clicked = Some(index);
                 }
-                ui.spacing_mut().item_spacing.x = spacing;
-                for (index, (label, current)) in segments.iter().enumerate() {
-                    // `Button::selectable`, not `SelectableLabel`: egui 0.36
-                    // folded the second into the first, and the tab row above
-                    // takes the same shape through `ui.selectable_label`.
-                    let response = ui
-                        .add_enabled(reason.is_none(), egui::Button::selectable(*current, *label))
-                        .on_hover_text(tip)
-                        // A greyed-out control that explains nothing is the
-                        // thing this whole bar was rebuilt to get rid of.
-                        .on_disabled_hover_text(reason.unwrap_or(tip));
-                    if response.clicked() {
-                        clicked = Some(index);
-                    }
-                }
-            });
+            }
         },
     );
     clicked
@@ -5252,7 +5585,7 @@ fn switch_group(
 /// constant: the German labels are longer than the English ones, the user can
 /// switch language at runtime, and a wrong guess here shows up as a group
 /// hanging over the right edge.
-fn group_width(ui: &Ui, symbol: &str, mixed: Option<&str>, segments: &[(&str, bool)]) -> f32 {
+fn group_width(ui: &Ui, mixed: Option<&str>, segments: &[(String, bool)]) -> f32 {
     let body = egui::TextStyle::Body.resolve(ui.style());
     let small = egui::TextStyle::Small.resolve(ui.style());
     // Through the painter rather than `ui.fonts`: laying text out fills a cache
@@ -5267,24 +5600,20 @@ fn group_width(ui: &Ui, symbol: &str, mixed: Option<&str>, segments: &[(&str, bo
 
     let spacing = ui.spacing().item_spacing.x;
     let padding = ui.spacing().button_padding.x * 2.0;
-    let mut width = measure(symbol, &body) + 3.0 + mixed.map_or(0.0, |text| measure(text, &small));
+    let mut width = mixed.map_or(0.0, |text| measure(text, &small) + spacing);
     for (label, _) in segments {
         width += spacing + padding + measure(label, &body);
     }
-    // The frame's own border and inner margin, plus the gap to the next group.
-    width + spacing * 2.0 + 16.0
+    width + spacing
 }
 
-/// How tall a switch group comes out, frame included.
+/// How tall a switch group comes out.
 fn group_height(ui: &Ui) -> f32 {
-    let frame = egui::Frame::group(ui.style());
-    let content = ui
-        .spacing()
+    ui.spacing()
         .interact_size
         .y
         .max(ui.text_style_height(&egui::TextStyle::Body))
-        + ui.spacing().button_padding.y * 2.0;
-    content + frame.inner_margin.sum().y + frame.stroke.width * 2.0
+        + ui.spacing().button_padding.y * 2.0
 }
 
 /// The word for a selection that does not agree with itself, or nothing.
@@ -5410,6 +5739,28 @@ fn install_fonts(ctx: &egui::Context) {
         );
         family.push(name.to_owned());
     }
+
+    // Feather, through `iconflow`: the pack ships as a TTF whose glyphs sit in
+    // the private use area, so it joins the same family as the text faces and a
+    // button can carry an icon by putting one character in front of its label.
+    //
+    // **In front of the system faces, and that is not a detail.** Segoe UI
+    // Symbol has glyphs in the private use area too — measured on 2026-08-15:
+    // **187 of Feather's 287 codepoints are also in seguisym.ttf**. With the
+    // icons behind it, nine of the fifteen buttons in the bar drew a Segoe
+    // glyph instead: the trash can came out as a list, the shield as a login
+    // arrow. Feather carries nothing outside U+E000..U+E11E, so putting it
+    // first costs one failed lookup per ordinary character and no text.
+    let mut icon_families = Vec::new();
+    for asset in iconflow::fonts() {
+        fonts.font_data.insert(
+            asset.family.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(asset.bytes)),
+        );
+        icon_families.push(asset.family.to_owned());
+    }
+    icon_families.append(&mut family);
+    let family = icon_families;
 
     if family.is_empty() {
         return;
@@ -5558,6 +5909,208 @@ mod tests {
 
     fn rows(indices: &[usize]) -> rustc_hash::FxHashSet<Row> {
         indices.iter().map(|index| Row::top(*index)).collect()
+    }
+
+    #[test]
+    fn the_menu_offers_the_direction_that_would_change_something() {
+        let mut scan = synthetic::scan_result(8);
+
+        // A visible verb: hide, shift-only, no blocking, and the two positions
+        // it is not already at plus "none" — which it is at, so not that one.
+        let verb = &mut scan.entries[0];
+        verb.hidden = false;
+        verb.extended = false;
+        verb.position = None;
+        let offered = actions_for(verb);
+        assert!(offered.contains(&Action::Hide));
+        assert!(!offered.contains(&Action::Show));
+        assert!(offered.contains(&Action::ShiftOnly));
+        assert!(
+            !offered.iter().any(|a| matches!(a, Action::Block)),
+            "a static verb has no CLSID to block"
+        );
+        assert!(offered.contains(&Action::SetPosition(Some("Top".into()))));
+        assert!(
+            !offered.contains(&Action::SetPosition(None)),
+            "it is already at no position"
+        );
+        assert!(offered.contains(&Action::Delete));
+
+        // The same entry hidden and shifted: both directions turn around.
+        let hidden = &mut scan.entries[1];
+        hidden.hidden = true;
+        hidden.extended = true;
+        let offered = actions_for(hidden);
+        assert!(offered.contains(&Action::Show));
+        assert!(!offered.contains(&Action::Hide));
+        assert!(offered.contains(&Action::AlwaysShow));
+        assert!(!offered.contains(&Action::ShiftOnly));
+
+        // Every fourth synthetic entry is a COM handler.
+        let handler = &scan.entries[3];
+        let offered = actions_for(handler);
+        assert!(
+            offered.contains(&Action::Unblock),
+            "entry 3 is blocked, so the way out is offered"
+        );
+        assert!(!offered.contains(&Action::Block));
+        assert!(
+            !offered.iter().any(|a| matches!(a, Action::SetPosition(_))),
+            "the scanner never reads a position for a shellex key"
+        );
+    }
+
+    #[test]
+    fn clicking_selects_the_way_explorer_does() {
+        let visible: Vec<Row> = (0..6).map(Row::top).collect();
+        let mut selected = rustc_hash::FxHashSet::default();
+        let mut anchor = None;
+
+        // Plain click: this row, and nothing else.
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[1],
+            false,
+            false,
+        );
+        assert_eq!(selected, rows(&[1]));
+        assert_eq!(anchor, Some(visible[1].clone()));
+
+        // Shift: the span from the anchor, anchor unmoved.
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[4],
+            false,
+            true,
+        );
+        assert_eq!(selected, rows(&[1, 2, 3, 4]));
+        assert_eq!(
+            anchor,
+            Some(visible[1].clone()),
+            "the anchor stays where the range started"
+        );
+
+        // A second Shift-click measures from the same anchor, not from the
+        // last row of the previous range — the reason the anchor exists.
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[0],
+            false,
+            true,
+        );
+        assert_eq!(selected, rows(&[0, 1]));
+
+        // Ctrl toggles a single row and moves the anchor there.
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[5],
+            true,
+            false,
+        );
+        assert_eq!(selected, rows(&[0, 1, 5]));
+        assert_eq!(anchor, Some(visible[5].clone()));
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[5],
+            true,
+            false,
+        );
+        assert_eq!(selected, rows(&[0, 1]), "clicking it again takes it out");
+
+        // Ctrl and Shift together add a range instead of replacing.
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[3],
+            true,
+            true,
+        );
+        assert_eq!(selected, rows(&[0, 1, 3, 4, 5]));
+    }
+
+    #[test]
+    fn a_shift_click_without_an_anchor_behaves_like_a_plain_one() {
+        let visible: Vec<Row> = (0..4).map(Row::top).collect();
+        let mut selected = rows(&[0, 1, 2]);
+        let mut anchor = None;
+
+        apply_click(
+            &mut selected,
+            &mut anchor,
+            &visible,
+            &visible[3],
+            false,
+            true,
+        );
+
+        assert_eq!(selected, rows(&[3]));
+        assert_eq!(anchor, Some(visible[3].clone()), "and it sets one");
+    }
+
+    #[test]
+    fn every_icon_the_bar_asks_for_exists_in_the_pack() {
+        // A name the pack does not carry comes back as a space, which on screen
+        // is a button whose label starts with a gap — easy to miss and easy to
+        // introduce, since the names are strings. The pack is versioned and can
+        // rename things between releases, so this is worth a test rather than
+        // a careful read.
+        let missing: Vec<&str> = Glyphs::NAMES
+            .iter()
+            .copied()
+            .filter(|name| feather(name) == ' ')
+            .collect();
+
+        assert!(missing.is_empty(), "not in Feather: {missing:?}");
+    }
+
+    #[test]
+    fn the_glyph_list_and_the_struct_stay_the_same_length() {
+        // `Glyphs::load` walks NAMES in order and fills the fields in the same
+        // order. Adding a field without adding its name would silently shift
+        // every icon after it by one.
+        let glyphs = Glyphs::load();
+        let filled = [
+            glyphs.select_all,
+            glyphs.select_none,
+            glyphs.visible,
+            glyphs.hidden,
+            glyphs.always,
+            glyphs.shift_only,
+            glyphs.free,
+            glyphs.blocked,
+            glyphs.top,
+            glyphs.bottom,
+            glyphs.no_position,
+            glyphs.delete,
+            glyphs.rescan,
+            glyphs.new,
+            glyphs.backup,
+        ];
+
+        assert_eq!(filled.len(), Glyphs::NAMES.len());
+        assert!(
+            filled.iter().all(|glyph| *glyph != ' '),
+            "every field got a glyph"
+        );
+        // Feather puts its glyphs in the private use area; anything outside it
+        // would mean the lookup returned an ordinary character by accident.
+        assert!(
+            filled
+                .iter()
+                .all(|glyph| ('\u{e000}'..='\u{f8ff}').contains(glyph)),
+            "all in the private use area"
+        );
     }
 
     #[test]

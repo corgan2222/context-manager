@@ -586,7 +586,7 @@ pub static DE: Strings = Strings {
     seg_visible: "Sichtbar",
     seg_hidden: "Versteckt",
     seg_always: "Immer",
-    seg_shift_only: "Nur mit ⇧",
+    seg_shift_only: "Nur mit Umschalt",
     seg_free: "Frei",
     seg_blocked: "Gesperrt",
     seg_mixed: "gemischt",
@@ -596,14 +596,14 @@ pub static DE: Strings = Strings {
     tip_needs_selection: "Erst in der Tabelle Einträge anklicken — Strg für mehrere, Umschalt für einen Bereich.",
     tip_needs_clsid: "Keiner der ausgewählten Einträge ist ein COM-Handler. Nur die haben eine CLSID, die sich sperren lässt; für alles andere ist Ausblenden der Weg.",
     tip_entry_tabs_only: "Gilt für die Einträge aus der Registry — also die Reiter Kategorien, Dateitypen und Programme.",
-    hint_no_selection: "Nichts ausgewählt — die Schalter daneben wirken auf ausgewählte Einträge.",
+    hint_no_selection: "Nichts ausgewählt — die Schalter oben wirken auf ausgewählte Einträge. Rechtsklick auf eine Zeile zeigt, was mit ihr geht.",
     fmt_selection_readonly: "{} ausgewählt, {} davon schreibgeschützt",
     fmt_mixed_share: "{} von {} Einträgen",
 
     intro_title: "So arbeitet dieses Programm",
     intro_step_one: "1. Links eine Kategorie wählen. Sie bestimmt, wo im Menü ein Eintrag auftaucht: bei Dateien, bei Ordnern, auf dem Desktop.",
-    intro_step_two: "2. In der Tabelle Einträge anklicken. Strg für mehrere, Umschalt für einen Bereich.",
-    intro_step_three: "3. Oben die Schalter benutzen. Sie zeigen, wo die Auswahl gerade steht; ein Klick auf die andere Seite ändert es.",
+    intro_step_two: "2. In der Tabelle Einträge anklicken. Strg für einzelne, Umschalt für einen Bereich — wie im Explorer.",
+    intro_step_three: "3. Oben die Schalter benutzen oder rechts auf eine Zeile klicken. Die Schalter zeigen, wo die Auswahl gerade steht; ein Klick auf die andere Seite ändert es.",
     intro_safety: "Vor jeder Änderung wird der betroffene Registry-Schlüssel gesichert, und der Reiter Sicherungen holt ihn zurück. Endgültig ist allein das Löschen — auch dabei wird vorher gesichert.",
 };
 
@@ -873,7 +873,7 @@ pub static EN: Strings = Strings {
     seg_visible: "Visible",
     seg_hidden: "Hidden",
     seg_always: "Always",
-    seg_shift_only: "Shift only",
+    seg_shift_only: "Only with Shift",
     seg_free: "Free",
     seg_blocked: "Blocked",
     seg_mixed: "mixed",
@@ -883,14 +883,14 @@ pub static EN: Strings = Strings {
     tip_needs_selection: "Pick entries in the table first — Ctrl for several, Shift for a range.",
     tip_needs_clsid: "None of the selected entries is a COM handler. Only those carry a CLSID that can be blocked; for anything else, hiding is the way.",
     tip_entry_tabs_only: "Applies to the entries read from the registry — the Categories, File Types and Programs tabs.",
-    hint_no_selection: "Nothing selected — the switches beside this act on selected entries.",
+    hint_no_selection: "Nothing selected — the switches above act on selected entries. Right-click a row to see what it can do.",
     fmt_selection_readonly: "{} selected, {} of them read-only",
     fmt_mixed_share: "{} of {} entries",
 
     intro_title: "How this program works",
     intro_step_one: "1. Pick a category on the left. It decides where in the menu an entry shows up: on files, on folders, on the desktop.",
-    intro_step_two: "2. Click entries in the table. Ctrl for several, Shift for a range.",
-    intro_step_three: "3. Use the switches above. They show where the selection currently stands; a click on the other side changes it.",
+    intro_step_two: "2. Click entries in the table. Ctrl for single ones, Shift for a range — as in Explorer.",
+    intro_step_three: "3. Use the switches above, or right-click a row. The switches show where the selection currently stands; a click on the other side changes it.",
     intro_safety: "Before every change the registry key involved is backed up, and the Backups tab brings it back. Deleting is the only final one — and even that backs up first.",
 };
 
