@@ -61,6 +61,14 @@ pub struct Settings {
     pub custom_extensions: Vec<String>,
     /// Hide file types that have no entries of their own.
     pub hide_empty_types: bool,
+    /// Also list the entries that apply to *every* file when a file type is
+    /// selected.
+    ///
+    /// Off by default since 2026-08-15. For `.jpg` those are 39 of 58 rows and
+    /// they are identical for every type, so they push what is special about
+    /// this one off the screen — which is what "the tab does nothing when I
+    /// click" turned out to be.
+    pub include_generic_entries: bool,
 }
 
 impl Default for Settings {
@@ -70,6 +78,7 @@ impl Default for Settings {
             theme: ThemeChoice::default(),
             custom_extensions: Vec::new(),
             hide_empty_types: true,
+            include_generic_entries: false,
         }
     }
 }
@@ -154,6 +163,7 @@ mod tests {
             theme: ThemeChoice::Dark,
             custom_extensions: vec![".xyz".into(), ".foo".into()],
             hide_empty_types: false,
+            include_generic_entries: true,
         };
 
         let json = serde_json::to_string(&settings).expect("serialisable");

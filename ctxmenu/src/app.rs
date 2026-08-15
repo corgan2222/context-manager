@@ -101,6 +101,14 @@ enum Dialog {
         /// Read when the dialog opens, not per frame: this is a file on disk,
         /// and the frame path has no business touching one (ToDo 4.3).
         recorded: Vec<NewEntry>,
+        /// Set when an entry that already exists is being *looked at*: the
+        /// registry path it came from.
+        ///
+        /// The form is then filled in and locked. Writing back is a separate
+        /// decision — it would have to know which values changed, keep a
+        /// backup first and survive a key that vanished in between — so this
+        /// shows and does not touch (2026-08-15).
+        existing: Option<String>,
     },
 }
 
@@ -740,17 +748,20 @@ impl App {
                         .map(|info| info.entry_indices.clone())
                         .unwrap_or_default();
 
-                    // Levels 1 and 2 apply to every file, so they belong in
-                    // the list for this type even though they are not stored
-                    // under it (ToDo 10.4). Showing only levels 3 to 7 would
-                    // understate what a right-click actually offers.
-                    rows.extend(scan.entries.iter().enumerate().filter_map(|(i, e)| {
-                        matches!(
-                            e.category,
-                            Category::AllFiles | Category::AllFilesystemObjects
-                        )
-                        .then_some(i)
-                    }));
+                    // Levels 1 and 2 apply to every file, so they are part of
+                    // what a right-click on this type really offers (ToDo
+                    // 10.4) — but they are also identical for every type, and
+                    // for `.jpg` they are 39 rows against 19. Off by default
+                    // since 2026-08-15, and one checkbox away.
+                    if self.settings.include_generic_entries {
+                        rows.extend(scan.entries.iter().enumerate().filter_map(|(i, e)| {
+                            matches!(
+                                e.category,
+                                Category::AllFiles | Category::AllFilesystemObjects
+                            )
+                            .then_some(i)
+                        }));
+                    }
                     rows
                 }
                 None => Vec::new(),
@@ -1761,6 +1772,7 @@ impl App {
                                 children: Vec::new(),
                             }),
                             recorded: create::recorded().unwrap_or_default(),
+                            existing: None,
                         });
                     }
                     ui.separator();
@@ -2565,21 +2577,39 @@ impl App {
             Dialog::Editor {
                 mut entry,
                 recorded,
+                existing,
             } => {
                 let mut close = false;
                 let mut save = false;
+                // Looking at an entry that is already in the registry: the
+                // fields are filled in and switched off, because this dialog
+                // cannot write them back yet and a field that takes typing and
+                // drops it is worse than one that does not take any.
+                let viewing = existing.is_some();
                 // Borrowed out here: the closure below already holds `self`
                 // for `self.tr`, and the cache needs a mutable borrow to queue
                 // an extraction for a reference it has not seen yet.
                 let icons = &mut self.icons;
 
-                egui::Window::new(self.tr.editor_title)
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                    .show(ui.ctx(), |ui| {
-                        ui.set_min_width(560.0);
-
+                egui::Window::new(if viewing {
+                    self.tr.editor_view_title
+                } else {
+                    self.tr.editor_title
+                })
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ui.ctx(), |ui| {
+                    ui.set_min_width(560.0);
+                    if let Some(path) = &existing {
+                        ui.small(path);
+                        ui.colored_label(ui.visuals().warn_fg_color, self.tr.editor_view_note);
+                        ui.add_space(4.0);
+                    }
+                    // One switch for the whole form. Everything below is
+                    // the same code as for a new entry, which is the point:
+                    // what is shown is exactly what would be written.
+                    ui.add_enabled_ui(!viewing, |ui| {
                         egui::Grid::new("editor-grid")
                             .num_columns(2)
                             .spacing([10.0, 6.0])
@@ -2807,58 +2837,77 @@ impl App {
                                 ui.checkbox(&mut entry.extended, self.tr.editor_extended);
                                 ui.end_row();
                             });
+                    }); // add_enabled_ui
 
+                    ui.add_space(6.0);
+                    // Where it will land, once that is decidable. When it
+                    // is not, the reason stands in the list below in one
+                    // language — printing the error from `paths` here
+                    // instead put a bilingual sentence on screen, usually
+                    // directly above the plain reason for it.
+                    let target = entry.target();
+                    if let Ok(target) = &target
+                        && !viewing
+                    {
+                        ui.small(format!("\u{2192} {}", target.full_path()));
+                    }
+
+                    // Live, because a warning after the fact is no use: the %1
+                    // trap costs an entry that looks right and does nothing.
+                    // Not while looking at something that already exists:
+                    // its faults are not this reader's to fix, and half of
+                    // them ("key name is missing") would be about fields
+                    // that are locked anyway.
+                    let problems = if viewing {
+                        Vec::new()
+                    } else {
+                        create::check(&entry)
+                    };
+                    // `target` too: an unusable category has to disable the
+                    // button, or the dialog offers to do something it will
+                    // then refuse. Since `check` reports that case itself,
+                    // this is now belt and braces rather than the only
+                    // guard — and it stays for exactly that reason.
+                    let blocked = problems.iter().any(Problem::is_error) || target.is_err();
+                    if !problems.is_empty() {
+                        ui.add_space(4.0);
+                        for problem in &problems {
+                            let colour = match problem {
+                                Problem::Error(_) => ui.visuals().error_fg_color,
+                                Problem::Warning(_) => ui.visuals().warn_fg_color,
+                            };
+                            ui.colored_label(colour, fault_text(problem.fault(), self.tr));
+                        }
+                    }
+
+                    // What this tool created before — a reminder while
+                    // adding something, and noise while reading somebody
+                    // else's entry.
+                    if !recorded.is_empty() && !viewing {
                         ui.add_space(6.0);
-                        // Where it will land, once that is decidable. When it
-                        // is not, the reason stands in the list below in one
-                        // language — printing the error from `paths` here
-                        // instead put a bilingual sentence on screen, usually
-                        // directly above the plain reason for it.
-                        let target = entry.target();
-                        if let Ok(target) = &target {
-                            ui.small(format!("\u{2192} {}", target.full_path()));
-                        }
+                        ui.separator();
+                        ui.label(self.tr.editor_created_before);
+                        egui::ScrollArea::vertical()
+                            .max_height(90.0)
+                            .show(ui, |ui| {
+                                for existing in &recorded {
+                                    ui.small(format!(
+                                        "{}  \u{b7}  {}  \u{b7}  {}",
+                                        existing.display_name,
+                                        category_label(&existing.category, self.tr),
+                                        existing.key_name
+                                    ));
+                                }
+                            });
+                    }
 
-                        // Live, because a warning after the fact is no use: the %1
-                        // trap costs an entry that looks right and does nothing.
-                        let problems = create::check(&entry);
-                        // `target` too: an unusable category has to disable the
-                        // button, or the dialog offers to do something it will
-                        // then refuse. Since `check` reports that case itself,
-                        // this is now belt and braces rather than the only
-                        // guard — and it stays for exactly that reason.
-                        let blocked = problems.iter().any(Problem::is_error) || target.is_err();
-                        if !problems.is_empty() {
-                            ui.add_space(4.0);
-                            for problem in &problems {
-                                let colour = match problem {
-                                    Problem::Error(_) => ui.visuals().error_fg_color,
-                                    Problem::Warning(_) => ui.visuals().warn_fg_color,
-                                };
-                                ui.colored_label(colour, fault_text(problem.fault(), self.tr));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if viewing {
+                            if ui.button(self.tr.btn_close).clicked() {
+                                close = true;
                             }
-                        }
-
-                        if !recorded.is_empty() {
-                            ui.add_space(6.0);
-                            ui.separator();
-                            ui.label(self.tr.editor_created_before);
-                            egui::ScrollArea::vertical()
-                                .max_height(90.0)
-                                .show(ui, |ui| {
-                                    for existing in &recorded {
-                                        ui.small(format!(
-                                            "{}  \u{b7}  {}  \u{b7}  {}",
-                                            existing.display_name,
-                                            category_label(&existing.category, self.tr),
-                                            existing.key_name
-                                        ));
-                                    }
-                                });
-                        }
-
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
+                        } else {
                             if ui
                                 .add_enabled(!blocked, egui::Button::new(self.tr.editor_create))
                                 .clicked()
@@ -2868,8 +2917,9 @@ impl App {
                             if ui.button(self.tr.btn_cancel).clicked() {
                                 close = true;
                             }
-                        });
+                        }
                     });
+                });
 
                 if save {
                     match create::create(&entry) {
@@ -2884,7 +2934,11 @@ impl App {
                         }
                     }
                 } else if !close {
-                    self.dialog = Some(Dialog::Editor { entry, recorded });
+                    self.dialog = Some(Dialog::Editor {
+                        entry,
+                        recorded,
+                        existing,
+                    });
                 }
                 keep = false;
             }
@@ -3027,6 +3081,15 @@ impl App {
                 let hide_empty = &mut self.settings.hide_empty_types;
                 if ui.checkbox(hide_empty, self.tr.filter_hide_empty).changed() {
                     let _ = self.settings.save();
+                }
+                let generic = &mut self.settings.include_generic_entries;
+                if ui
+                    .checkbox(generic, self.tr.filter_include_generic)
+                    .on_hover_text(self.tr.tip_filter_include_generic)
+                    .changed()
+                {
+                    let _ = self.settings.save();
+                    self.filter_dirty = true;
                 }
 
                 // Adding a type of one's own, and the full sweep. Both were
@@ -3227,92 +3290,109 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        // Two blocks instead of a badge under every second
-                        // row. "Belongs to Windows" is the one property that
-                        // changes what a person dares to do with a row, and as
-                        // an indented line below each entry it also read as if
-                        // it belonged to the row *underneath* it.
-                        let mut block: Option<bool> = None;
+                        // Three branches, like the file type tree: what is
+                        // broken, what the user installed, and what belongs to
+                        // Windows. As a badge under every second row this said
+                        // the same thing and read as if it belonged to the row
+                        // *underneath* it.
+                        let branch = |wanted: Branch| -> Vec<usize> {
+                            groups
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, g)| Branch::of(g) == wanted)
+                                .map(|(index, _)| index)
+                                .collect()
+                        };
 
-                        for (index, group) in groups.iter().enumerate() {
-                            if block != Some(group.is_system) {
-                                block = Some(group.is_system);
-                                let count = groups
-                                    .iter()
-                                    .filter(|g| g.is_system == group.is_system)
-                                    .count();
-                                if index > 0 {
-                                    ui.add_space(6.0);
-                                }
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{}  ({count})",
-                                        if group.is_system {
-                                            tr.grp_system_programs
-                                        } else {
-                                            tr.grp_own_programs
-                                        }
-                                    ))
-                                    .weak()
-                                    .small(),
-                                );
-                                ui.separator();
+                        for kind in Branch::ALL {
+                            let members = branch(kind);
+                            // No heading for an empty branch — and above all
+                            // none for "gone", which is a finding when it is
+                            // there and a question nobody asked when it is not.
+                            if members.is_empty() {
+                                continue;
                             }
 
-                            let selected = *selected_group == Some(index);
-                            let gone = group.presence == Presence::Missing;
-
-                            let response = ui
-                                .horizontal(|ui| {
-                                    // The program's own icon, the same picture
-                                    // the table shows for its entries. Falls
-                                    // back to the executable itself, which is
-                                    // what Windows would draw anyway.
-                                    let reference = group
-                                        .icon_ref
-                                        .clone()
-                                        .unwrap_or_else(|| format!("{},0", group.key));
-                                    let texture = icons.get(&reference).clone();
-                                    ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                                        texture.id(),
-                                        egui::vec2(16.0, 16.0),
-                                    )));
-
-                                    let label = format!(
-                                        "{:>3}×  {}",
-                                        group.entry_count(),
-                                        group.display_name
-                                    );
-                                    // Red says "this entry runs something that
-                                    // is no longer here" — a menu item that
-                                    // fails only when it is clicked.
-                                    let text = if gone {
-                                        egui::RichText::new(label)
-                                            .color(ui.visuals().error_fg_color)
-                                    } else {
-                                        egui::RichText::new(label)
-                                    };
-                                    ui.selectable_label(selected, text)
-                                })
-                                .inner;
-
-                            if response.clicked() {
-                                clicked = Some(index);
-                            }
-                            // The full path is long and only occasionally
-                            // wanted, so it lives in the tooltip — and the red
-                            // row says the rest there rather than in a line of
-                            // its own. In the list the colour is the message;
-                            // the sentence belongs in the detail pane, where
-                            // there is room to say what it means.
-                            if gone {
-                                response.on_hover_text(format!(
-                                    "{}\n{}",
-                                    group.key, tr.badge_uninstalled
-                                ));
+                            let heading = egui::RichText::new(format!(
+                                "{}  ({})",
+                                kind.label(tr),
+                                members.len()
+                            ));
+                            let heading = if kind == Branch::Gone {
+                                heading.color(ui.visuals().error_fg_color)
                             } else {
-                                response.on_hover_text(&group.key);
-                            }
+                                heading
+                            };
+
+                            egui::CollapsingHeader::new(heading)
+                                .id_salt(kind.salt())
+                                // System components are the longest branch and
+                                // the one nobody goes looking through; the
+                                // other two open on their own.
+                                .default_open(kind != Branch::System)
+                                .show(ui, |ui| {
+                                    for index in members {
+                                        let group = &groups[index];
+                                        let selected = *selected_group == Some(index);
+                                        let gone = kind == Branch::Gone;
+
+                                        let response = ui
+                                            .horizontal(|ui| {
+                                                // The program's own icon, the
+                                                // same picture the table shows
+                                                // for its entries. Falls back
+                                                // to the executable itself,
+                                                // which is what Windows would
+                                                // draw anyway.
+                                                let reference = group
+                                                    .icon_ref
+                                                    .clone()
+                                                    .unwrap_or_else(|| format!("{},0", group.key));
+                                                let texture = icons.get(&reference).clone();
+                                                ui.add(egui::Image::new(
+                                                    egui::load::SizedTexture::new(
+                                                        texture.id(),
+                                                        egui::vec2(16.0, 16.0),
+                                                    ),
+                                                ));
+
+                                                let label = format!(
+                                                    "{:>3}×  {}",
+                                                    group.entry_count(),
+                                                    group.display_name
+                                                );
+                                                // Red says "this runs
+                                                // something that is no longer
+                                                // here" — a menu item that
+                                                // fails only when clicked.
+                                                let text = if gone {
+                                                    egui::RichText::new(label)
+                                                        .color(ui.visuals().error_fg_color)
+                                                } else {
+                                                    egui::RichText::new(label)
+                                                };
+                                                ui.selectable_label(selected, text)
+                                            })
+                                            .inner;
+
+                                        if response.clicked() {
+                                            clicked = Some(index);
+                                        }
+                                        // The full path is long and only
+                                        // occasionally wanted, so it lives in
+                                        // the tooltip — and so does the reason
+                                        // for the red, which in the list is
+                                        // said by the colour alone.
+                                        if gone {
+                                            response.on_hover_text(format!(
+                                                "{}\n{}",
+                                                group.key, tr.badge_uninstalled
+                                            ));
+                                        } else {
+                                            response.on_hover_text(&group.key);
+                                        }
+                                    }
+                                });
                         }
                         ui.take_available_space();
                     });
@@ -3341,6 +3421,9 @@ impl App {
             ..
         } = self;
         let mut new_sort: Option<SortBy> = None;
+        // Filled by a double click or the context menu, acted on after the
+        // table is done: `self` is borrowed field by field in here.
+        let mut open: Option<ContextEntry> = None;
 
         let Some(scan) = scan else {
             ui.centered_and_justified(|ui| {
@@ -3513,10 +3596,33 @@ impl App {
                             selected.clear();
                             selected.insert(reference.clone());
                         }
-                        *focused = Some(reference);
+                        *focused = Some(reference.clone());
                     }
+
+                    // Double click opens the entry, and the right button
+                    // offers the same thing in words — the two ways everybody
+                    // tries first, and until now neither did anything.
+                    if response.double_clicked() {
+                        open = Some(entry.clone());
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button(tr.ctx_open_entry).clicked() {
+                            open = Some(entry.clone());
+                            ui.close();
+                        }
+                    });
                 });
             });
+
+        if let Some(entry) = open {
+            // The form filled in from what is really in the registry, and
+            // locked: this shows an entry, it does not change one.
+            self.dialog = Some(Dialog::Editor {
+                entry: Box::new(NewEntry::from_scanned(&entry)),
+                recorded: Vec::new(),
+                existing: Some(entry.registry_path.clone()),
+            });
+        }
 
         if let Some(column) = new_sort {
             // Clicking the column that is already active turns the order
@@ -3565,10 +3671,50 @@ impl App {
                         .any(|g| g.key == resolved && g.presence == Presence::Missing)
                 });
 
+                // The file this entry runs, if it can be named: what the button
+                // below opens, and the same resolution the program grouping
+                // uses, so both mean the same file.
+                let target: Option<std::path::PathBuf> = entry
+                    .program_key
+                    .as_deref()
+                    .map(crate::program::identity::absolute_path)
+                    .map(|key| crate::registry::mui::expand_env(&key))
+                    .map(std::path::PathBuf::from)
+                    .filter(|path| path.is_absolute());
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        field(ui, self.tr.detail_display_name, &entry.display_name);
+                        ui.horizontal(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(self.tr.detail_display_name)
+                                    .weak()
+                                    .small(),
+                            );
+                            // Straight to the file in Explorer. The path is in
+                            // the pane already, but reading it and finding it
+                            // are two different jobs — and this is the shortest
+                            // way to "what actually is that program".
+                            if let Some(path) = &target
+                                && ui
+                                    .small_button("\u{1f4c1}")
+                                    .on_hover_text(
+                                        self.tr
+                                            .fmt_tip_show_in_explorer
+                                            .replace("{}", &path.display().to_string()),
+                                    )
+                                    .clicked()
+                                && let Err(error) = elevation::show_in_explorer(path)
+                            {
+                                self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                            }
+                        });
+                        ui.add(
+                            egui::Label::new(&entry.display_name)
+                                .selectable(true)
+                                .wrap(),
+                        );
                         // Here the sentence, in the list only the colour: this
                         // is where there is room to say what a red row means.
                         if gone {
@@ -4193,7 +4339,54 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
 /// indexed into would be less readable at every call site than the character
 /// itself, and it is the *checking* that has to be complete, not the plumbing.
 #[cfg(test)]
-const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}";
+const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}\u{1f4c1}";
+
+/// The three branches of the program tree.
+///
+/// An order rather than a filter: a program whose file is gone is a finding
+/// and belongs on top, Windows' own components belong at the bottom because
+/// they are the ones nobody came looking for, and everything else is the
+/// middle — which is where the list is actually read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Branch {
+    Gone,
+    Own,
+    System,
+}
+
+impl Branch {
+    const ALL: [Branch; 3] = [Branch::Gone, Branch::Own, Branch::System];
+
+    fn of(group: &ProgramGroup) -> Branch {
+        // "Gone" wins over "system": a Windows component that is not on disk
+        // is the more surprising of the two facts.
+        if group.presence == Presence::Missing {
+            Branch::Gone
+        } else if group.is_system {
+            Branch::System
+        } else {
+            Branch::Own
+        }
+    }
+
+    fn label(self, tr: &'static Strings) -> &'static str {
+        match self {
+            Branch::Gone => tr.grp_gone_programs,
+            Branch::Own => tr.grp_own_programs,
+            Branch::System => tr.grp_system_programs,
+        }
+    }
+
+    /// Stable id for the collapsing header, so opening one does not reshuffle
+    /// the state of the others after a rescan.
+    fn salt(self) -> &'static str {
+        match self {
+            Branch::Gone => "programs-gone",
+            Branch::Own => "programs-own",
+            Branch::System => "programs-system",
+        }
+    }
+}
 
 /// What stands in the title bar: the name in the chosen language, then the
 /// version.

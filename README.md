@@ -61,6 +61,9 @@ switchable at runtime; this README is German only.*
   zeigt den Verlauf und spielt zurück.
 - **Untermenüs** werden mit ihren Kindern angezeigt, eingerückt unter dem
   Eintrag, in dem sie hängen.
+- **Einen Eintrag ansehen:** Doppelklick auf eine Zeile — oder Rechtsklick,
+  *Eintrag ansehen* — öffnet das Formular mit allem, was wirklich in der
+  Registry steht. Ändern lässt sich dort noch nichts.
 - Deutsch und Englisch, hell und dunkel oder „System folgen" — beides ohne
   Neustart, die Titelleiste zieht mit.
 

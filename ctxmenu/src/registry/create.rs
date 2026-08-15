@@ -61,6 +61,56 @@ pub struct NewChild {
 }
 
 impl NewEntry {
+    /// The form filled in from an entry that already exists.
+    ///
+    /// The way back from a scan result to the shape the editor works in, so a
+    /// double click can show what an entry really consists of instead of
+    /// sending the reader to `regedit`. Nothing here writes: what comes out is
+    /// a description, and whether it may be written is decided by
+    /// [`check`] and [`NewEntry::target`] exactly as for a fresh one.
+    ///
+    /// A COM handler has no command line at all — its text is produced at run
+    /// time by `IContextMenu` — so the command stays empty rather than being
+    /// invented.
+    pub fn from_scanned(entry: &crate::model::ContextEntry) -> Self {
+        let (command, children) = match &entry.kind {
+            crate::model::EntryKind::Verb {
+                command,
+                sub_commands,
+            } => (
+                command.clone().unwrap_or_default(),
+                sub_commands
+                    .iter()
+                    .map(|child| NewChild {
+                        key_name: child.key_name.clone(),
+                        display_name: child.display_name.clone(),
+                        command: match &child.kind {
+                            crate::model::EntryKind::Verb { command, .. } => {
+                                command.clone().unwrap_or_default()
+                            }
+                            crate::model::EntryKind::ShellEx { .. } => String::new(),
+                        },
+                        icon: child.icon_ref.clone(),
+                    })
+                    .collect(),
+            ),
+            crate::model::EntryKind::ShellEx { .. } => (String::new(), Vec::new()),
+        };
+
+        Self {
+            category: entry.category.clone(),
+            key_name: entry.key_name.clone(),
+            // The resolved name, not the raw value: it is what the menu draws,
+            // and the raw form is one line further down in the detail pane.
+            display_name: entry.display_name.clone(),
+            command,
+            icon: entry.icon_ref.clone(),
+            position: entry.position.clone(),
+            extended: entry.extended,
+            children,
+        }
+    }
+
     /// A cascading menu rather than a single entry.
     pub fn is_submenu(&self) -> bool {
         !self.children.is_empty()
@@ -811,6 +861,64 @@ mod tests {
             after.len() < before + 1,
             "forgetting must remove exactly the one entry"
         );
+    }
+
+    #[test]
+    fn an_entry_that_exists_fills_the_form_it_would_have_been_made_from() {
+        use crate::model::{ContextEntry, EntryKind};
+
+        let mut scanned: ContextEntry = crate::synthetic::scan_result(1).entries.remove(0);
+        scanned.category = Category::Directory;
+        scanned.key_name = "ctxmenu_probe".into();
+        scanned.display_name = "Angesehen".into();
+        scanned.icon_ref = Some(r"C:\Windows\system32\shell32.dll,-244".into());
+        scanned.position = Some("Top".into());
+        scanned.extended = true;
+        scanned.kind = EntryKind::Verb {
+            command: Some(r#""C:\t.exe" "%1""#.into()),
+            sub_commands: Vec::new(),
+        };
+
+        let form = NewEntry::from_scanned(&scanned);
+        assert_eq!(form.category, Category::Directory);
+        assert_eq!(form.key_name, "ctxmenu_probe");
+        assert_eq!(form.display_name, "Angesehen");
+        assert_eq!(form.command, r#""C:\t.exe" "%1""#);
+        assert_eq!(form.position.as_deref(), Some("Top"));
+        assert!(form.extended);
+        assert!(!form.is_submenu());
+
+        // A cascading entry comes back as a submenu, children and all.
+        let mut child = scanned.clone();
+        child.key_name = "01_Kind".into();
+        child.display_name = "Kind".into();
+        child.icon_ref = None;
+        child.kind = EntryKind::Verb {
+            command: Some("cmd /c echo kind".into()),
+            sub_commands: Vec::new(),
+        };
+        scanned.kind = EntryKind::Verb {
+            command: None,
+            sub_commands: vec![child],
+        };
+
+        let form = NewEntry::from_scanned(&scanned);
+        assert!(form.is_submenu());
+        assert_eq!(form.command, "", "a submenu parent runs nothing");
+        assert_eq!(form.children.len(), 1);
+        assert_eq!(form.children[0].key_name, "01_Kind");
+        assert_eq!(form.children[0].command, "cmd /c echo kind");
+
+        // A COM handler has no command line anywhere in the registry — its
+        // text is made at run time — so none is invented for it.
+        scanned.kind = EntryKind::ShellEx {
+            clsid: "{00000000-0000-0000-0000-000000000000}".into(),
+            server_path: Some(r"C:\Windows\system32\shell32.dll".into()),
+            blocked: false,
+        };
+        let form = NewEntry::from_scanned(&scanned);
+        assert_eq!(form.command, "");
+        assert!(form.children.is_empty());
     }
 
     #[test]

@@ -150,6 +150,28 @@ pub fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
+/// Opens an Explorer window with this file selected.
+///
+/// `/select,` rather than opening the folder plain: the question behind the
+/// button is "which file is this", and a folder with two hundred entries and
+/// no selection does not answer it.
+///
+/// The path is passed as one argument, not as a command line, so a program
+/// under `C:\Program Files\…` needs no quoting of ours — `Command` does it.
+/// Deliberately fire and forget: Explorer detaches immediately, and there is
+/// nothing to wait for or report.
+pub fn show_in_explorer(path: &Path) -> Result<()> {
+    // The parameter really is one string with a comma in it. `/select, "path"`
+    // with a space after the comma opens the wrong thing — Explorer treats the
+    // space as the start of a second argument.
+    let argument = format!("/select,{}", path.display());
+    Command::new("explorer.exe")
+        .arg(argument)
+        .spawn()
+        .with_context(|| format!("Explorer für {path:?} / for {path:?}"))?;
+    Ok(())
+}
+
 /// Restarts the shell, so a changed COM handler is actually gone.
 ///
 /// `notify_shell` above is the polite version and enough for a static verb. A
