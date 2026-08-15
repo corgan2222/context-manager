@@ -241,11 +241,46 @@ impl Problem {
 ///
 /// `%1` stays empty there and the entry silently does nothing — the single
 /// most common mistake in hand-written entries (ToDo 5.3).
-fn is_background(category: &Category) -> bool {
+pub fn is_background(category: &Category) -> bool {
     matches!(
         category,
         Category::DirectoryBackground | Category::DesktopBackground
     )
+}
+
+/// The entry a file dropped onto `category` would become.
+///
+/// The point of dropping a program onto a category is that the form comes up
+/// already right, and "right" differs by category: the placeholder that carries
+/// the clicked path is `%1` almost everywhere and `%V` in the two background
+/// categories, where `%1` stays empty. Getting that wrong by hand is the
+/// mistake `check` warns about; getting it right here means the warning never
+/// has to appear.
+///
+/// Nothing is written — this fills in a form the user still has to accept.
+pub fn from_dropped_file(path: &std::path::Path, category: Category) -> NewEntry {
+    let display_name = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let placeholder = match is_background(&category) {
+        true => "%V",
+        false => "%1",
+    };
+
+    NewEntry {
+        key_name: suggest_key_name(&display_name),
+        // The program's own icon, by naming the file: Windows takes the first
+        // icon resource when no index follows, which is the one every launcher
+        // shows for it.
+        icon: Some(path.display().to_string()),
+        command: format!(r#""{}" "{placeholder}""#, path.display()),
+        display_name,
+        category,
+        position: None,
+        extended: false,
+        children: Vec::new(),
+    }
 }
 
 /// Checks an entry before anything is written.
@@ -709,6 +744,37 @@ mod tests {
             display_name: display_name.into(),
             command: command.into(),
             icon: None,
+        }
+    }
+
+    #[test]
+    fn a_dropped_program_arrives_with_the_placeholder_its_category_needs() {
+        let path = std::path::Path::new(r"C:\Program Files\Tool\tool.exe");
+
+        let on_files = from_dropped_file(path, Category::AllFiles);
+        assert_eq!(on_files.display_name, "tool");
+        assert_eq!(on_files.key_name, "ctxmenu_tool");
+        assert_eq!(on_files.command, r#""C:\Program Files\Tool\tool.exe" "%1""#);
+        assert_eq!(
+            on_files.icon.as_deref(),
+            Some(r"C:\Program Files\Tool\tool.exe"),
+            "the program brings its own icon"
+        );
+
+        // The whole point: on a background category %1 would stay empty, and
+        // the entry would appear and do nothing.
+        for category in [Category::DirectoryBackground, Category::DesktopBackground] {
+            let dropped = from_dropped_file(path, category.clone());
+            assert!(
+                dropped.command.contains("%V") && !dropped.command.contains("%1"),
+                "{category:?} needs %V"
+            );
+            // And what comes out passes the check that would have caught it.
+            assert!(
+                !check(&dropped)
+                    .iter()
+                    .any(|p| matches!(p.fault(), Fault::PercentOneInBackground))
+            );
         }
     }
 

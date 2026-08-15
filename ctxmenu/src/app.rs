@@ -110,6 +110,16 @@ enum Dialog {
         /// shows and does not touch (2026-08-15).
         existing: Option<String>,
     },
+    /// Who made this and which build it is.
+    About,
+    /// An entry was written; the registry path it landed in.
+    ///
+    /// Its own variant rather than a `Note`, because it carries a question:
+    /// `SHChangeNotify` is enough for a static verb, but a COM handler is a DLL
+    /// Explorer loaded long ago and only a restart unloads it. Which of the two
+    /// this was is not something the person at the screen can tell, so the
+    /// offer is made every time and taken up when it is wanted.
+    Created(String),
 }
 
 /// Which column the table is ordered by.
@@ -210,6 +220,25 @@ fn push_with_children(rows: &mut Vec<Row>, entry: &ContextEntry, row: Row) {
     }
 }
 
+/// The author's mark, as raw RGBA rather than as the PNG it came from.
+///
+/// `egui_extras` runs here without its `image` feature — the icon extraction
+/// builds its own `ColorImage` from GDI pixels, so nothing in this binary can
+/// decode a PNG, and adding a decoder for one picture would be a strange
+/// trade. The conversion happened once, alongside the download; what is left is
+/// 72 KB that need no code at all.
+///
+/// Stored as a mask: every pixel is white with the original brightness folded
+/// into its alpha, so tinting with the current text colour lands the logo in
+/// the right shade in both themes. The original is light-on-transparent and
+/// would be nearly invisible on a light background.
+const LOGO_RGBA: &[u8] = include_bytes!("../assets/logo.rgba");
+const LOGO_SIZE: [usize; 2] = [144, 128];
+
+const REPO_URL: &str = "https://github.com/corgan2222/context-manager";
+const AUTHOR_URL: &str = "https://github.com/corgan2222";
+const AUTHOR_NAME: &str = "Stefan Knaak";
+
 /// The Feather glyphs this window draws, looked up once at startup.
 ///
 /// `try_icon` searches a generated table of some three hundred names. Doing that
@@ -237,11 +266,12 @@ struct Glyphs {
     rescan: char,
     new: char,
     backup: char,
+    inspect: char,
 }
 
 impl Glyphs {
     /// The names, in one place, so the test below can walk the same list.
-    const NAMES: [&'static str; 15] = [
+    const NAMES: [&'static str; 16] = [
         "check-circle",
         "circle",
         "eye",
@@ -257,6 +287,7 @@ impl Glyphs {
         "refresh-cw",
         "plus",
         "save",
+        "info",
     ];
 
     fn load() -> Self {
@@ -278,6 +309,7 @@ impl Glyphs {
             rescan: next(),
             new: next(),
             backup: next(),
+            inspect: next(),
         }
     }
 }
@@ -369,7 +401,7 @@ struct SelectionState {
 /// This is what the bar's greyed-out switches say in the negative, said once
 /// more in the affirmative — and the two must not disagree, which is why both
 /// go through `clsid_of`.
-fn actions_for(entry: &ContextEntry) -> Vec<Action> {
+fn actions_for(entry: &ContextEntry, alone: bool) -> Vec<Action> {
     let mut out = Vec::new();
 
     out.push(match entry.hidden {
@@ -389,7 +421,11 @@ fn actions_for(entry: &ContextEntry) -> Vec<Action> {
         });
     }
 
-    if matches!(entry.kind, EntryKind::Verb { .. }) {
+    // Position only for a single entry. Twenty rows all sent to the top of the
+    // menu are twenty rows in alphabetical order again, one block higher — the
+    // action means something for one entry and nothing for a group, so it is
+    // not offered for a group.
+    if alone && matches!(entry.kind, EntryKind::Verb { .. }) {
         for value in [Some("Top"), Some("Bottom"), None] {
             if entry.position.as_deref() != value {
                 out.push(Action::SetPosition(value.map(str::to_string)));
@@ -399,6 +435,21 @@ fn actions_for(entry: &ContextEntry) -> Vec<Action> {
 
     out.push(Action::Delete);
     out
+}
+
+/// The same sentence the switch for this action carries in the bar.
+///
+/// One explanation per mechanism, reached from both places. A menu line that
+/// explained itself differently from the button doing the same thing would be
+/// two answers to one question.
+fn action_tip(action: &Action, tr: &'static Strings) -> &'static str {
+    match action {
+        Action::Hide | Action::Show => tr.tip_group_visibility,
+        Action::ShiftOnly | Action::AlwaysShow => tr.tip_group_shift,
+        Action::Block | Action::Unblock => tr.tip_group_systemwide,
+        Action::SetPosition(_) => tr.tip_position,
+        Action::Delete => tr.tip_delete,
+    }
 }
 
 /// An action as a menu line: what it does, not what it is called internally.
@@ -640,6 +691,9 @@ pub struct App {
     icons: IconCache,
     /// The Feather characters the bar draws, resolved at startup.
     glyphs: Glyphs,
+    /// The author's mark. Uploaded to the GPU on first draw, not at startup:
+    /// the window opens before anyone looks at the corner it sits in.
+    logo: Option<egui::TextureHandle>,
     tr: &'static Strings,
     settings: Settings,
 
@@ -902,6 +956,7 @@ impl App {
             favourite_scroll: false,
             icons: IconCache::new(&cc.egui_ctx),
             glyphs: Glyphs::load(),
+            logo: None,
             tr,
             settings,
             hwnd,
@@ -1200,6 +1255,18 @@ impl App {
         // would break typing to fix the very list this moves through.
         if ctx.memory(|memory| memory.focused()).is_some() {
             return None;
+        }
+
+        // Ctrl+A, the way every file manager reads it. It was missing entirely:
+        // the button existed, the shortcut everybody tries first did not.
+        // `COMMAND` rather than `CTRL` is egui's platform-correct spelling, and
+        // the guard above keeps it out of the search box, where Ctrl+A has to
+        // go on meaning "select this text".
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+            self.selected = self.visible_rows.iter().cloned().collect();
+            // A range that a later Shift-click measures from has to start
+            // somewhere; the top of the list is the only honest answer.
+            self.anchor = self.visible_rows.first().cloned();
         }
 
         // Every visible row, not only the top-level ones: a submenu child is
@@ -2139,11 +2206,47 @@ impl App {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // First in a right-to-left layout means furthest right.
+                    let logo = self.logo_texture(ctx);
+                    let tint = ui.visuals().text_color();
+                    let height = ui.spacing().interact_size.y;
+                    let width = height * LOGO_SIZE[0] as f32 / LOGO_SIZE[1] as f32;
+                    // `Button::image`, not `ImageButton`: egui 0.36 folded that
+                    // type into `Button` as well, the same way it did with
+                    // `SelectableLabel`.
+                    if ui
+                        .add(
+                            egui::Button::image(
+                                egui::Image::from_texture(&logo)
+                                    .fit_to_exact_size(egui::vec2(width, height))
+                                    .tint(tint),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text(self.tr.tip_about)
+                        .clicked()
+                    {
+                        self.dialog = Some(Dialog::About);
+                    }
                     self.settings_controls(ui, ctx);
                 });
             });
             ui.add_space(4.0);
         });
+    }
+
+    /// The logo, uploaded on first use and kept afterwards.
+    fn logo_texture(&mut self, ctx: &egui::Context) -> egui::TextureHandle {
+        self.logo
+            .get_or_insert_with(|| {
+                // Unmultiplied: the mask was written with straight alpha, and
+                // the premultiplied constructor would darken every soft edge —
+                // the same trap the icon cache documents in the other
+                // direction, where GDI hands back premultiplied pixels.
+                let image = egui::ColorImage::from_rgba_unmultiplied(LOGO_SIZE, LOGO_RGBA);
+                ctx.load_texture("logo", image, egui::TextureOptions::LINEAR)
+            })
+            .clone()
     }
 
     fn settings_controls(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -2250,6 +2353,7 @@ impl App {
                     // status bar. A line whose text grows and shrinks with the
                     // selection pushed every button beside it sideways, so the
                     // icons never sat still long enough to be aimed at.
+                    ui.label(egui::RichText::new(format!("{}:", tr.group_selection)).weak());
                     if ui
                         .button(labelled(glyphs.select_all, tr.btn_select_all))
                         .on_hover_text(tr.tip_select_all)
@@ -2961,6 +3065,88 @@ impl App {
                 keep = false;
             }
 
+            Dialog::Created(path) => {
+                let mut close = false;
+                let mut restart = false;
+                egui::Window::new(self.tr.title_note)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.label(self.tr.fmt_entry_created.replace("{}", &path));
+                        ui.add_space(6.0);
+                        ui.add(egui::Label::new(self.tr.msg_ask_restart).wrap());
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(self.tr.btn_restart_explorer)
+                                .on_hover_text(self.tr.tip_restart_explorer)
+                                .clicked()
+                            {
+                                restart = true;
+                            }
+                            if ui.button(self.tr.btn_close).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+
+                if restart {
+                    match elevation::restart_explorer() {
+                        Ok(()) => close = true,
+                        Err(error) => {
+                            self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                            keep = false;
+                        }
+                    }
+                }
+                if !close && keep {
+                    self.dialog = Some(Dialog::Created(path));
+                }
+                keep = false;
+            }
+
+            Dialog::About => {
+                let mut close = false;
+                let logo = self.logo_texture(ui.ctx());
+                egui::Window::new(self.tr.about_title)
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::Image::from_texture(&logo)
+                                    .fit_to_exact_size(egui::vec2(
+                                        LOGO_SIZE[0] as f32,
+                                        LOGO_SIZE[1] as f32,
+                                    ))
+                                    .tint(ui.visuals().text_color()),
+                            );
+                            ui.add_space(10.0);
+                            ui.heading(self.tr.app_title);
+                            // The same number the title bar and `--version`
+                            // carry, from the same constant.
+                            ui.label(egui::RichText::new(crate::VERSION).weak());
+                            ui.add_space(8.0);
+                            ui.label(AUTHOR_NAME);
+                            ui.add_space(8.0);
+                            ui.hyperlink_to(self.tr.about_repo, REPO_URL);
+                            ui.hyperlink_to(self.tr.about_profile, AUTHOR_URL);
+                            ui.add_space(10.0);
+                            if ui.button(self.tr.btn_close).clicked() {
+                                close = true;
+                            }
+                            ui.add_space(2.0);
+                        });
+                    });
+                if !close {
+                    self.dialog = Some(Dialog::About);
+                }
+                keep = false;
+            }
+
             Dialog::Error(message) => {
                 let mut close = false;
                 egui::Window::new(self.tr.title_error)
@@ -3359,10 +3545,11 @@ impl App {
                     // actually catches people out (`%1` in a background
                     // category) is checked above and said out loud anyway.
                     ui.add_space(4.0);
-                    egui::CollapsingHeader::new(self.tr.editor_placeholders)
+                    egui::CollapsingHeader::new(self.tr.editor_help)
                         .id_salt("editor-placeholders")
                         .default_open(false)
                         .show(ui, |ui| {
+                            ui.label(egui::RichText::new(self.tr.help_placeholders).strong());
                             egui::Grid::new("editor-placeholder-grid")
                                 .num_columns(2)
                                 .spacing([12.0, 2.0])
@@ -3373,6 +3560,29 @@ impl App {
                                         ui.end_row();
                                     }
                                 });
+
+                            // A command line that works, per shape of category.
+                            // The placeholder table says what `%1` and `%V`
+                            // stand for; it does not say that picking the wrong
+                            // one leaves the command with an empty argument,
+                            // and that is the mistake people actually make.
+                            ui.add_space(10.0);
+                            ui.label(egui::RichText::new(self.tr.help_examples).strong());
+                            for (command, meaning) in EXAMPLES {
+                                ui.add_space(4.0);
+                                ui.add(egui::Label::new(meaning(self.tr)).wrap());
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(*command).monospace().small(),
+                                    )
+                                    .selectable(true)
+                                    .wrap(),
+                                );
+                            }
+
+                            ui.add_space(10.0);
+                            ui.label(egui::RichText::new(self.tr.help_urls_title).strong());
+                            ui.add(egui::Label::new(self.tr.help_urls).wrap());
                         });
 
                     // What this tool created before — a reminder while
@@ -3417,15 +3627,37 @@ impl App {
                 });
 
                 if save {
-                    match create::create(&entry) {
-                        Ok(_) => {
-                            // Without this the entry exists but the running
-                            // Explorer keeps showing yesterday's menu.
-                            elevation::notify_shell();
-                            self.start_scan(ctx);
-                        }
-                        Err(error) => {
-                            self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                    // Checked again here, immediately before writing. The
+                    // button is already disabled while an error stands, so this
+                    // is the second line rather than the first — but the form
+                    // can be edited after the button was enabled, the category
+                    // can be switched to one where `%1` is wrong, and a check
+                    // that only ever ran while drawing would miss it.
+                    let errors: Vec<String> = create::check(&entry)
+                        .iter()
+                        .filter(|problem| matches!(problem, Problem::Error(_)))
+                        .map(|problem| fault_text(problem.fault(), self.tr))
+                        .collect();
+
+                    if !errors.is_empty() {
+                        self.dialog = Some(Dialog::Error(errors.join("\n")));
+                    } else {
+                        match create::create(&entry) {
+                            Ok(target) => {
+                                // Without this the entry exists but the running
+                                // Explorer keeps showing yesterday's menu.
+                                elevation::notify_shell();
+                                self.start_scan(ctx);
+                                // The notification is enough for a static verb
+                                // and not for a COM handler, and nobody can
+                                // tell which case they are in from the outside.
+                                // So the question gets asked rather than the
+                                // answer assumed.
+                                self.dialog = Some(Dialog::Created(target.full_path()));
+                            }
+                            Err(error) => {
+                                self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                            }
                         }
                     }
                 } else if !close {
@@ -3502,6 +3734,7 @@ impl App {
     }
 
     fn category_tree(&mut self, ui: &mut Ui) {
+        let mut drop_target: Option<Category> = None;
         egui::Panel::left("tree")
             .resizable(true)
             .default_size(240.0)
@@ -3542,6 +3775,16 @@ impl App {
                                 })
                                 .inner;
 
+                            // Where a dropped file would land. Noted while
+                            // drawing, because that is the only moment this
+                            // row's rectangle and the category it stands for
+                            // are both at hand. `rect_contains_pointer` rather
+                            // than `hovered`: during a drag from outside the
+                            // window egui hands out no hover.
+                            if ui.rect_contains_pointer(response.rect) {
+                                drop_target = Some(category.clone());
+                            }
+
                             if response.clicked() {
                                 self.selected_category = Some(category.clone());
                                 self.clear_selection();
@@ -3573,6 +3816,47 @@ impl App {
                         ui.take_available_space();
                     });
             });
+
+        self.take_dropped_files(ui.ctx(), drop_target);
+    }
+
+    /// Turns files dropped on the window into a filled-in editor form.
+    ///
+    /// The category comes from whatever the pointer was over, so dragging a
+    /// program onto "Desktop-Hintergrund" produces an entry for the desktop
+    /// background — with `%V`, because `%1` is empty there. Dropped anywhere
+    /// else, the category is the one already selected, which is what the "new
+    /// entry" button uses too.
+    ///
+    /// Nothing is written: the form opens and waits, exactly as if it had been
+    /// filled in by hand.
+    fn take_dropped_files(&mut self, ctx: &egui::Context, target: Option<Category>) {
+        // Cheap per frame: `dropped_files` is empty in every frame but the one
+        // where something landed. `path()` is a trait method in egui 0.36, not
+        // the `Option<PathBuf>` field it used to be — the integration owns the
+        // handle now, and on the web there would be no local path at all.
+        //
+        // The first file only: the form describes one entry, and twenty forms
+        // stacked on top of each other would be a worse answer than one.
+        let Some(path) = ctx.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .first()
+                .map(|file| file.path().to_path_buf())
+        }) else {
+            return;
+        };
+
+        let category = target
+            .and_then(|category| creatable_category(&category))
+            .unwrap_or_else(|| self.category_for_new());
+
+        self.dialog = Some(Dialog::Editor {
+            entry: Box::new(create::from_dropped_file(&path, category)),
+            recorded: create::recorded().unwrap_or_default(),
+            existing: None,
+        });
     }
 
     /// File types, grouped, with the number of entries each one adds.
@@ -4129,9 +4413,10 @@ impl App {
                     }
 
                     response.context_menu(|ui| {
+                        let alone = selected.len() <= 1;
                         // Said out loud, because the menu is opened on one row
                         // and acts on all of them.
-                        if selected.len() > 1 {
+                        if !alone {
                             ui.label(
                                 egui::RichText::new(
                                     tr.fmt_selected_count
@@ -4143,13 +4428,21 @@ impl App {
                             ui.separator();
                         }
 
-                        if ui.button(tr.ctx_open_entry).clicked() {
-                            open = Some(entry.clone());
-                            ui.close();
+                        // Looking at an entry is a single-entry affair: the
+                        // editor shows one form, not twenty.
+                        if alone {
+                            if ui
+                                .button(labelled(glyphs.inspect, tr.ctx_open_entry))
+                                .on_hover_text(tr.tip_ctx_open_entry)
+                                .clicked()
+                            {
+                                open = Some(entry.clone());
+                                ui.close();
+                            }
+                            ui.separator();
                         }
-                        ui.separator();
 
-                        for action in actions_for(entry) {
+                        for action in actions_for(entry, alone) {
                             let label =
                                 labelled(menu_glyph(&action, glyphs), &menu_label(&action, tr));
                             let delete = matches!(action, Action::Delete);
@@ -4162,7 +4455,14 @@ impl App {
                                 }
                                 false => egui::RichText::new(label),
                             };
-                            if ui.button(text).clicked() {
+                            // The same sentence the switch in the bar carries,
+                            // so the menu is another way in and not a second
+                            // vocabulary.
+                            if ui
+                                .button(text)
+                                .on_hover_text(action_tip(&action, tr))
+                                .clicked()
+                            {
                                 menu_action = Some(action);
                                 ui.close();
                             }
@@ -4978,6 +5278,25 @@ const PLACEHOLDERS: &[Placeholder] = &[
     ("%D", |tr| tr.ph_desktop),
 ];
 
+/// One working command line per shape of category, and what it is for.
+///
+/// Not translated: a command line is a command line. What differs between the
+/// categories is which placeholder carries the path, and that difference is
+/// exactly what the entries below spell out — `%1` is empty on a background
+/// click, which is the one mistake `create::check` warns about by name.
+const EXAMPLES: &[Placeholder] = &[
+    (r#""C:\Windows\System32\notepad.exe" "%1""#, |tr| {
+        tr.help_example_file
+    }),
+    (r#""C:\Windows\System32\cmd.exe" /k cd /d "%V""#, |tr| {
+        tr.help_example_background
+    }),
+    (
+        r#"explorer "https://github.com/corgan2222/context-manager""#,
+        |tr| tr.help_example_url,
+    ),
+];
+
 /// Windows' own folder icon, for the buttons that open one.
 ///
 /// The emoji `📁` was there first and came out as a pale outline from the
@@ -5420,6 +5739,7 @@ fn switch_groups(
 
     if let Some(index) = switch_group(
         ui,
+        tr.group_visibility,
         mixed_marker(tr, state.hidden == Agreement::Mixed),
         &group_tip(tr.group_visibility, tr.tip_group_visibility),
         needs_rows,
@@ -5444,6 +5764,7 @@ fn switch_groups(
 
     if let Some(index) = switch_group(
         ui,
+        tr.group_shift,
         mixed_marker(tr, state.extended == Agreement::Mixed),
         &group_tip(tr.group_shift, tr.tip_group_shift),
         needs_rows,
@@ -5472,6 +5793,7 @@ fn switch_groups(
     let blocking = needs_rows.or((state.blockable == 0).then_some(tr.tip_needs_clsid));
     if let Some(index) = switch_group(
         ui,
+        tr.group_systemwide,
         mixed_marker(tr, state.blocked == Agreement::Mixed),
         &group_tip(tr.group_systemwide, tr.tip_group_systemwide),
         blocking,
@@ -5501,6 +5823,7 @@ fn switch_groups(
     let at = |value: Option<&str>| state.position == Agreement::Same(value.map(str::to_string));
     if let Some(index) = switch_group(
         ui,
+        tr.group_position,
         mixed_marker(tr, state.position == Agreement::Mixed),
         &group_tip(tr.group_position, tr.tip_position),
         needs_rows,
@@ -5533,6 +5856,7 @@ fn switch_groups(
 /// clicking, to bring the rest into line.
 fn switch_group(
     ui: &mut Ui,
+    title: &str,
     mixed: Option<&str>,
     tip: &str,
     reason: Option<&str>,
@@ -5545,13 +5869,18 @@ fn switch_group(
     // of moving down. Reserving the measured size first gives the row something
     // to decide with, and the height has to be part of it — with zero the
     // groups came out as a staircase, each starting lower than the last.
-    let needed = group_width(ui, mixed, segments);
+    let needed = group_width(ui, title, mixed, segments);
     let height = group_height(ui);
     let mut clicked = None;
     ui.allocate_ui_with_layout(
         egui::vec2(needed, height),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
+            // What this group is for, in front of it. Two icons and two words
+            // say what the choice is between; they do not say what is being
+            // chosen, and "Immer / Nur mit Umschalt" without "Umschalttaste:"
+            // in front is a question rather than a control.
+            ui.label(egui::RichText::new(format!("{title}:")).weak());
             // Only when the rows disagree: without the word, a mixed selection —
             // where no segment lights up — looks exactly like an empty one.
             if let Some(mixed) = mixed {
@@ -5585,7 +5914,7 @@ fn switch_group(
 /// constant: the German labels are longer than the English ones, the user can
 /// switch language at runtime, and a wrong guess here shows up as a group
 /// hanging over the right edge.
-fn group_width(ui: &Ui, mixed: Option<&str>, segments: &[(String, bool)]) -> f32 {
+fn group_width(ui: &Ui, title: &str, mixed: Option<&str>, segments: &[(String, bool)]) -> f32 {
     let body = egui::TextStyle::Body.resolve(ui.style());
     let small = egui::TextStyle::Small.resolve(ui.style());
     // Through the painter rather than `ui.fonts`: laying text out fills a cache
@@ -5600,7 +5929,9 @@ fn group_width(ui: &Ui, mixed: Option<&str>, segments: &[(String, bool)]) -> f32
 
     let spacing = ui.spacing().item_spacing.x;
     let padding = ui.spacing().button_padding.x * 2.0;
-    let mut width = mixed.map_or(0.0, |text| measure(text, &small) + spacing);
+    let mut width = measure(&format!("{title}:"), &body)
+        + spacing
+        + mixed.map_or(0.0, |text| measure(text, &small) + spacing);
     for (label, _) in segments {
         width += spacing + padding + measure(label, &body);
     }
@@ -5921,7 +6252,7 @@ mod tests {
         verb.hidden = false;
         verb.extended = false;
         verb.position = None;
-        let offered = actions_for(verb);
+        let offered = actions_for(verb, true);
         assert!(offered.contains(&Action::Hide));
         assert!(!offered.contains(&Action::Show));
         assert!(offered.contains(&Action::ShiftOnly));
@@ -5940,7 +6271,7 @@ mod tests {
         let hidden = &mut scan.entries[1];
         hidden.hidden = true;
         hidden.extended = true;
-        let offered = actions_for(hidden);
+        let offered = actions_for(hidden, true);
         assert!(offered.contains(&Action::Show));
         assert!(!offered.contains(&Action::Hide));
         assert!(offered.contains(&Action::AlwaysShow));
@@ -5948,7 +6279,7 @@ mod tests {
 
         // Every fourth synthetic entry is a COM handler.
         let handler = &scan.entries[3];
-        let offered = actions_for(handler);
+        let offered = actions_for(handler, true);
         assert!(
             offered.contains(&Action::Unblock),
             "entry 3 is blocked, so the way out is offered"
@@ -5958,6 +6289,43 @@ mod tests {
             !offered.iter().any(|a| matches!(a, Action::SetPosition(_))),
             "the scanner never reads a position for a shellex key"
         );
+    }
+
+    #[test]
+    fn a_group_is_not_offered_what_only_makes_sense_for_one() {
+        let mut scan = synthetic::scan_result(4);
+        // Synthetic entry 0 starts out hidden; this test is about position,
+        // so it is put in a known state first.
+        scan.entries[0].hidden = false;
+        let entry = &scan.entries[0];
+
+        let single = actions_for(entry, true);
+        let group = actions_for(entry, false);
+
+        assert!(
+            single.iter().any(|a| matches!(a, Action::SetPosition(_))),
+            "one entry can be sent to the top"
+        );
+        assert!(
+            !group.iter().any(|a| matches!(a, Action::SetPosition(_))),
+            "twenty entries all sent to the top are alphabetical again"
+        );
+        // What does mean something for a group stays.
+        assert!(group.contains(&Action::Hide));
+        assert!(group.contains(&Action::Delete));
+    }
+
+    #[test]
+    fn every_menu_line_carries_the_explanation_its_switch_carries() {
+        let scan = synthetic::scan_result(8);
+        for entry in &scan.entries {
+            for action in actions_for(entry, true) {
+                assert!(
+                    !action_tip(&action, &i18n::DE).trim().is_empty(),
+                    "{action:?} has no tooltip"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6096,6 +6464,7 @@ mod tests {
             glyphs.rescan,
             glyphs.new,
             glyphs.backup,
+            glyphs.inspect,
         ];
 
         assert_eq!(filled.len(), Glyphs::NAMES.len());
