@@ -235,6 +235,54 @@ fn file_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Is the program behind an entry still on this machine?
+///
+/// Three answers, not two: a menu entry pointing at an uninstalled program is
+/// worth marking, but "not a path I can check" must not look the same as
+/// "checked and gone". Only [`Presence::Missing`] is a finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum Presence {
+    Present,
+    /// The path is well formed and the file is not there.
+    Missing,
+    /// Nothing to check: no path at all, or a name that never resolved.
+    Unknown,
+}
+
+/// Looks on disk for the program a group was built from.
+///
+/// Environment variables are expanded first. Plenty of registry commands are
+/// written `%SystemRoot%\system32\…`, and testing that string as it stands
+/// would report half of System32 as uninstalled.
+pub fn presence(program_key: &str) -> Presence {
+    let raw = program_key.trim();
+    if raw.is_empty() {
+        return Presence::Unknown;
+    }
+
+    let expanded = crate::registry::mui::expand_env(raw);
+    let path = Path::new(&expanded);
+
+    // A bare name that `absolute_path` could not place — `mscoree.dll` is the
+    // one left on this machine — is not evidence of anything. Windows finds it
+    // through a search order this tool does not reproduce.
+    if !path.is_absolute() {
+        return Presence::Unknown;
+    }
+
+    // An unexpanded variable means the expansion failed, not that the file is
+    // gone.
+    if expanded.contains('%') {
+        return Presence::Unknown;
+    }
+
+    if path.is_file() {
+        Presence::Present
+    } else {
+        Presence::Missing
+    }
+}
+
 /// Does this program live inside the Windows directory?
 ///
 /// The program view marks those as system components and warns before acting
@@ -249,6 +297,33 @@ pub fn is_system_component(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_that_is_gone_is_told_apart_from_one_that_cannot_be_checked() {
+        // The distinction is the whole point: red in the window means "this
+        // menu entry runs something that is no longer here", and a path this
+        // tool simply cannot resolve must never claim that.
+        assert_eq!(
+            presence(r"C:\Windows\System32\shell32.dll"),
+            Presence::Present
+        );
+        assert_eq!(presence(r"C:\gibt\es\nicht\tool.exe"), Presence::Missing);
+
+        // Expanded first — plenty of registry commands are written this way,
+        // and testing the literal string would report System32 as uninstalled.
+        assert_eq!(
+            presence(r"%SystemRoot%\System32\shell32.dll"),
+            Presence::Present
+        );
+
+        // Nothing to go on: a bare name Windows resolves through a search
+        // order this tool does not reproduce, and empty input.
+        assert_eq!(presence("mscoree.dll"), Presence::Unknown);
+        assert_eq!(presence(""), Presence::Unknown);
+        assert_eq!(presence("   "), Presence::Unknown);
+        // An expansion that found no such variable leaves the % in place.
+        assert_eq!(presence(r"%GibtEsNicht%\tool.exe"), Presence::Unknown);
+    }
 
     #[test]
     fn a_known_system_dll_has_a_description() {

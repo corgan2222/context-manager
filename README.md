@@ -33,8 +33,11 @@ switchable at runtime; this README is German only.*
   *Alle installierten* — auf einem gewachsenen Rechner sind das rund 1700
   Typen statt 98, entsprechend länger dauert das Einlesen.
 - **Nach Programm gruppieren.** Ein Programm, das sich in zwanzig Dateitypen
-  einträgt, erscheint als **eine** Gruppe mit allen Vorkommen. Der Name kommt
-  aus der Versionsressource der `.exe`, nicht aus dem Schlüsselnamen.
+  einträgt, erscheint als **eine** Gruppe mit allen Vorkommen — mit seinem
+  Symbol davor. Der Name kommt aus der Versionsressource der `.exe`, nicht aus
+  dem Schlüsselnamen. **Zeigt ein Eintrag auf ein Programm, das es nicht mehr
+  gibt, steht die Zeile in Rot**; das passiert vor allem nach Updates von
+  Store-Apps, deren Ordner die Versionsnummer im Namen trägt.
 - **Ändern, in vier Stufen von sanft nach hart:** ausblenden
   (`LegacyDisable`), nur mit Umschalttaste zeigen (`Extended`), Position auf
   oben oder unten setzen, COM-Handler systemweit blockieren, löschen.

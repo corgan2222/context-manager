@@ -19,7 +19,7 @@ use crate::i18n::{self, Strings};
 use crate::icons::cache::IconCache;
 use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, ScanResult};
 use crate::program::group::{self, ProgramGroup};
-use crate::program::identity::NameResolver;
+use crate::program::identity::{NameResolver, Presence};
 use crate::registry::backup::{self, BackupManifest};
 use crate::registry::create::{self, Fault, NewChild, NewEntry, Problem};
 use crate::registry::plan::{Action, Operation, Plan, Report};
@@ -3214,28 +3214,85 @@ impl App {
                 ui.separator();
 
                 let mut clicked: Option<usize> = None;
+                // Borrowed out of `self` so the row closure can hold the group
+                // list and the icon cache at the same time.
+                let Self {
+                    groups,
+                    icons,
+                    selected_group,
+                    tr,
+                    ..
+                } = self;
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (index, group) in self.groups.iter().enumerate() {
-                            let selected = self.selected_group == Some(index);
-                            let label =
-                                format!("{:>3}×  {}", group.entry_count(), group.display_name);
+                        for (index, group) in groups.iter().enumerate() {
+                            let selected = *selected_group == Some(index);
+                            let gone = group.presence == Presence::Missing;
 
-                            let response = ui.selectable_label(selected, label);
+                            let response = ui
+                                .horizontal(|ui| {
+                                    // The program's own icon, the same picture
+                                    // the table shows for its entries. Falls
+                                    // back to the executable itself, which is
+                                    // what Windows would draw anyway.
+                                    let reference = group
+                                        .icon_ref
+                                        .clone()
+                                        .unwrap_or_else(|| format!("{},0", group.key));
+                                    let texture = icons.get(&reference).clone();
+                                    ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                        texture.id(),
+                                        egui::vec2(16.0, 16.0),
+                                    )));
+
+                                    let label = format!(
+                                        "{:>3}×  {}",
+                                        group.entry_count(),
+                                        group.display_name
+                                    );
+                                    // Red says "this entry runs something that
+                                    // is no longer here" — a menu item that
+                                    // fails only when it is clicked.
+                                    let text = if gone {
+                                        egui::RichText::new(label)
+                                            .color(ui.visuals().error_fg_color)
+                                    } else {
+                                        egui::RichText::new(label)
+                                    };
+                                    ui.selectable_label(selected, text)
+                                })
+                                .inner;
+
                             if response.clicked() {
                                 clicked = Some(index);
                             }
                             // The full path is long and only occasionally
                             // wanted, so it lives in the tooltip.
-                            response.on_hover_text(&group.key);
+                            if gone {
+                                response.on_hover_text(format!(
+                                    "{}\n{}",
+                                    group.key, tr.badge_uninstalled
+                                ));
+                            } else {
+                                response.on_hover_text(&group.key);
+                            }
 
-                            if group.is_system {
+                            if group.is_system || gone {
                                 ui.indent(index, |ui| {
-                                    ui.colored_label(
-                                        ui.visuals().weak_text_color(),
-                                        self.tr.badge_system,
-                                    );
+                                    if gone {
+                                        ui.colored_label(
+                                            ui.visuals().error_fg_color,
+                                            tr.badge_uninstalled,
+                                        );
+                                    }
+                                    if group.is_system {
+                                        ui.colored_label(
+                                            ui.visuals().weak_text_color(),
+                                            tr.badge_system,
+                                        );
+                                    }
                                 });
                             }
                         }
@@ -3489,7 +3546,20 @@ impl App {
                             field(ui, self.tr.detail_raw_value, raw);
                         }
                         if let Some(icon) = &entry.icon_ref {
-                            field(ui, self.tr.detail_icon, icon);
+                            // The picture beside the reference that names it.
+                            // The text alone — `shell32.dll,-244` — says which
+                            // file and which index, and nothing at all about
+                            // what the menu will show.
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(self.tr.detail_icon).weak().small());
+                                let texture = self.icons.get(icon).clone();
+                                ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                                    texture.id(),
+                                    egui::vec2(16.0, 16.0),
+                                )));
+                            });
+                            ui.add(egui::Label::new(icon).selectable(true).wrap());
                         }
                         if let Some(position) = &entry.position {
                             field(ui, self.tr.detail_position, position);

@@ -524,6 +524,16 @@ pub fn run_programs() -> Result<()> {
     );
     let (hits, lookups) = names.stats();
     crate::outln!("Namens-Cache: {hits} Treffer / {lookups} Auflösungen");
+    {
+        use crate::program::identity::Presence;
+        let count = |wanted: Presence| groups.iter().filter(|g| g.presence == wanted).count();
+        crate::outln!(
+            "Programme vorhanden / present: {}, nicht mehr da / gone: {}, nicht prüfbar / unknown: {}",
+            count(Presence::Present),
+            count(Presence::Missing),
+            count(Presence::Unknown)
+        );
+    }
     crate::outln!();
 
     for group in &groups {
@@ -531,6 +541,10 @@ pub fn run_programs() -> Result<()> {
             group.is_system.then_some("System"),
             group.read_only.then_some("schreibgeschützt"),
             (!group.clsids.is_empty()).then_some("COM"),
+            // The window paints this row red; the console has no colour, so it
+            // says it in words.
+            (group.presence == crate::program::identity::Presence::Missing)
+                .then_some("nicht mehr vorhanden / gone"),
         ]
         .into_iter()
         .flatten()

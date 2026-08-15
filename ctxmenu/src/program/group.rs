@@ -30,6 +30,13 @@ pub struct ProgramGroup {
     pub is_system: bool,
     /// True when every entry of this group is read-only.
     pub read_only: bool,
+    /// Whether the program is still on disk (ToDo: reported 2026-08-15).
+    ///
+    /// Looked up once per group while the view is built, never per frame: this
+    /// touches the file system, and `display_name` right above it already
+    /// reads the version resource of the same file, so the cost is one more
+    /// metadata call on a path that was just opened anyway.
+    pub presence: identity::Presence,
 }
 
 impl ProgramGroup {
@@ -69,6 +76,7 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
             locations: Vec::new(),
             is_system: identity::is_system_component(key),
             read_only: true,
+            presence: identity::presence(key),
         });
 
         group.entry_indices.push(index);
