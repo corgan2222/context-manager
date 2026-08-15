@@ -244,6 +244,16 @@ const AUTHOR_NAME: &str = "Stefan Knaak";
 /// a translation.
 const URL_EXAMPLE: &str = r#"explorer "https://www.google.com/search?q=ctxmenu&&hl=de""#;
 
+/// A worked example for the upload form, from a real service.
+///
+/// Written out rather than invented: these four lines are what made a
+/// self-hosted tool service work on 2026-08-15, and every one of them is a
+/// field somebody would otherwise have to guess.
+const UPLOAD_EXAMPLE_ENDPOINT: &str = "http://192.168.2.11:1349/api/v1/tools/image/compress";
+const UPLOAD_EXAMPLE_FIELD: &str = "file";
+const UPLOAD_EXAMPLE_HEADER: &str = "Authorization: Bearer si_4e8a0c…";
+const UPLOAD_EXAMPLE_PATH: &str = "downloadUrl";
+
 /// The Feather glyphs this window draws, looked up once at startup.
 ///
 /// `try_icon` searches a generated table of some three hundred names. Doing that
@@ -2583,6 +2593,13 @@ impl App {
                         false => egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)),
                     };
 
+                    // Whether a button in this row took the click. Without it
+                    // the row's own click area — registered below, and
+                    // therefore lying on top of everything inside it —
+                    // swallowed every button press: Edit and Remove did
+                    // nothing at all, and only the cursor moved.
+                    let mut button_hit = false;
+
                     let row = frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
@@ -2600,6 +2617,7 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Remove(index));
+                                        button_hit = true;
                                     }
                                     if ui
                                         .small_button(self.tr.fav_edit)
@@ -2607,6 +2625,7 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Edit(index));
+                                        button_hit = true;
                                     }
                                     if ui
                                         .add_enabled(
@@ -2617,6 +2636,7 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Shift(index, false));
+                                        button_hit = true;
                                     }
                                     if ui
                                         .add_enabled(
@@ -2627,6 +2647,7 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Shift(index, true));
+                                        button_hit = true;
                                     }
                                     ui.separator();
                                     // The whole point of the list: putting a
@@ -2637,6 +2658,7 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Place(index));
+                                        button_hit = true;
                                     }
                                 },
                             );
@@ -2644,8 +2666,9 @@ impl App {
                     });
 
                     // Clicking a row puts the keyboard on it, so the two ways
-                    // of moving through the list agree on where "here" is.
-                    if row.response.interact(egui::Sense::click()).clicked() {
+                    // of moving through the list agree on where "here" is —
+                    // but only when the click was not meant for a button.
+                    if !button_hit && row.response.interact(egui::Sense::click()).clicked() {
                         clicked_row = Some(index);
                     }
                     if current && scroll {
@@ -5445,6 +5468,32 @@ fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload, field_wid
     if let Some(index) = drop_header {
         upload.headers.remove(index);
     }
+
+    // A worked example, folded away. Every field above is obvious once one of
+    // these has been filled in and impossible to guess before that: which
+    // header carries a key, what a JSON path looks like, why a self-hosted
+    // service on the local network needs the insecure box.
+    ui.add_space(6.0);
+    egui::CollapsingHeader::new(tr.editor_help)
+        .id_salt("fav-upload-help")
+        .default_open(false)
+        .show(ui, |ui| {
+            for (label, value) in [
+                (tr.fav_endpoint, UPLOAD_EXAMPLE_ENDPOINT),
+                (tr.fav_field, UPLOAD_EXAMPLE_FIELD),
+                (tr.fav_headers, UPLOAD_EXAMPLE_HEADER),
+                (tr.fav_source_json, UPLOAD_EXAMPLE_PATH),
+            ] {
+                ui.label(egui::RichText::new(label).weak().small());
+                ui.add(
+                    egui::Label::new(egui::RichText::new(value).monospace())
+                        .selectable(true)
+                        .wrap(),
+                );
+                ui.add_space(4.0);
+            }
+            ui.add(egui::Label::new(tr.fav_help_upload).wrap());
+        });
 }
 
 fn source_picker(ui: &mut Ui, tr: &'static Strings, source: &mut ResultSource) {
