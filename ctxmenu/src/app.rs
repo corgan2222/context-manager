@@ -273,11 +273,12 @@ struct Glyphs {
     backup: char,
     inspect: char,
     copy: char,
+    restore: char,
 }
 
 impl Glyphs {
     /// The names, in one place, so the test below can walk the same list.
-    const NAMES: [&'static str; 17] = [
+    const NAMES: [&'static str; 18] = [
         "check-circle",
         "circle",
         "eye",
@@ -295,6 +296,7 @@ impl Glyphs {
         "save",
         "info",
         "copy",
+        "rotate-ccw",
     ];
 
     fn load() -> Self {
@@ -318,6 +320,7 @@ impl Glyphs {
             backup: next(),
             inspect: next(),
             copy: next(),
+            restore: next(),
         }
     }
 }
@@ -729,6 +732,13 @@ pub struct App {
     selected: rustc_hash::FxHashSet<Row>,
     /// The row whose details are shown — the last one clicked.
     focused: Option<Row>,
+    /// Which backup the detail pane is describing.
+    ///
+    /// The list used to hide everything behind a collapsing header, which meant
+    /// the answer to "what is in this one" was a click away and then filled the
+    /// list itself. It reads like every other tab now: pick on the left, read on
+    /// the right.
+    selected_backup: Option<std::path::PathBuf>,
     /// The category a hovering file would land in.
     ///
     /// A field and not a local, because the frame that reports the drop is not
@@ -1029,6 +1039,7 @@ impl App {
             selected: rustc_hash::FxHashSet::default(),
             focused: None,
             anchor: None,
+            selected_backup: None,
             drop_target: None,
             search: start_search,
             dialog: None,
@@ -2160,6 +2171,7 @@ impl eframe::App for App {
                 egui::CentralPanel::default().show(ui, |ui| self.entry_table(ui, scroll_to));
             }
             Tab::Backups => {
+                self.backup_detail_panel(ui);
                 egui::CentralPanel::default().show(ui, |ui| self.backup_list(ui));
             }
             Tab::Favourites => {
@@ -4985,53 +4997,157 @@ impl App {
             return;
         }
 
-        let mut restore: Option<std::path::PathBuf> = None;
-
+        // One line each, and what is in it goes to the detail pane. As a
+        // collapsing header this list answered "what is in this backup" by
+        // growing to forty lines and pushing every other backup off screen.
+        let mut chosen = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (path, manifest) in &self.backups {
-                    egui::CollapsingHeader::new(format!(
+                    let selected = self.selected_backup.as_ref() == Some(path);
+                    let label = format!(
                         "{}  —  {}  ({})",
                         manifest.created_at.format("%Y-%m-%d %H:%M:%S"),
                         manifest.action,
                         manifest.entries.len()
-                    ))
-                    .id_salt(path)
+                    );
+                    // The gaps are worth seeing without opening anything: an
+                    // incomplete backup is the one thing about this list that
+                    // could matter later.
+                    let text = match manifest.missing.is_empty() {
+                        true => egui::RichText::new(label),
+                        false => egui::RichText::new(label).color(ui.visuals().warn_fg_color),
+                    };
+                    if ui.selectable_label(selected, text).clicked() {
+                        chosen = Some(path.clone());
+                    }
+                }
+            });
+
+        if let Some(path) = chosen {
+            self.selected_backup = Some(path);
+        }
+    }
+
+    /// What one backup holds, beside the list that names it.
+    fn backup_detail_panel(&mut self, ui: &mut Ui) {
+        let mut restore: Option<std::path::PathBuf> = None;
+        let mut show = None;
+
+        egui::Panel::right("details")
+            .resizable(true)
+            .default_size(340.0)
+            .size_range(240.0..=600.0)
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.heading(self.tr.detail_title);
+                ui.separator();
+
+                let found = self
+                    .selected_backup
+                    .as_ref()
+                    .and_then(|wanted| self.backups.iter().find(|(path, _)| path == wanted));
+                let Some((path, manifest)) = found else {
+                    ui.label(self.tr.detail_nothing_selected);
+                    return;
+                };
+
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        field(
+                            ui,
+                            self.tr.backup_created,
+                            &manifest.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        );
+                        // The action is written by the code that made the
+                        // backup and is deliberately not translated: it is also
+                        // the directory name, and a name that changed with the
+                        // language setting would not find its own folder again.
+                        field(ui, self.tr.backup_action, &manifest.action);
+                        field(ui, self.tr.backup_directory, &path.display().to_string());
+
                         ui.horizontal(|ui| {
-                            ui.label(path.display().to_string());
-                            // The delete tooltip has been promising this
-                            // button since it was written; until now the only
-                            // way back was the result dialog of the very
-                            // action one wanted to undo, or the command line.
                             if ui
-                                .button(self.tr.btn_restore)
+                                .button(labelled(self.glyphs.restore, self.tr.btn_restore))
                                 .on_hover_text(self.tr.tip_restore)
                                 .clicked()
                             {
                                 restore = Some(path.clone());
                             }
+                            if folder_button(
+                                ui,
+                                &mut self.icons,
+                                &self
+                                    .tr
+                                    .fmt_tip_show_in_explorer
+                                    .replace("{}", &path.display().to_string()),
+                            ) {
+                                show = Some(path.clone());
+                            }
                         });
+
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  ({})",
+                                self.tr.backup_keys,
+                                manifest.entries.len()
+                            ))
+                            .strong(),
+                        );
                         for entry in &manifest.entries {
-                            ui.label(format!("  {}", entry.registry_path));
-                        }
-                        for missing in &manifest.missing {
-                            ui.colored_label(
-                                ui.visuals().weak_text_color(),
-                                format!("  {missing} ({})", self.tr.badge_missing),
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&entry.registry_path).small())
+                                    .selectable(true)
+                                    .wrap(),
                             );
                         }
+
+                        // Recorded rather than dropped: on restore this is the
+                        // difference between "nothing to bring back" and "the
+                        // export silently failed".
+                        if !manifest.missing.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}  ({})",
+                                    self.tr.backup_missing,
+                                    manifest.missing.len()
+                                ))
+                                .strong()
+                                .color(ui.visuals().warn_fg_color),
+                            );
+                            for missing in &manifest.missing {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(missing).small().weak())
+                                        .wrap(),
+                                );
+                            }
+                        }
+
                         // What reg.exe said about the gaps, so an incomplete
                         // backup can be judged instead of only noticed.
-                        for note in &manifest.notes {
-                            ui.small(format!("  {note}"));
+                        if !manifest.notes.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new(self.tr.backup_notes).strong());
+                            for note in &manifest.notes {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(note).small().weak())
+                                        .wrap(),
+                                );
+                            }
                         }
                     });
-                }
             });
 
-        // Applied after the loop, which is walking the list this replaces.
+        if let Some(path) = show {
+            let _ = elevation::show_in_explorer(&path);
+        }
+
+        // After the panel, not inside it: this replaces the very list the
+        // closure above is reading.
         if let Some(path) = restore {
             match backup::restore(&path) {
                 Ok(count) => {
@@ -6758,6 +6874,7 @@ mod tests {
             glyphs.backup,
             glyphs.inspect,
             glyphs.copy,
+            glyphs.restore,
         ];
 
         assert_eq!(filled.len(), Glyphs::NAMES.len());
