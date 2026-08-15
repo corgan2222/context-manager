@@ -361,6 +361,57 @@ fn copyable_command(ui: &mut Ui, glyphs: Glyphs, tr: &'static Strings, command: 
     });
 }
 
+/// A "new entry here" line, for every place a right-click can land.
+///
+/// The same offer from the category tree, the file type list, the program list
+/// and the empty space below the table — each of them knowing which category
+/// "here" means. Returns the category to create in when it was clicked.
+fn new_entry_menu(
+    ui: &mut Ui,
+    glyphs: &Glyphs,
+    tr: &'static Strings,
+    category: Category,
+) -> Option<Category> {
+    let mut chosen = None;
+    if ui
+        .button(labelled(glyphs.new, tr.ctx_new_entry))
+        .on_hover_text(tr.tip_editor_new)
+        .clicked()
+    {
+        chosen = Some(category);
+        ui.close();
+    }
+    chosen
+}
+
+/// The file just dropped on this rectangle, if one was.
+///
+/// For the fields inside a dialog, where the drop means "put this path here"
+/// rather than "make an entry out of it". The check is against the rectangle
+/// and not against `hovered`, because a drag coming from Explorer never gives
+/// egui a hover — the pointer belongs to the drag, not to the window.
+fn dropped_on(ui: &Ui, rect: egui::Rect) -> Option<std::path::PathBuf> {
+    if !ui.rect_contains_pointer(rect) {
+        return None;
+    }
+    ui.ctx().input(|input| {
+        input
+            .raw
+            .dropped_files
+            .first()
+            .map(|file| file.path().to_path_buf())
+    })
+}
+
+/// Is a file being dragged over the window, or landing right now?
+///
+/// Both, because the frame that reports the drop no longer reports the hover:
+/// a drop target noted only while `hovered_files` is filled would already be
+/// forgotten when `dropped_files` arrives.
+fn files_in_the_air(ctx: &egui::Context) -> bool {
+    ctx.input(|input| !input.raw.hovered_files.is_empty() || !input.raw.dropped_files.is_empty())
+}
+
 /// An icon in front of its label, the shape every button in the bar takes.
 fn labelled(icon: char, text: &str) -> String {
     format!("{icon}  {text}")
@@ -678,6 +729,14 @@ pub struct App {
     selected: rustc_hash::FxHashSet<Row>,
     /// The row whose details are shown — the last one clicked.
     focused: Option<Row>,
+    /// The category a hovering file would land in.
+    ///
+    /// A field and not a local, because the frame that reports the drop is not
+    /// the frame that had the pointer over a row: `dropped_files` arrives once,
+    /// and by then `hovered_files` is empty again and the tree has already been
+    /// drawn. So the target is noted while files are in the air and read when
+    /// one lands. That is also why the first version did nothing at all.
+    drop_target: Option<Category>,
     /// Where a Shift-click measures from.
     ///
     /// Not the same as `focused`, and Explorer keeps them apart for a reason:
@@ -970,6 +1029,7 @@ impl App {
             selected: rustc_hash::FxHashSet::default(),
             focused: None,
             anchor: None,
+            drop_target: None,
             search: start_search,
             dialog: None,
             action_rx: None,
@@ -2118,6 +2178,10 @@ impl eframe::App for App {
             }
         }
 
+        // After every panel has had its chance to note what the pointer was
+        // over, and on every tab: a file can be dropped anywhere in the window.
+        self.take_dropped_files(&ctx);
+
         // After the panels: at this point the rows of this frame really have
         // been built, which is what "the list is visible" has to mean.
         self.note_first_list();
@@ -2191,20 +2255,10 @@ impl App {
                     .on_disabled_hover_text(self.tr.tip_entry_tabs_only)
                     .clicked()
                 {
-                    self.dialog = Some(Dialog::Editor {
-                        entry: Box::new(NewEntry {
-                            category: self.category_for_new(),
-                            key_name: String::new(),
-                            display_name: String::new(),
-                            command: String::new(),
-                            icon: None,
-                            position: None,
-                            extended: false,
-                            children: Vec::new(),
-                        }),
-                        recorded: create::recorded().unwrap_or_default(),
-                        existing: None,
-                    });
+                    // Through the same door as every right-click menu, so a new
+                    // entry is set up one way and not five.
+                    let category = self.category_for_new();
+                    self.open_editor_for(category);
                 }
 
                 // "Look first, decide later" is a legitimate way to use this
@@ -2384,20 +2438,20 @@ impl App {
                     // selection pushed every button beside it sideways, so the
                     // icons never sat still long enough to be aimed at.
                     ui.label(egui::RichText::new(format!("{}:", tr.group_selection)).weak());
+                    // Icons only, like the switches: the name of each one is in
+                    // its tooltip, which already had to carry the explanation.
                     if ui
-                        .button(labelled(glyphs.select_all, tr.btn_select_all))
-                        .on_hover_text(tr.tip_select_all)
+                        .button(glyphs.select_all.to_string())
+                        .on_hover_text(format!("{} — {}", tr.btn_select_all, tr.tip_select_all))
                         .clicked()
                     {
                         select_all = true;
                     }
+                    let deselect = format!("{} — {}", tr.btn_select_none, tr.tip_select_none);
                     if ui
-                        .add_enabled(
-                            any,
-                            egui::Button::new(labelled(glyphs.select_none, tr.btn_select_none)),
-                        )
-                        .on_hover_text(tr.tip_select_none)
-                        .on_disabled_hover_text(tr.tip_select_none)
+                        .add_enabled(any, egui::Button::new(glyphs.select_none.to_string()))
+                        .on_hover_text(&deselect)
+                        .on_disabled_hover_text(&deselect)
                         .clicked()
                     {
                         select_none = true;
@@ -2413,24 +2467,28 @@ impl App {
 
                     // Visually set apart: this is the one action a backup cannot
                     // be shrugged off for.
+                    // The one place a word stays: this is the single action a
+                    // backup cannot be shrugged off for, and an icon alone is
+                    // a thin warning for something irreversible.
                     let delete = egui::Button::new(
                         egui::RichText::new(labelled(glyphs.delete, tr.btn_delete))
                             .color(ui.visuals().error_fg_color),
                     );
+                    // The reassurance moved in here from a line of its own: it
+                    // was a sentence of permanent text in a bar that has to fit
+                    // a small screen, and it belongs to this button anyway.
+                    let deleting = format!("{}\n\n{}", tr.tip_delete, tr.msg_backup_first);
                     if ui
                         .add_enabled(any, delete)
-                        .on_hover_text(tr.tip_delete)
+                        .on_hover_text(&deleting)
                         .on_disabled_hover_text(match any {
-                            true => tr.tip_delete,
-                            false => tr.tip_needs_selection,
+                            true => deleting.clone(),
+                            false => tr.tip_needs_selection.to_string(),
                         })
                         .clicked()
                     {
                         wanted = Some(Action::Delete);
                     }
-                    // Next to the one button that reads as dangerous, which is
-                    // where the reassurance is worth reading.
-                    ui.small(tr.msg_backup_first);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(match elevation::is_elevated() {
@@ -3451,11 +3509,27 @@ impl App {
                                 if !entry.is_submenu() {
                                     ui.label(self.tr.editor_command);
                                     ui.horizontal(|ui| {
-                                        ui.add(
+                                        let field = ui.add(
                                             egui::TextEdit::singleline(&mut entry.command)
                                                 .desired_width(field_width - 26.0)
                                                 .hint_text(HINT_COMMAND),
                                         );
+                                        // A program dragged onto the field is
+                                        // the shortest way to fill it, and the
+                                        // one people try before the button.
+                                        // Quoted and given the placeholder the
+                                        // category needs, exactly as a drop on
+                                        // the category itself would be.
+                                        if let Some(path) = dropped_on(ui, field.rect) {
+                                            entry.command = format!(
+                                                r#""{}" "{}""#,
+                                                path.display(),
+                                                match create::is_background(&entry.category) {
+                                                    true => "%V",
+                                                    false => "%1",
+                                                }
+                                            );
+                                        }
                                         // Pick the program instead of typing
                                         // its path. What comes back is quoted
                                         // and given `"%1"`, which is what the
@@ -3489,12 +3563,21 @@ impl App {
                                 ui.label(self.tr.editor_icon);
                                 ui.horizontal(|ui| {
                                     let mut icon = entry.icon.clone().unwrap_or_default();
-                                    ui.add(
+                                    let field = ui.add(
                                         egui::TextEdit::singleline(&mut icon)
                                             .desired_width(field_width - 52.0)
                                             .hint_text(HINT_ICON),
                                     );
                                     let mut icon = icon.trim().to_string();
+
+                                    // Dropped here, a file is an icon source
+                                    // rather than a program: `,0` for the same
+                                    // reason the picker adds it — a reference is
+                                    // split at its last comma, so a path with
+                                    // one in it would lose its tail.
+                                    if let Some(path) = dropped_on(ui, field.rect) {
+                                        icon = format!("{},0", path.display());
+                                    }
 
                                     // The same picker as for the command, with
                                     // `.ico`, `.exe` and `.dll` offered: an
@@ -3786,7 +3869,9 @@ impl App {
     }
 
     fn category_tree(&mut self, ui: &mut Ui) {
-        let mut drop_target: Option<Category> = None;
+        let dragging = files_in_the_air(ui.ctx());
+        let glyphs = self.glyphs;
+        let mut new_here: Option<Category> = None;
         egui::Panel::left("tree")
             .resizable(true)
             .default_size(240.0)
@@ -3830,12 +3915,25 @@ impl App {
                             // Where a dropped file would land. Noted while
                             // drawing, because that is the only moment this
                             // row's rectangle and the category it stands for
-                            // are both at hand. `rect_contains_pointer` rather
-                            // than `hovered`: during a drag from outside the
-                            // window egui hands out no hover.
-                            if ui.rect_contains_pointer(response.rect) {
-                                drop_target = Some(category.clone());
+                            // are both at hand, and only while something is
+                            // actually in the air — otherwise the last row the
+                            // mouse happened to pass would be remembered as a
+                            // drop target for the rest of the session.
+                            // `rect_contains_pointer` rather than `hovered`:
+                            // during a drag from outside the window egui hands
+                            // out no hover at all.
+                            if dragging && ui.rect_contains_pointer(response.rect) {
+                                self.drop_target = Some(category.clone());
                             }
+
+                            // The right button offers what this row is for:
+                            // making an entry that lands here. The category is
+                            // the row's own, whether or not it is the selected
+                            // one — a right-click names its target.
+                            response.context_menu(|ui| {
+                                new_here = new_entry_menu(ui, &glyphs, self.tr, category.clone())
+                                    .or(new_here.take());
+                            });
 
                             if response.clicked() {
                                 self.selected_category = Some(category.clone());
@@ -3869,20 +3967,48 @@ impl App {
                     });
             });
 
-        self.take_dropped_files(ui.ctx(), drop_target);
+        if let Some(category) = new_here {
+            self.open_editor_for(category);
+        }
     }
 
-    /// Turns files dropped on the window into a filled-in editor form.
+    /// Opens the editor on an empty entry in this category.
     ///
-    /// The category comes from whatever the pointer was over, so dragging a
-    /// program onto "Desktop-Hintergrund" produces an entry for the desktop
-    /// background — with `%V`, because `%1` is empty there. Dropped anywhere
-    /// else, the category is the one already selected, which is what the "new
-    /// entry" button uses too.
+    /// The one path every "new entry" reaches: the button in the tab row, and
+    /// the right-click menus in all three trees and under the table.
+    fn open_editor_for(&mut self, category: Category) {
+        self.dialog = Some(Dialog::Editor {
+            entry: Box::new(NewEntry {
+                category: creatable_category(&category).unwrap_or_else(|| self.category_for_new()),
+                key_name: String::new(),
+                display_name: String::new(),
+                command: String::new(),
+                icon: None,
+                position: None,
+                extended: false,
+                children: Vec::new(),
+            }),
+            recorded: create::recorded().unwrap_or_default(),
+            existing: None,
+        });
+    }
+
+    /// Turns a file dropped on the window into a filled-in editor form.
+    ///
+    /// Called once per frame from `ui`, not from the category tree: a file can
+    /// be dropped on any tab and on any part of the window, and the tree is
+    /// only drawn on one of them. That was the second half of why this did
+    /// nothing at first.
+    ///
+    /// The category comes from whatever the pointer was over while the file was
+    /// in the air, so dragging a program onto "Desktop-Hintergrund" produces an
+    /// entry for the desktop background — with `%V`, because `%1` is empty
+    /// there. Dropped anywhere else, the category is the one already selected,
+    /// which is what the "new entry" button uses too.
     ///
     /// Nothing is written: the form opens and waits, exactly as if it had been
     /// filled in by hand.
-    fn take_dropped_files(&mut self, ctx: &egui::Context, target: Option<Category>) {
+    fn take_dropped_files(&mut self, ctx: &egui::Context) {
         // Cheap per frame: `dropped_files` is empty in every frame but the one
         // where something landed. `path()` is a trait method in egui 0.36, not
         // the `Option<PathBuf>` field it used to be — the integration owns the
@@ -3900,7 +4026,15 @@ impl App {
             return;
         };
 
-        let category = target
+        // A drop into a dialog is not a drop onto a category; the editor takes
+        // care of its own fields.
+        if self.dialog.is_some() {
+            return;
+        }
+
+        let category = self
+            .drop_target
+            .take()
             .and_then(|category| creatable_category(&category))
             .unwrap_or_else(|| self.category_for_new());
 
@@ -3913,6 +4047,8 @@ impl App {
 
     /// File types, grouped, with the number of entries each one adds.
     fn file_type_tree(&mut self, ui: &mut Ui) {
+        let glyphs = self.glyphs;
+        let mut new_here: Option<Category> = None;
         egui::Panel::left("filetypes")
             .resizable(true)
             .default_size(260.0)
@@ -4031,9 +4167,22 @@ impl App {
                                     let own = custom.iter().any(|e| e == info.ext());
 
                                     ui.horizontal(|ui| {
-                                        if ui.selectable_label(selected, label).clicked() {
+                                        let row = ui.selectable_label(selected, label);
+                                        if row.clicked() {
                                             clicked = Some(info.ext().to_string());
                                         }
+                                        // An entry for exactly this extension,
+                                        // without having to select it first.
+                                        let ext = info.ext().to_string();
+                                        row.context_menu(|ui| {
+                                            new_here = new_entry_menu(
+                                                ui,
+                                                &glyphs,
+                                                tr,
+                                                Category::ExtAssoc(ext.clone()),
+                                            )
+                                            .or(new_here.take());
+                                        });
                                         // Only the user's own types can be
                                         // taken away again; the curated list is
                                         // not the user's to shorten, and a
@@ -4059,6 +4208,9 @@ impl App {
                     self.clear_selection();
                     self.filter_dirty = true;
                 }
+                if let Some(category) = new_here.take() {
+                    self.open_editor_for(category);
+                }
                 if let Some(ext) = forget {
                     self.settings.custom_extensions.retain(|e| e != &ext);
                     let _ = self.settings.save();
@@ -4072,6 +4224,9 @@ impl App {
 
     /// Programs, largest first — the one worth twenty deletions is on top.
     fn program_list(&mut self, ui: &mut Ui) {
+        let glyphs = self.glyphs;
+        let default_category = self.category_for_new();
+        let mut new_here: Option<Category> = None;
         egui::Panel::left("programs")
             .resizable(true)
             .default_size(340.0)
@@ -4220,6 +4375,21 @@ impl App {
                                         if response.clicked() {
                                             clicked = Some(index);
                                         }
+                                        // A program is not a category, so "new
+                                        // entry here" means the category the
+                                        // button in the tab row would use.
+                                        // Offered anyway: this list is where
+                                        // somebody notices a program is worth
+                                        // an entry of its own.
+                                        response.context_menu(|ui| {
+                                            new_here = new_entry_menu(
+                                                ui,
+                                                &glyphs,
+                                                tr,
+                                                default_category.clone(),
+                                            )
+                                            .or(new_here.take());
+                                        });
                                         // The full path is long and only
                                         // occasionally wanted, so it lives in
                                         // the tooltip — and so does the reason
@@ -4245,6 +4415,10 @@ impl App {
                     self.filter_dirty = true;
                 }
             });
+
+        if let Some(category) = new_here {
+            self.open_editor_for(category);
+        }
     }
 
     fn entry_table(&mut self, ui: &mut Ui, scroll_to: Option<usize>) {
@@ -4533,11 +4707,23 @@ impl App {
             });
         }
 
+        // The space below the last row is still part of the list, and a
+        // right-click there is a right-click on "this category" — which is
+        // where a new entry would go. Before this, the only way to that offer
+        // was the button in the tab row.
+        let mut new_here = None;
+        ui.response().context_menu(|ui| {
+            new_here = new_entry_menu(ui, &self.glyphs, self.tr, self.category_for_new());
+        });
+
         // Through the same `propose` the bar uses, so a menu line and a switch
         // reach the same confirmation, the same backup and the same elevation
         // path. The menu is another way in, not a second implementation.
         if let Some(action) = menu_action {
             self.propose(action);
+        }
+        if let Some(category) = new_here {
+            self.open_editor_for(category);
         }
 
         if let Some(column) = new_sort {
@@ -5796,14 +5982,16 @@ fn switch_groups(
         &group_tip(tr.group_visibility, tr.tip_group_visibility),
         needs_rows,
         &[
-            (
-                labelled(glyphs.visible, tr.seg_visible),
-                state.hidden == Agreement::Same(false),
-            ),
-            (
-                labelled(glyphs.hidden, tr.seg_hidden),
-                state.hidden == Agreement::Same(true),
-            ),
+            Segment {
+                icon: glyphs.visible,
+                name: tr.seg_visible,
+                current: state.hidden == Agreement::Same(false),
+            },
+            Segment {
+                icon: glyphs.hidden,
+                name: tr.seg_hidden,
+                current: state.hidden == Agreement::Same(true),
+            },
         ],
     ) {
         wanted = Some(match index {
@@ -5821,14 +6009,16 @@ fn switch_groups(
         &group_tip(tr.group_shift, tr.tip_group_shift),
         needs_rows,
         &[
-            (
-                labelled(glyphs.always, tr.seg_always),
-                state.extended == Agreement::Same(false),
-            ),
-            (
-                labelled(glyphs.shift_only, tr.seg_shift_only),
-                state.extended == Agreement::Same(true),
-            ),
+            Segment {
+                icon: glyphs.always,
+                name: tr.seg_always,
+                current: state.extended == Agreement::Same(false),
+            },
+            Segment {
+                icon: glyphs.shift_only,
+                name: tr.seg_shift_only,
+                current: state.extended == Agreement::Same(true),
+            },
         ],
     ) {
         wanted = Some(match index {
@@ -5850,14 +6040,16 @@ fn switch_groups(
         &group_tip(tr.group_systemwide, tr.tip_group_systemwide),
         blocking,
         &[
-            (
-                labelled(glyphs.free, tr.seg_free),
-                state.blocked == Agreement::Same(false),
-            ),
-            (
-                labelled(glyphs.blocked, tr.seg_blocked),
-                state.blocked == Agreement::Same(true),
-            ),
+            Segment {
+                icon: glyphs.free,
+                name: tr.seg_free,
+                current: state.blocked == Agreement::Same(false),
+            },
+            Segment {
+                icon: glyphs.blocked,
+                name: tr.seg_blocked,
+                current: state.blocked == Agreement::Same(true),
+            },
         ],
     ) {
         wanted = Some(match index {
@@ -5880,9 +6072,21 @@ fn switch_groups(
         &group_tip(tr.group_position, tr.tip_position),
         needs_rows,
         &[
-            (labelled(glyphs.no_position, tr.pos_default), at(None)),
-            (labelled(glyphs.top, tr.pos_top), at(Some("Top"))),
-            (labelled(glyphs.bottom, tr.pos_bottom), at(Some("Bottom"))),
+            Segment {
+                icon: glyphs.no_position,
+                name: tr.pos_default,
+                current: at(None),
+            },
+            Segment {
+                icon: glyphs.top,
+                name: tr.pos_top,
+                current: at(Some("Top")),
+            },
+            Segment {
+                icon: glyphs.bottom,
+                name: tr.pos_bottom,
+                current: at(Some("Bottom")),
+            },
         ],
     ) {
         wanted = Some(Action::SetPosition(match index {
@@ -5912,7 +6116,7 @@ fn switch_group(
     mixed: Option<&str>,
     tip: &str,
     reason: Option<&str>,
-    segments: &[(String, bool)],
+    segments: &[Segment],
 ) -> Option<usize> {
     // A wrapping row breaks between widgets whose width it is told in advance,
     // and a group of loose buttons never tells it one — each button decides for
@@ -5938,19 +6142,24 @@ fn switch_group(
             if let Some(mixed) = mixed {
                 ui.label(egui::RichText::new(mixed).weak().small());
             }
-            for (index, (label, current)) in segments.iter().enumerate() {
+            for (index, segment) in segments.iter().enumerate() {
+                // The icon alone. The word that used to stand beside it moved
+                // into the tooltip: with five groups spelled out, the bar was
+                // wider than a small screen and wrapped into three lines, and
+                // the group title in front already says what is being chosen.
+                let explanation = format!("{} — {tip}", segment.name);
                 // `Button::selectable`, not `SelectableLabel`: egui 0.36 folded
                 // the second into the first, and the tab row above takes the
                 // same shape through `ui.selectable_label`.
                 let response = ui
                     .add_enabled(
                         reason.is_none(),
-                        egui::Button::selectable(*current, label.as_str()),
+                        egui::Button::selectable(segment.current, segment.icon.to_string()),
                     )
-                    .on_hover_text(tip)
+                    .on_hover_text(&explanation)
                     // A greyed-out control that explains nothing is the thing
                     // this whole bar was rebuilt to get rid of.
-                    .on_disabled_hover_text(reason.unwrap_or(tip));
+                    .on_disabled_hover_text(reason.unwrap_or(&explanation));
                 if response.clicked() {
                     clicked = Some(index);
                 }
@@ -5966,7 +6175,7 @@ fn switch_group(
 /// constant: the German labels are longer than the English ones, the user can
 /// switch language at runtime, and a wrong guess here shows up as a group
 /// hanging over the right edge.
-fn group_width(ui: &Ui, title: &str, mixed: Option<&str>, segments: &[(String, bool)]) -> f32 {
+fn group_width(ui: &Ui, title: &str, mixed: Option<&str>, segments: &[Segment]) -> f32 {
     let body = egui::TextStyle::Body.resolve(ui.style());
     let small = egui::TextStyle::Small.resolve(ui.style());
     // Through the painter rather than `ui.fonts`: laying text out fills a cache
@@ -5984,10 +6193,20 @@ fn group_width(ui: &Ui, title: &str, mixed: Option<&str>, segments: &[(String, b
     let mut width = measure(&format!("{title}:"), &body)
         + spacing
         + mixed.map_or(0.0, |text| measure(text, &small) + spacing);
-    for (label, _) in segments {
-        width += spacing + padding + measure(label, &body);
+    for segment in segments {
+        width += spacing + padding + measure(&segment.icon.to_string(), &body);
     }
     width + spacing
+}
+
+/// One choice inside a switch group: the icon shown, the word behind it.
+///
+/// The word is not drawn any more — it names the segment in the tooltip, which
+/// is where it went when the bar had to fit a small screen.
+struct Segment {
+    icon: char,
+    name: &'static str,
+    current: bool,
 }
 
 /// How tall a switch group comes out.
