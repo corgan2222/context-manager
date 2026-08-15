@@ -1061,7 +1061,14 @@ impl App {
             backups: Vec::new(),
             backup_error: None,
             full_backup_rx: None,
-            favourites: Vec::new(),
+            // Read here and not only when the tab is entered. Starting on the
+            // favourites tab — which `--tab favourites` does, and which is
+            // where the window reopens after using it — showed an empty tool
+            // box and the sentence about there being nothing saved yet, with a
+            // full favourites.json on disk. Once, in the constructor: a file
+            // has no business in the frame path (ToDo 4.3), and this one is
+            // read again after every change anyway.
+            favourites: favourites::load().unwrap_or_default(),
             favourite_error: None,
             favourite_focus: None,
             favourite_scroll: false,
@@ -2593,20 +2600,24 @@ impl App {
                         false => egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2)),
                     };
 
-                    // Whether a button in this row took the click. Without it
-                    // the row's own click area — registered below, and
-                    // therefore lying on top of everything inside it —
-                    // swallowed every button press: Edit and Remove did
-                    // nothing at all, and only the cursor moved.
-                    let mut button_hit = false;
+                    // Only the text on the left makes a row current, not the
+                    // whole row. A click area over the entire row is registered
+                    // after the buttons inside it and therefore lies on top of
+                    // them: egui resolves a press against the last thing drawn
+                    // over that point, so the buttons never saw a click at all
+                    // and Edit and Remove did nothing. Asking afterwards
+                    // whether a button had been hit could not work either —
+                    // none of them was ever told.
+                    let mut name_area = None;
 
                     let row = frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
+                            let text = ui.vertical(|ui| {
                                 ui.set_min_width(340.0);
                                 ui.strong(&favourite.name);
                                 ui.small(describe(favourite, self.tr));
                             });
+                            name_area = Some(text.response.rect);
 
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -2617,7 +2628,6 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Remove(index));
-                                        button_hit = true;
                                     }
                                     if ui
                                         .small_button(self.tr.fav_edit)
@@ -2625,7 +2635,6 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Edit(index));
-                                        button_hit = true;
                                     }
                                     if ui
                                         .add_enabled(
@@ -2636,7 +2645,6 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Shift(index, false));
-                                        button_hit = true;
                                     }
                                     if ui
                                         .add_enabled(
@@ -2647,7 +2655,6 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Shift(index, true));
-                                        button_hit = true;
                                     }
                                     ui.separator();
                                     // The whole point of the list: putting a
@@ -2658,7 +2665,6 @@ impl App {
                                         .clicked()
                                     {
                                         action = Some(FavouriteAction::Place(index));
-                                        button_hit = true;
                                     }
                                 },
                             );
@@ -2668,7 +2674,11 @@ impl App {
                     // Clicking a row puts the keyboard on it, so the two ways
                     // of moving through the list agree on where "here" is —
                     // but only when the click was not meant for a button.
-                    if !button_hit && row.response.interact(egui::Sense::click()).clicked() {
+                    if let Some(rect) = name_area
+                        && ui
+                            .interact(rect, ui.id().with(("fav-row", index)), egui::Sense::click())
+                            .clicked()
+                    {
                         clicked_row = Some(index);
                     }
                     if current && scroll {
