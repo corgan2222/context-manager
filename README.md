@@ -6,6 +6,11 @@ ausblenden, nur mit Umschalttaste zeigen, sortieren, löschen und neu anlegen.
 **Vor jeder Änderung wird gesichert**, und zwar nicht als Vorsatz, sondern weil
 die Löschfunktion ohne Sicherungsnachweis gar nicht aufrufbar ist.
 
+Und es geht in die andere Richtung: eigene Einträge, Untermenüs, ein
+Werkzeugkasten aus Programmen und Web-Diensten — bis hin zu **zweihundert
+Menüeinträgen aus einer einzigen Adresse**, wenn eine Webanwendung sich selbst
+über OpenAPI beschreibt.
+
 Windows 10 und 11, 64 Bit. Eine einzelne `.exe` ohne Installation und ohne
 Laufzeitbibliothek.
 
@@ -56,6 +61,16 @@ switchable at runtime; this README is German only.*
 - **Webtools als Favorit.** Ein Favorit muss keine `.exe` sein, eine Adresse
   genügt. Weil eine Webseite keine lokale Datei lesen darf, wird sie
   *geschickt* — dazu unten mehr.
+- **Dienste: hundert Werkzeuge aus einer Adresse.** Beschreibt eine
+  Webanwendung sich selbst über OpenAPI, genügt die Adresse ihrer
+  Dokumentationsseite. Das Programm sucht das maschinenlesbare Dokument dahinter,
+  liest heraus, welche Endpunkte eine Datei annehmen, gruppiert sie so, wie der
+  Dienst sie selbst gruppiert, und macht aus jedem angekreuzten einen Favoriten.
+  Nimmt ein Werkzeug Einstellungen an, entsteht ein Formular dafür — auch dann,
+  wenn der Dienst seine Optionen nur als Fließtext beschreibt.
+- **Ziehen und Ablegen.** Eine `.exe` ins Fenster ziehen legt einen Eintrag mit
+  ihr an; über welcher Kategorie sie fällt, entscheidet, wo er landet. Im Editor
+  nehmen auch die Felder für Befehl und Symbol eine abgelegte Datei entgegen.
 - **Sichern und zurückholen.** Jede Aktion legt vorher ein Backup an, eine
   Gruppenaktion genau eines für die ganze Gruppe. Der Reiter *Sicherungen*
   zeigt den Verlauf und spielt zurück — und hat einen Knopf **Alles sichern**,
@@ -95,7 +110,7 @@ Ohne Argumente öffnet sich das Fenster. Ganz ohne Administratorrechte —
 angefragt werden sie erst, wenn eine Änderung sie wirklich braucht, und dann
 nur für diesen einen Schritt.
 
-### Die vier Reiter
+### Die sechs Reiter
 
 | Reiter | Wofür |
 |---|---|
@@ -103,18 +118,32 @@ nur für diesen einen Schritt.
 | **Dateitypen** | Eine Erweiterung wählen und die vollständige Auflösungskette sehen |
 | **Programme** | Nach Programm gruppiert — der schnellste Weg, ein Programm ganz aus dem Menü zu nehmen |
 | **Favoriten** | Der eigene Werkzeugkasten: einmal eintragen, immer da |
+| **Dienste** | Werkzeuge aus der Selbstbeschreibung einer Webanwendung übernehmen |
 | **Sicherungen** | Verlauf aller Sicherungen, mit Knopf zum Zurückspielen |
 
 Das Suchfeld greift auf jedem Reiter und durchsucht Anzeigename, Befehl und
 Registry-Pfad; auch dann, wenn links noch nichts ausgewählt ist.
 
 **In der Liste:** Pfeiltasten bewegen die Auswahl, Pos1 und Ende springen an
-Anfang und Ende, mit gedrückter Umschalttaste wächst die Auswahl. Ein Klick auf
-eine Spaltenüberschrift sortiert danach, ein zweiter dreht die Richtung um. Die
-Spalte **Erscheint bei** sagt in Worten, wo ein Eintrag auftaucht — „Alle
-Dateien" statt `*`, „.zip" statt eines Pfads mit `SystemFileAssociations` in der
-Mitte; der echte Registry-Pfad steht im Tooltip. Jeder Knopf hat einen, der
-erklärt, was er anfasst und ob es sich rückgängig machen lässt.
+Anfang und Ende, mit gedrückter Umschalttaste wächst die Auswahl, Strg+A nimmt
+alles. Ein Klick auf eine Spaltenüberschrift sortiert danach, ein zweiter dreht
+die Richtung um. Die Spalte **Erscheint bei** sagt in Worten, wo ein Eintrag
+auftaucht — „Alle Dateien" statt `*`, „.zip" statt eines Pfads mit
+`SystemFileAssociations` in der Mitte; der echte Registry-Pfad steht im Tooltip.
+Ein **Rechtsklick** bietet überall genau die Aktionen an, die für das Angeklickte
+etwas ändern würden — und im leeren Bereich *Neu*.
+
+**Die Aktionsleiste** über der Tabelle ist kein Satz Knöpfe, sondern vier
+Schalter: *Im Menü* (sichtbar ↔ versteckt), *Umschalttaste* (immer ↔ nur mit ⇧),
+*Systemweit* (frei ↔ gesperrt) und *Position*. Hervorgehoben ist, wo die Auswahl
+gerade steht; ein Klick auf die andere Seite führt dorthin. Aus „welchen Knopf
+drücke ich?" wird „wohin soll es?". Was gerade nicht geht, ist grau und sagt im
+Tooltip warum — etwa, dass keiner der ausgewählten Einträge ein COM-Handler ist
+und es deshalb nichts zu sperren gibt.
+
+**Explorer neu starten** sitzt oben in der Leiste. Windows liest die
+Kontextmenü-Schlüssel beim Start des Explorers; ein Eintrag, der partout nicht
+auftauchen will, braucht das.
 
 ### Eine typische Runde
 
@@ -173,6 +202,68 @@ und den Proxy-Einstellungen, die ohnehin gelten.
 
 ---
 
+## Dienste: hundert Werkzeuge, eine Adresse
+
+Einen Favoriten von Hand einzurichten heißt sechs Felder auszufüllen. Bei einem
+selbst betriebenen Dienst mit zweihundert Werkzeugen ist das keine Arbeit, die
+jemand macht.
+
+Der Reiter **Dienste** nimmt deshalb die Adresse, die man ohnehin im Browser
+offen hat — die API-Dokumentation, mitsamt Sprungmarke:
+
+```
+http://192.168.x.y:1349/api/docs/#tag/tools
+```
+
+Das Programm schneidet die Sprungmarke ab und sucht das maschinenlesbare
+Dokument dahinter: die Seite selbst, dann `openapi.json`, `swagger.json` und die
+übrigen üblichen Orte, von diesem Pfad aus und von der Wurzel. Der Statuscode
+entscheidet dabei nichts — eine Dokumentationsseite antwortet ebenso mit 200 wie
+das Dokument. Ob sich die Antwort als JSON lesen lässt, ist das Kriterium.
+
+Aus der Beschreibung wird dann alles gelesen, was sich lesen lässt:
+
+- **Welche Endpunkte überhaupt in Frage kommen** — die, die eine Datei als
+  `multipart/form-data` annehmen. Alles andere kann ein Rechtsklick nicht
+  bedienen.
+- **Wie sie zusammengehören.** Nicht nach dem OpenAPI-`tag`: der lautet bei
+  vielen Diensten für alles gleich. Stattdessen treten alle möglichen
+  Gliederungen gegeneinander an — der Tag und jede Stelle des Pfades — und die
+  gewinnt, die das brauchbarste Menü ergibt. Bei einem Dienst mit 232 Werkzeugen
+  kommen so *Image, Video, PDF, Audio, Files* heraus statt einer Schublade
+  „Tools" mit 225 Einträgen darin.
+- **Was ein Werkzeug außer der Datei annimmt.** Liefert die Beschreibung ein
+  Schema, entsteht daraus ein Formular mit getippten Feldern: Zahl mit dem
+  erlaubten Bereich, Ankreuzfeld, Auswahlliste. Liefert sie keins, sondern nur
+  Prosa — der häufigere Fall —, wird auch die gelesen, solange sie ihre Felder
+  auflistet:
+
+  ```
+  JSON string with options:
+  - `left` (number, required) - Left offset in pixels (min 0)
+  - `unit` (string, optional) - One of: px, percent
+  ```
+
+  Daraus wird dasselbe Formular. Wo die Prosa nicht eindeutig ist, bleibt es
+  beim Textfeld mit der Beschreibung darüber — lieber kein Feld als ein falsches,
+  denn ein falsches schickt Unsinn an einen echten Dienst.
+- **Was nicht funktionieren würde.** Endpunkte, die nur mit einer
+  Auftragsnummer antworten und im Hintergrund weiterarbeiten, stehen nicht in
+  der Liste: ein Eintrag daraus würde melden, es habe geklappt, und nichts
+  speichern. Ihre Zahl steht trotzdem da, mit einem Knopf, der sie einblendet.
+
+Angekreuzt wird einzeln oder kategorienweise, angelegt auf einen Schlag. Was ein
+Dienst über sich selbst sagt, steht danach in jedem Favoriten; **Adresse und
+Schlüssel bleiben lokal** in `%LOCALAPPDATA%\ctxmenu\services.json` und gehen
+nirgendwohin.
+
+Zwei Felder kann keine Beschreibung liefern, weil sie von der Installation
+abhängen: wo in der Antwort die fertige Datei genannt wird, und ob
+unverschlüsseltes `http://` erlaubt sein soll. Dafür gibt es Vorlagen — ein
+Klick füllt sie aus, die Adresse und der Schlüssel bleiben Ihre.
+
+---
+
 ## Über die Kommandozeile
 
 Dieselbe Anwendung ist auch ein Diagnosewerkzeug. Ausgaben landen in der
@@ -201,6 +292,7 @@ ctxmenu favourite add --name "PNG verkleinern"
         --url https://squoosh.app --mode clipboard
 ctxmenu favourite place <kennung> --ext .png
 ctxmenu favourite run <kennung> <datei>  ausführen wie ein Klick
+ctxmenu --tab dienste                    Fenster auf einem bestimmten Reiter öffnen
 ctxmenu --version                        welche Fassung das ist
 ctxmenu --help                           die vollständige Liste
 ```
@@ -219,8 +311,14 @@ denn ein Eintrag, der nichts tut, sieht aus wie ein Eintrag, der geht.
     01_….reg           eine Datei je Schlüssel, von reg.exe geschrieben
 %LOCALAPPDATA%\ctxmenu\entries.json     selbst angelegte Einträge
 %LOCALAPPDATA%\ctxmenu\favourites.json  der Werkzeugkasten
+%LOCALAPPDATA%\ctxmenu\services.json    eingetragene Dienste samt Schlüssel
 %LOCALAPPDATA%\ctxmenu\settings.json    Sprache und Darstellung
 ```
+
+Die Schlüssel in `favourites.json` und `services.json` liegen dort im Klartext,
+geschützt nur durch die Rechte auf Ihrem Benutzerprofil — wie in einer
+`.npmrc` oder `.gitconfig` auch. Wer das nicht möchte, benutzt für dieses
+Programm einen eigenen Schlüssel mit eingeschränkten Rechten.
 
 Die `.reg`-Dateien sind gewöhnliche Registrierungsdateien: sie lassen sich auch
 ohne dieses Werkzeug per Doppelklick zurückspielen. Eine Grenze hat das —
