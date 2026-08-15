@@ -4659,8 +4659,8 @@ fn children_editor(
     // Three fields on one line, and they have to share what the window gives
     // them: fixed widths left half the dialog empty once it was dragged wide,
     // while `c:\windows\system…` still did not fit. What is subtracted is the
-    // fixed furniture — the preview icon, three buttons and the gaps.
-    let usable = (field_width - 150.0).max(300.0);
+    // fixed furniture — two pickers, the preview icon, three buttons, gaps.
+    let usable = (field_width - 210.0).max(300.0);
     let name_width = usable * 0.28;
     let command_width = usable * 0.45;
     let icon_width = usable * 0.27;
@@ -4677,6 +4677,15 @@ fn children_editor(
                     .desired_width(command_width)
                     .hint_text(HINT_COMMAND),
             );
+            // The same two pickers the single-entry form has. A submenu is
+            // where paths are typed most often — one per child — so leaving
+            // them out here was leaving them out where they were needed most.
+            if folder_button(ui, icons, tr.tip_pick_program)
+                && let Some(path) =
+                    crate::filedialog::pick_file(None, &crate::filedialog::PROGRAMS, &child.command)
+            {
+                child.command = format!("\"{}\" \"%1\"", path.display());
+            }
 
             let mut icon = child.icon.clone().unwrap_or_default();
             ui.add(
@@ -4684,7 +4693,16 @@ fn children_editor(
                     .desired_width(icon_width)
                     .hint_text(HINT_ICON),
             );
-            let icon = icon.trim().to_string();
+            let mut icon = icon.trim().to_string();
+            if folder_button(ui, icons, tr.tip_pick_icon)
+                && let Some(path) =
+                    crate::filedialog::pick_file(None, &crate::filedialog::ICONS, &icon)
+            {
+                // `,0` for the same reason as everywhere else: a reference is
+                // split at its last comma, so a path containing one would lose
+                // everything behind it.
+                icon = format!("{},0", path.display());
+            }
             // Same preview as the entry's own icon field, for the same
             // reason: a typo in `shell32.dll,-244` is invisible otherwise.
             if !icon.is_empty() {
