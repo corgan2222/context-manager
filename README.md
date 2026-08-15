@@ -27,6 +27,11 @@ switchable at runtime; this README is German only.*
   Kette aus Benutzerwahl, ProgID, `PerceivedType` und `SystemFileAssociations`
   — also das, was der Rechtsklick tatsächlich anzeigt, nicht das, was an einer
   Stelle eingetragen ist.
+- **Eigene Dateiendungen und der Vollscan.** Der Reiter *Dateitypen* zeigt
+  eine kuratierte Auswahl von 98 Typen; ein Feld darüber nimmt jede weitere
+  Endung auf, die dann gespeichert bleibt. Wer alles sehen will, drückt
+  *Alle installierten* — auf einem gewachsenen Rechner sind das rund 1700
+  Typen statt 98, entsprechend länger dauert das Einlesen.
 - **Nach Programm gruppieren.** Ein Programm, das sich in zwanzig Dateitypen
   einträgt, erscheint als **eine** Gruppe mit allen Vorkommen. Der Name kommt
   aus der Versionsressource der `.exe`, nicht aus dem Schlüsselnamen.
@@ -168,6 +173,7 @@ Konsole, aus der sie gestartet wurde.
 ```
 ctxmenu scan --category directory        Einträge einer Kategorie
 ctxmenu scan --all-types --json          Vollscan inklusive Dateitypen, als JSON
+ctxmenu scan --every-type                jede registrierte Endung statt der Auswahl
 ctxmenu filetype .jpg                    Auflösungskette einer Erweiterung
 ctxmenu programs                         nach Programm gruppiert
 ctxmenu hide "<schlüssel>" --yes         ausblenden, mit Sicherung

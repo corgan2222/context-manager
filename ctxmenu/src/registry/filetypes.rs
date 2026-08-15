@@ -187,6 +187,67 @@ pub fn normalize_ext(raw: &str) -> Option<String> {
     Some(format!(".{}", without_dot.to_lowercase()))
 }
 
+/// Every file extension registered anywhere on this machine.
+///
+/// The subkeys with a leading dot below the three classes roots, normalised
+/// and deduplicated — the "scan all installed types" half of ToDo 10.3.
+///
+/// Asked for rather than done at startup, and the numbers say why: measured on
+/// this machine, 1304 such keys sit under `HKLM\SOFTWARE\Classes` and 624
+/// under HKCU. That is more than thirteen times the curated list, and each one
+/// costs a full resolution chain, so the window offers it as a button instead
+/// of paying for it on every start (ToDo 10.3).
+pub fn installed() -> Vec<String> {
+    let mut all = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for scope in Scope::ALL {
+        // The classes root itself, which is what `key_path` builds with an
+        // empty relative path.
+        let Ok(root) = paths::root_key(scope).open(scope.classes_path()) else {
+            continue;
+        };
+
+        for name in super::scan::subkey_names(&root) {
+            if !name.starts_with('.') {
+                continue;
+            }
+            // `normalize_ext` also refuses the nonsense that turns up here:
+            // a bare dot, names with spaces, `.` inside the name.
+            let Some(ext) = normalize_ext(&name) else {
+                continue;
+            };
+            if seen.insert(ext.clone()) {
+                all.push(ext);
+            }
+        }
+    }
+
+    all.sort();
+    all
+}
+
+/// The extensions the window walks: the curated list plus the user's own.
+///
+/// Own extensions come last but win nothing — duplicates fall out — and they
+/// are normalised on the way in, so `PNG`, `.png` and ` .PNG ` are one type
+/// rather than three tree entries pointing at the same registry keys.
+pub fn wanted(custom: &[String]) -> Vec<String> {
+    let mut all: Vec<String> = CURATED.iter().map(|d| d.ext.to_string()).collect();
+    let mut seen: std::collections::HashSet<String> = all.iter().cloned().collect();
+
+    for raw in custom {
+        let Some(ext) = normalize_ext(raw) else {
+            continue;
+        };
+        if seen.insert(ext.clone()) {
+            all.push(ext);
+        }
+    }
+
+    all
+}
+
 /// Looks up the curated group of an extension.
 pub fn group_of(ext: &str) -> TypeGroup {
     let normalized = normalize_ext(ext);
@@ -372,6 +433,63 @@ pub fn sources_for(resolution: &Resolution) -> Vec<CategorySource> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_users_own_extension_joins_the_curated_list_exactly_once() {
+        // The setting was written to disk from milestone 5 on and read by
+        // nobody until 2026-08-15 — a promise the program did not keep.
+        let list = wanted(&[
+            ".PNG".into(), // curated already, in the wrong case
+            "png".into(),  // and again, without the dot
+            "*.ctxmenu_probe".into(),
+            "   ".into(), // nonsense from a half-typed field
+            r"a\b".into(),
+        ]);
+
+        assert_eq!(
+            list.iter().filter(|e| *e == ".png").count(),
+            1,
+            "an extension that is already curated must not appear twice"
+        );
+        assert!(list.contains(&".ctxmenu_probe".to_string()));
+        assert_eq!(
+            list.len(),
+            CURATED.len() + 1,
+            "exactly one usable extension was added; the rest is not one"
+        );
+    }
+
+    #[test]
+    fn every_installed_extension_is_found_and_normalised() {
+        // Against the real registry: this is the "scan everything" half of
+        // ToDo 10.3, and what makes it worth having is that it finds far more
+        // than the curated selection.
+        let all = installed();
+
+        assert!(
+            all.len() > CURATED.len(),
+            "a machine has more registered extensions than the curated {}: got {}",
+            CURATED.len(),
+            all.len()
+        );
+        assert!(
+            all.iter().any(|ext| ext == ".txt"),
+            "every Windows registers .txt"
+        );
+
+        for ext in &all {
+            assert!(ext.starts_with('.'), "{ext} lacks the dot");
+            assert_eq!(ext, &ext.to_lowercase(), "{ext} is not folded");
+            assert!(ext.len() > 1, "a bare dot is not an extension");
+        }
+
+        // Sorted and without repeats — the three scopes overlap heavily, and
+        // the tree would show the same type several times.
+        let mut tidy = all.clone();
+        tidy.sort();
+        tidy.dedup();
+        assert_eq!(tidy, all, "the list must be sorted and free of duplicates");
+    }
 
     #[test]
     fn the_curated_list_has_no_duplicates() {

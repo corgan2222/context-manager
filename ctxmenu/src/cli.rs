@@ -154,7 +154,11 @@ Optionen / Options:
                       directorybackground, folder, desktopbackground, drive
   --scope <name>      user | machine | machine32 | all
                       (Vorgabe / default: all)
-  --all-types         Auch die Dateityp-Kette / walk the file type chain too
+  --all-types         Auch die Dateityp-Kette, fuer die vorgegebene Liste und
+                      eigene Endungen / walk the file type chain for the
+                      curated list plus one's own extensions
+  --every-type        Statt dessen jede registrierte Endung dieses Rechners /
+                      instead: every extension registered on this machine
   --json              Ausgabe als JSON / emit JSON on stdout
   --quiet             Kein Fortschritt / suppress progress output
 ";
@@ -380,10 +384,20 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             // Walks the file type chain for every curated extension — what
             // the window does, and the only way to measure its cost.
             "--all-types" => {
-                options.file_types = crate::registry::filetypes::CURATED
-                    .iter()
-                    .map(|d| d.ext.to_string())
-                    .collect();
+                // The curated list plus whatever the user added in the window,
+                // which is exactly what the window itself walks.
+                let settings = crate::settings::Settings::load_or_default(
+                    crate::settings::Language::default(),
+                );
+                options.file_types =
+                    crate::registry::filetypes::wanted(&settings.custom_extensions);
+            }
+            // Every extension the machine has, not the curated selection.
+            // Its own flag rather than a wider `--all-types`, because the
+            // difference is 98 against about 1900 and that is a decision, not
+            // a detail (ToDo 10.3).
+            "--every-type" => {
+                options.file_types = crate::registry::filetypes::installed();
             }
             "--category" => {
                 let value = rest
@@ -451,6 +465,16 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
             None => "alle Kategorien".to_string(),
         }
     );
+    // Says how far the scan reached. Without it `--all-types` and
+    // `--every-type` differ only in how long they take, which is no way to
+    // check that the second one did anything.
+    if !args.options.file_types.is_empty() {
+        crate::outln!(
+            "Dateitypen / file types: {} untersucht, {} davon registriert",
+            args.options.file_types.len(),
+            result.file_types.len()
+        );
+    }
     crate::outln!();
 
     crate::outln!(

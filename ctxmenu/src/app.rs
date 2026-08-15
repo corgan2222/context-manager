@@ -231,6 +231,15 @@ pub struct App {
     selected_category: Option<Category>,
     /// Selected extension in the file type tab.
     selected_ext: Option<String>,
+    /// What is typed in the "add an extension" field, before it is added.
+    ext_draft: String,
+    /// Walk *every* registered extension on the next scan, not the curated
+    /// list plus the user's own.
+    ///
+    /// Deliberately not persisted: it is thirteen times the work on this
+    /// machine, and a setting that silently makes every future start slow is
+    /// not a setting anyone would connect to the button they once pressed.
+    scan_every_type: bool,
     /// Index into `groups` for the program tab.
     selected_group: Option<usize>,
     /// Built once after each scan; never in the frame path.
@@ -508,6 +517,8 @@ impl App {
             tab: start_tab,
             selected_category: None,
             selected_ext: start_ext,
+            ext_draft: String::new(),
+            scan_every_type: false,
             selected_group: None,
             groups: Vec::new(),
             selected: rustc_hash::FxHashSet::default(),
@@ -575,11 +586,20 @@ impl App {
 
         let (tx, rx) = channel();
         let ctx = ctx.clone();
+        // Decided here, built in the worker: enumerating every registered
+        // extension means reading two large keys, and the frame path has no
+        // business doing that (ToDo 4.3).
+        let every_type = self.scan_every_type;
+        let custom = self.settings.custom_extensions.clone();
 
         std::thread::Builder::new()
             .name("registry-scan".into())
             .spawn(move || {
-                let options = ScanOptions::with_curated_file_types();
+                let options = if every_type {
+                    ScanOptions::with_every_installed_file_type()
+                } else {
+                    ScanOptions::with_file_types(&custom)
+                };
                 let sender = tx.clone();
                 let progress_ctx = ctx.clone();
 
@@ -3008,6 +3028,62 @@ impl App {
                 if ui.checkbox(hide_empty, self.tr.filter_hide_empty).changed() {
                     let _ = self.settings.save();
                 }
+
+                // Adding a type of one's own, and the full sweep. Both were
+                // promised from the start: the curated list is 98 types, this
+                // machine has 1928 registered, and `custom_extensions` was
+                // saved to disk from milestone 5 on while nothing ever read it.
+                let mut add = false;
+                let mut sweep = false;
+                ui.horizontal(|ui| {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut self.ext_draft)
+                            .desired_width(72.0)
+                            .hint_text(self.tr.ext_hint),
+                    );
+                    // Enter does what the button does; a one-field form that
+                    // insists on the mouse is a form nobody uses twice.
+                    let entered =
+                        field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    let usable = crate::registry::filetypes::normalize_ext(&self.ext_draft)
+                        .is_some_and(|ext| !self.settings.custom_extensions.contains(&ext));
+
+                    add = (ui
+                        .add_enabled(usable, egui::Button::new("+"))
+                        .on_hover_text(self.tr.tip_ext_add)
+                        .on_disabled_hover_text(self.tr.tip_ext_add)
+                        .clicked()
+                        || entered)
+                        && usable;
+
+                    sweep = ui
+                        .add_enabled(
+                            !self.scan_every_type && !self.scanning,
+                            egui::Button::new(self.tr.ext_scan_every),
+                        )
+                        .on_hover_text(self.tr.tip_ext_scan_every)
+                        .on_disabled_hover_text(self.tr.tip_ext_scan_every)
+                        .clicked();
+                });
+                if self.scan_every_type {
+                    ui.small(self.tr.ext_every_active);
+                }
+                if add {
+                    // Normalised on the way in, so `.PNG`, `png` and `*.png`
+                    // are one type rather than three tree entries pointing at
+                    // the same registry keys.
+                    if let Some(ext) = crate::registry::filetypes::normalize_ext(&self.ext_draft) {
+                        self.settings.custom_extensions.push(ext);
+                        let _ = self.settings.save();
+                        self.ext_draft.clear();
+                        self.start_scan(ui.ctx());
+                    }
+                }
+                if sweep {
+                    self.scan_every_type = true;
+                    self.start_scan(ui.ctx());
+                }
+
                 ui.separator();
 
                 let Some(scan) = &self.scan else {
@@ -3017,7 +3093,9 @@ impl App {
 
                 let hide_empty = self.settings.hide_empty_types;
                 let tr = self.tr;
+                let custom = self.settings.custom_extensions.clone();
                 let mut clicked: Option<String> = None;
+                let mut forget: Option<String> = None;
 
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -3045,9 +3123,26 @@ impl App {
                                     let selected = self.selected_ext.as_deref() == Some(info.ext());
                                     let label =
                                         format!("{}  ({})", info.ext(), info.own_entry_count());
-                                    if ui.selectable_label(selected, label).clicked() {
-                                        clicked = Some(info.ext().to_string());
-                                    }
+                                    let own = custom.iter().any(|e| e == info.ext());
+
+                                    ui.horizontal(|ui| {
+                                        if ui.selectable_label(selected, label).clicked() {
+                                            clicked = Some(info.ext().to_string());
+                                        }
+                                        // Only the user's own types can be
+                                        // taken away again; the curated list is
+                                        // not the user's to shorten, and a
+                                        // dead button on every row would say
+                                        // otherwise.
+                                        if own
+                                            && ui
+                                                .small_button("\u{00d7}")
+                                                .on_hover_text(tr.tip_ext_remove)
+                                                .clicked()
+                                        {
+                                            forget = Some(info.ext().to_string());
+                                        }
+                                    });
                                 }
                             });
                         }
@@ -3058,6 +3153,14 @@ impl App {
                     self.selected_ext = Some(ext);
                     self.clear_selection();
                     self.filter_dirty = true;
+                }
+                if let Some(ext) = forget {
+                    self.settings.custom_extensions.retain(|e| e != &ext);
+                    let _ = self.settings.save();
+                    if self.selected_ext.as_deref() == Some(ext.as_str()) {
+                        self.selected_ext = None;
+                    }
+                    self.start_scan(ui.ctx());
                 }
             });
     }

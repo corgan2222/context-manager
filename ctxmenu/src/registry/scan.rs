@@ -56,12 +56,25 @@ impl Default for ScanOptions {
 
 impl ScanOptions {
     /// Everything, including the curated file types — what the window uses.
-    pub fn with_curated_file_types() -> Self {
+    ///
+    /// `custom` is what the user added by hand; it was persisted from
+    /// milestone 5 on and read by nobody until 2026-08-15, which made the
+    /// setting a promise the program did not keep.
+    pub fn with_file_types(custom: &[String]) -> Self {
         Self {
-            file_types: super::filetypes::CURATED
-                .iter()
-                .map(|d| d.ext.to_string())
-                .collect(),
+            file_types: super::filetypes::wanted(custom),
+            ..Self::default()
+        }
+    }
+
+    /// Every extension registered on this machine, not just the curated ones.
+    ///
+    /// Thirteen times the work of `with_file_types` on this machine, so it is
+    /// something to ask for — a button in the window, a flag on the command
+    /// line — and never what a start does on its own.
+    pub fn with_every_installed_file_type() -> Self {
+        Self {
+            file_types: super::filetypes::installed(),
             ..Self::default()
         }
     }
@@ -339,7 +352,7 @@ fn fallback_icon(program_key: &str) -> String {
 /// while tripping a `debug_assert` in debug ones. Silently returning fewer
 /// context menu entries than exist is the worst failure this tool could have,
 /// so the enumeration grows its buffer and carries on instead.
-fn subkey_names(key: &Key) -> Vec<String> {
+pub(crate) fn subkey_names(key: &Key) -> Vec<String> {
     // Documented maximum key name length is 255 characters.
     const INITIAL: usize = 256;
 
@@ -602,6 +615,31 @@ fn looks_like_guid(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_walks_the_users_own_extensions_as_well() {
+        // What the window asks for when it starts. Before 2026-08-15 this was
+        // the curated list and nothing else, and the extensions a user had
+        // added were saved, shown in no tree and scanned by nobody.
+        let curated = super::super::filetypes::CURATED.len();
+
+        let plain = ScanOptions::with_file_types(&[]);
+        assert_eq!(plain.file_types.len(), curated);
+
+        let mine = ScanOptions::with_file_types(&[".ctxmenu_probe".into()]);
+        assert_eq!(mine.file_types.len(), curated + 1);
+        assert!(mine.file_types.iter().any(|e| e == ".ctxmenu_probe"));
+
+        // And the full sweep is a different, larger set — the point of having
+        // it at all.
+        let every = ScanOptions::with_every_installed_file_type();
+        assert!(
+            every.file_types.len() > plain.file_types.len(),
+            "every installed type: {}, curated: {}",
+            every.file_types.len(),
+            plain.file_types.len()
+        );
+    }
 
     #[test]
     fn guid_shape_is_recognised() {
