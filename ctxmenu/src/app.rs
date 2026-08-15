@@ -2886,7 +2886,13 @@ impl App {
                                 } else {
                                     ui.label(self.tr.editor_children);
                                     ui.vertical(|ui| {
-                                        children_editor(ui, &mut entry.children, icons, self.tr);
+                                        children_editor(
+                                            ui,
+                                            &mut entry.children,
+                                            icons,
+                                            self.tr,
+                                            field_width,
+                                        );
                                     });
                                     ui.end_row();
                                 }
@@ -4643,29 +4649,39 @@ fn children_editor(
     children: &mut Vec<NewChild>,
     icons: &mut IconCache,
     tr: &'static Strings,
+    field_width: f32,
 ) {
     let mut move_up = None;
     let mut move_down = None;
     let mut remove = None;
     let count = children.len();
 
+    // Three fields on one line, and they have to share what the window gives
+    // them: fixed widths left half the dialog empty once it was dragged wide,
+    // while `c:\windows\system…` still did not fit. What is subtracted is the
+    // fixed furniture — the preview icon, three buttons and the gaps.
+    let usable = (field_width - 150.0).max(300.0);
+    let name_width = usable * 0.28;
+    let command_width = usable * 0.45;
+    let icon_width = usable * 0.27;
+
     for (index, child) in children.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut child.display_name)
-                    .desired_width(150.0)
+                    .desired_width(name_width)
                     .hint_text(tr.editor_child_name_hint),
             );
             ui.add(
                 egui::TextEdit::singleline(&mut child.command)
-                    .desired_width(240.0)
+                    .desired_width(command_width)
                     .hint_text(HINT_COMMAND),
             );
 
             let mut icon = child.icon.clone().unwrap_or_default();
             ui.add(
                 egui::TextEdit::singleline(&mut icon)
-                    .desired_width(110.0)
+                    .desired_width(icon_width)
                     .hint_text(HINT_ICON),
             );
             let icon = icon.trim().to_string();
