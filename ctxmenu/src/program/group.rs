@@ -47,9 +47,12 @@ impl ProgramGroup {
 
 /// Builds the program view from a finished scan.
 ///
-/// Sorted by size descending, then by name: the program with twenty entries
-/// is the one worth looking at first, and that is also the one this tool
-/// saves the most work on.
+/// Sorted with the user's own programs first and Windows' own components
+/// after them, each block alphabetical. Size-descending came first and was
+/// dropped on 2026-08-15: the largest group is not the one anyone is looking
+/// for, a name is — and a list ordered by a number nobody can see reads as
+/// unordered. The two blocks stay apart because "this belongs to Windows" is
+/// the one property that changes what a person dares to do with a row.
 pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
     let mut by_key: FxHashMap<String, ProgramGroup> = FxHashMap::default();
 
@@ -113,7 +116,8 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
     }
     disambiguate(&mut groups);
     groups.sort_by(|a, b| {
-        b.entry_count().cmp(&a.entry_count()).then_with(|| {
+        // `false` sorts before `true`, so the user's own programs come first.
+        a.is_system.cmp(&b.is_system).then_with(|| {
             a.display_name
                 .to_lowercase()
                 .cmp(&b.display_name.to_lowercase())
@@ -175,20 +179,26 @@ mod tests {
     }
 
     #[test]
-    fn groups_are_sorted_by_size_then_name() {
+    fn groups_are_alphabetical_with_system_components_last() {
         let scan = synthetic::scan_result(200);
         let mut names = NameResolver::new();
         let groups = build(&scan, &mut names);
 
         for pair in groups.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
             assert!(
-                pair[0].entry_count() >= pair[1].entry_count(),
-                "{} ({}) before {} ({})",
-                pair[0].display_name,
-                pair[0].entry_count(),
-                pair[1].display_name,
-                pair[1].entry_count()
+                !a.is_system || b.is_system,
+                "a system component came before {} which is not one",
+                b.display_name
             );
+            if a.is_system == b.is_system {
+                assert!(
+                    a.display_name.to_lowercase() <= b.display_name.to_lowercase(),
+                    "{} before {}",
+                    a.display_name,
+                    b.display_name
+                );
+            }
         }
     }
 

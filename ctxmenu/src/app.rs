@@ -3227,7 +3227,38 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        // Two blocks instead of a badge under every second
+                        // row. "Belongs to Windows" is the one property that
+                        // changes what a person dares to do with a row, and as
+                        // an indented line below each entry it also read as if
+                        // it belonged to the row *underneath* it.
+                        let mut block: Option<bool> = None;
+
                         for (index, group) in groups.iter().enumerate() {
+                            if block != Some(group.is_system) {
+                                block = Some(group.is_system);
+                                let count = groups
+                                    .iter()
+                                    .filter(|g| g.is_system == group.is_system)
+                                    .count();
+                                if index > 0 {
+                                    ui.add_space(6.0);
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}  ({count})",
+                                        if group.is_system {
+                                            tr.grp_system_programs
+                                        } else {
+                                            tr.grp_own_programs
+                                        }
+                                    ))
+                                    .weak()
+                                    .small(),
+                                );
+                                ui.separator();
+                            }
+
                             let selected = *selected_group == Some(index);
                             let gone = group.presence == Presence::Missing;
 
@@ -3269,7 +3300,11 @@ impl App {
                                 clicked = Some(index);
                             }
                             // The full path is long and only occasionally
-                            // wanted, so it lives in the tooltip.
+                            // wanted, so it lives in the tooltip — and the red
+                            // row says the rest there rather than in a line of
+                            // its own. In the list the colour is the message;
+                            // the sentence belongs in the detail pane, where
+                            // there is room to say what it means.
                             if gone {
                                 response.on_hover_text(format!(
                                     "{}\n{}",
@@ -3277,23 +3312,6 @@ impl App {
                                 ));
                             } else {
                                 response.on_hover_text(&group.key);
-                            }
-
-                            if group.is_system || gone {
-                                ui.indent(index, |ui| {
-                                    if gone {
-                                        ui.colored_label(
-                                            ui.visuals().error_fg_color,
-                                            tr.badge_uninstalled,
-                                        );
-                                    }
-                                    if group.is_system {
-                                        ui.colored_label(
-                                            ui.visuals().weak_text_color(),
-                                            tr.badge_system,
-                                        );
-                                    }
-                                });
                             }
                         }
                         ui.take_available_space();
@@ -3537,10 +3555,28 @@ impl App {
                     return;
                 };
 
+                // Looked up in the groups rather than on disk: the file system
+                // has no business in a frame path, and the answer was worked
+                // out once when the view was built.
+                let gone = entry.program_key.as_deref().is_some_and(|key| {
+                    let resolved = crate::program::identity::absolute_path(key).to_lowercase();
+                    self.groups
+                        .iter()
+                        .any(|g| g.key == resolved && g.presence == Presence::Missing)
+                });
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         field(ui, self.tr.detail_display_name, &entry.display_name);
+                        // Here the sentence, in the list only the colour: this
+                        // is where there is room to say what a red row means.
+                        if gone {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                self.tr.detail_program_gone,
+                            );
+                        }
                         field(ui, self.tr.detail_registry_path, &entry.registry_path);
                         if let Some(raw) = &entry.raw_display {
                             field(ui, self.tr.detail_raw_value, raw);
