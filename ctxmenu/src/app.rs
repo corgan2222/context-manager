@@ -210,6 +210,120 @@ fn push_with_children(rows: &mut Vec<Row>, entry: &ContextEntry, row: Row) {
     }
 }
 
+/// Whether the selected rows agree on one property, and on what.
+///
+/// A segmented switch can only light one segment when every selected row is in
+/// it. `Mixed` is not an error: picking one hidden and one visible entry is a
+/// normal thing to do, and it simply means no segment is the current one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Agreement<T> {
+    /// Nothing selected, or nothing the scan still knows about.
+    Empty,
+    Same(T),
+    Mixed,
+}
+
+fn agreement<T: PartialEq>(values: impl IntoIterator<Item = T>) -> Agreement<T> {
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return Agreement::Empty;
+    };
+    match values.all(|other| other == first) {
+        true => Agreement::Same(first),
+        false => Agreement::Mixed,
+    }
+}
+
+/// What the action bar needs to know about the selection, in one pass.
+///
+/// The bar asks the same rows six questions, and answering one means walking
+/// each row's submenu path through `resolve`. Doing that once per frame beats
+/// doing it once per switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectionState {
+    /// Rows the user picked, whether or not the scan still knows them.
+    count: usize,
+    /// Of those, the ones the scan could still resolve. Lower than `count` for
+    /// a frame after a rescan replaced the entries behind the rows.
+    resolved: usize,
+    /// Rows naming a key this program may address at all — the `RegTarget`
+    /// check that `plan_for_selection` applies (everything outside `\Classes`,
+    /// the CommandStore above all, drops out here).
+    changeable: usize,
+    /// How many are marked read-only. A number, not a veto: an elevated run
+    /// can write what an ordinary one cannot, which is why
+    /// `plan_for_selection` deliberately keeps such rows in the plan.
+    read_only: usize,
+    /// How many carry a CLSID — the one thing blocking needs.
+    blockable: usize,
+    hidden: Agreement<bool>,
+    extended: Agreement<bool>,
+    /// Over the rows that *have* a CLSID only: the switch acts on those, so it
+    /// is their state it should be showing.
+    blocked: Agreement<bool>,
+    position: Agreement<Option<String>>,
+}
+
+/// Sums up the selection for the action bar.
+fn selection_state(
+    scan: Option<&ScanResult>,
+    selected: &rustc_hash::FxHashSet<Row>,
+) -> SelectionState {
+    let mut state = SelectionState {
+        count: selected.len(),
+        resolved: 0,
+        changeable: 0,
+        read_only: 0,
+        blockable: 0,
+        hidden: Agreement::Empty,
+        extended: Agreement::Empty,
+        blocked: Agreement::Empty,
+        position: Agreement::Empty,
+    };
+
+    let Some(scan) = scan else {
+        return state;
+    };
+
+    let entries: Vec<&ContextEntry> = selected
+        .iter()
+        .filter_map(|row| resolve(scan, row))
+        .collect();
+
+    state.resolved = entries.len();
+    state.read_only = entries.iter().filter(|entry| entry.read_only).count();
+    state.changeable = entries
+        .iter()
+        .filter(|entry| crate::registry::paths::RegTarget::parse(&entry.registry_path).is_ok())
+        .count();
+    state.blockable = entries
+        .iter()
+        .filter(|entry| clsid_of(entry).is_some())
+        .count();
+
+    state.hidden = agreement(entries.iter().map(|entry| entry.hidden));
+    state.extended = agreement(entries.iter().map(|entry| entry.extended));
+    state.position = agreement(entries.iter().map(|entry| entry.position.clone()));
+    state.blocked = agreement(entries.iter().filter_map(|entry| match &entry.kind {
+        EntryKind::ShellEx { clsid, blocked, .. } if !clsid.is_empty() => Some(*blocked),
+        _ => None,
+    }));
+
+    state
+}
+
+/// The CLSID of a COM handler, if this entry is one and names it.
+///
+/// The same condition `plan_for_selection` uses to decide whether a row can be
+/// blocked at all — shared so the greyed-out switch and the plan cannot
+/// disagree about what is blockable.
+fn clsid_of(entry: &ContextEntry) -> Option<&str> {
+    match &entry.kind {
+        EntryKind::ShellEx { clsid, .. } if !clsid.is_empty() => Some(clsid),
+        _ => None,
+    }
+}
+
 /// What the scan thread reports back.
 enum ScanMessage {
     Progress(ScanProgress),
@@ -1316,10 +1430,7 @@ impl App {
                 continue;
             };
 
-            let clsid = match &entry.kind {
-                EntryKind::ShellEx { clsid, .. } if !clsid.is_empty() => Some(clsid.clone()),
-                _ => None,
-            };
+            let clsid = clsid_of(entry).map(str::to_string);
             // Blocking is a COM-handler mechanism; a static verb has no CLSID
             // and no equivalent, which is why ToDo 11.3 offers LegacyDisable
             // there instead.
@@ -1426,7 +1537,10 @@ impl App {
             Ok(token) => {
                 let directory = token.directory().display().to_string();
                 self.reload_backups();
-                self.dialog = Some(Dialog::Error(
+                // A backup that worked is not an error. This said so in the
+                // red error window for as long as the button existed, which
+                // made a successful safety net look like a fault.
+                self.dialog = Some(Dialog::Note(
                     self.tr.fmt_backup_created.replace("{}", &directory),
                 ));
             }
@@ -1472,7 +1586,7 @@ impl App {
             Ok(Ok(directory)) => {
                 self.full_backup_rx = None;
                 self.reload_backups();
-                self.dialog = Some(Dialog::Error(
+                self.dialog = Some(Dialog::Note(
                     self.tr.fmt_backup_created.replace("{}", &directory),
                 ));
             }
@@ -1716,6 +1830,51 @@ impl App {
                     self.start_scan(ctx);
                 }
 
+                // These two live up here rather than in the action bar below
+                // because neither one acts on the selection: a new entry is
+                // created from nothing, and a backup without a selection covers
+                // everything visible. Down there they were the two buttons that
+                // stayed live while the rest went grey, which is exactly what
+                // made the greying look arbitrary.
+                //
+                // Drawn on every tab, greyed on the two that keep their own
+                // lists: dropping a widget shifts the automatic ids of the ones
+                // after it, and the search box is one of those.
+                let on_entries = !matches!(self.tab, Tab::Backups | Tab::Favourites);
+                if ui
+                    .add_enabled(on_entries, egui::Button::new(self.tr.editor_new))
+                    .on_hover_text(self.tr.tip_editor_new)
+                    .on_disabled_hover_text(self.tr.tip_entry_tabs_only)
+                    .clicked()
+                {
+                    self.dialog = Some(Dialog::Editor {
+                        entry: Box::new(NewEntry {
+                            category: self.category_for_new(),
+                            key_name: String::new(),
+                            display_name: String::new(),
+                            command: String::new(),
+                            icon: None,
+                            position: None,
+                            extended: false,
+                            children: Vec::new(),
+                        }),
+                        recorded: create::recorded().unwrap_or_default(),
+                        existing: None,
+                    });
+                }
+
+                // "Look first, decide later" is a legitimate way to use this
+                // program, and until this button existed a backup only ever
+                // happened as a side effect of changing something.
+                if ui
+                    .add_enabled(on_entries, egui::Button::new(self.tr.btn_backup_now))
+                    .on_hover_text(self.tr.tip_backup_now)
+                    .on_disabled_hover_text(self.tr.tip_entry_tabs_only)
+                    .clicked()
+                {
+                    self.backup_now();
+                }
+
                 let search = ui
                     .add(
                         egui::TextEdit::singleline(&mut self.search)
@@ -1791,6 +1950,20 @@ impl App {
     ///
     /// Delete sits at the far end behind a separator, and never as the first
     /// thing under the cursor.
+    /// The bar between the tabs and the table. Everything in it acts on the
+    /// selected rows, and nothing in it acts on anything else.
+    ///
+    /// That split is the point. Until 2026-08-15 the bar mixed the two: "new
+    /// entry" and "back up now" need no selection and were therefore always
+    /// live, while the six flag buttons beside them were grey most of the
+    /// time. The greying looked arbitrary because the bar was answering two
+    /// different questions at once. Those two buttons moved up into the tab
+    /// row, and what is left obeys one sentence — pick rows, then use these.
+    ///
+    /// The six flag buttons themselves became three switches. `Hide` and
+    /// `Show` are not two things a user wants, they are two directions on one
+    /// axis, and a switch can show which end the selection is at — which no
+    /// arrangement of separate buttons can.
     fn action_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         // Both of these tabs act on their own list, not on scanned entries;
         // a bar full of buttons that would apply to nothing is worse than no
@@ -1804,94 +1977,46 @@ impl App {
         // behind them stay live — and pressing one would replace the dialog
         // and throw away the plan waiting inside it.
         let idle = self.dialog.is_none();
+        let state = selection_state(self.scan.as_ref(), &self.selected);
+        let any = state.count > 0;
+        let tr = self.tr;
+
+        // Gathered here and acted on after the panel closes. `propose` swaps
+        // the dialog out, and doing that halfway through drawing the bar would
+        // leave the rest of it drawn against a state nobody has seen yet.
+        let mut wanted = None;
+        let mut select_all = false;
+        let mut select_none = false;
 
         egui::Panel::top("actions").show(ui, |ui| {
-            ui.add_space(2.0);
+            ui.add_space(3.0);
             ui.add_enabled_ui(idle, |ui| {
-                ui.horizontal(|ui| {
-                    let count = self.selected.len();
-                    let any = count > 0;
-
-                    ui.label(self.tr.fmt_selected_count.replace("{}", &count.to_string()));
-                    ui.separator();
-
-                    // Creating one's own entry does not act on the selection, so
-                    // it sits before the selection controls rather than among the
-                    // actions that do.
-                    if ui
-                        .button(self.tr.editor_new)
-                        .on_hover_text(self.tr.tip_editor_new)
-                        .clicked()
-                    {
-                        self.dialog = Some(Dialog::Editor {
-                            entry: Box::new(NewEntry {
-                                category: self.category_for_new(),
-                                key_name: String::new(),
-                                display_name: String::new(),
-                                command: String::new(),
-                                icon: None,
-                                position: None,
-                                extended: false,
-                                children: Vec::new(),
-                            }),
-                            recorded: create::recorded().unwrap_or_default(),
-                            existing: None,
-                        });
-                    }
-                    ui.separator();
+                // Wrapped rather than one fixed row: four groups and a delete
+                // button are wider than this window has to be, and the old bar
+                // ran off the right edge instead of moving to a second line.
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(selection_summary(tr, &state));
 
                     if ui
-                        .button(self.tr.btn_select_all)
-                        .on_hover_text(self.tr.tip_select_all)
+                        .button(tr.btn_select_all)
+                        .on_hover_text(tr.tip_select_all)
                         .clicked()
                     {
-                        self.selected = self.visible_rows.iter().cloned().collect();
+                        select_all = true;
                     }
                     if ui
-                        .add_enabled(any, egui::Button::new(self.tr.btn_select_none))
-                        .on_hover_text(self.tr.tip_select_none)
-                        .on_disabled_hover_text(self.tr.tip_select_none)
+                        .add_enabled(any, egui::Button::new(tr.btn_select_none))
+                        .on_hover_text(tr.tip_select_none)
+                        .on_disabled_hover_text(tr.tip_select_none)
                         .clicked()
                     {
-                        self.clear_selection();
+                        select_none = true;
                     }
 
                     ui.separator();
 
-                    // Backing up without changing anything. Its own button because
-                    // "look first, decide later" is a legitimate way to use this
-                    // program, and until now a backup only ever happened as a side
-                    // effect of changing something.
-                    if ui
-                        .button(self.tr.btn_backup_now)
-                        .on_hover_text(self.tr.tip_backup_now)
-                        .clicked()
-                    {
-                        self.backup_now();
-                    }
-
-                    ui.separator();
-
-                    for (label, tip, action) in [
-                        (self.tr.btn_disable, self.tr.tip_disable, Action::Hide),
-                        (
-                            self.tr.btn_shift_only,
-                            self.tr.tip_shift_only,
-                            Action::ShiftOnly,
-                        ),
-                        (self.tr.btn_block, self.tr.tip_block, Action::Block),
-                    ] {
-                        if ui
-                            .add_enabled(any, egui::Button::new(label))
-                            .on_hover_text(tip)
-                            // Without this a greyed-out button explains nothing —
-                            // and "why can I not press this" is exactly the moment
-                            // somebody reaches for a tooltip.
-                            .on_disabled_hover_text(tip)
-                            .clicked()
-                        {
-                            self.propose(action);
-                        }
+                    if let Some(action) = switch_groups(ui, tr, &state) {
+                        wanted = Some(action);
                     }
 
                     ui.separator();
@@ -1899,75 +2024,43 @@ impl App {
                     // Visually set apart: this is the one action a backup cannot
                     // be shrugged off for.
                     let delete = egui::Button::new(
-                        egui::RichText::new(self.tr.btn_delete).color(ui.visuals().error_fg_color),
+                        egui::RichText::new(tr.btn_delete).color(ui.visuals().error_fg_color),
                     );
                     if ui
                         .add_enabled(any, delete)
-                        .on_hover_text(self.tr.tip_delete)
-                        .on_disabled_hover_text(self.tr.tip_delete)
+                        .on_hover_text(tr.tip_delete)
+                        .on_disabled_hover_text(match any {
+                            true => tr.tip_delete,
+                            false => tr.tip_needs_selection,
+                        })
                         .clicked()
                     {
-                        self.propose(Action::Delete);
+                        wanted = Some(Action::Delete);
                     }
+                    // Next to the one button that reads as dangerous, which is
+                    // where the reassurance is worth reading.
+                    ui.small(tr.msg_backup_first);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(if elevation::is_elevated() {
-                            self.tr.status_elevated
-                        } else {
-                            self.tr.status_not_elevated
+                        ui.label(match elevation::is_elevated() {
+                            true => tr.status_elevated,
+                            false => tr.status_not_elevated,
                         });
                     });
                 });
             });
-            ui.add_space(2.0);
+            ui.add_space(3.0);
         });
 
-        // Always created, even with nothing selected, and greyed out
-        // instead. A panel that comes and goes shifts the automatic widget ids
-        // of every panel after it, and egui resolves clicks against the
-        // previous frame's rectangles — so the frame right after a selection
-        // change could drop a click on the tree.
-        let any_selected = !self.selected.is_empty() && idle;
-        egui::Panel::top("actions_undo").show(ui, |ui| {
-            ui.add_enabled_ui(any_selected, |ui| {
-                ui.horizontal(|ui| {
-                    ui.small(self.tr.msg_backup_first);
-                    ui.separator();
-                    // The inverses, deliberately smaller: undoing is a normal
-                    // thing to want, but it is not what the bar is for.
-                    for (label, action) in [
-                        (self.tr.act_show, Action::Show),
-                        (self.tr.act_always_show, Action::AlwaysShow),
-                        (self.tr.act_unblock, Action::Unblock),
-                    ] {
-                        if ui.small_button(label).clicked() {
-                            self.propose(action);
-                        }
-                    }
-
-                    ui.separator();
-                    // Both values verified on Windows 10 by writing probe verbs
-                    // and photographing a real right-click: an entry with Top
-                    // rises above alphabetically earlier siblings, one with
-                    // Bottom sinks below everything. Only three coarse blocks are
-                    // on offer, which is all Windows actually gives.
-                    ui.small(format!("{}:", self.tr.detail_position));
-                    for (label, value) in [
-                        (self.tr.pos_top, Some("Top")),
-                        (self.tr.pos_bottom, Some("Bottom")),
-                        (self.tr.pos_default, None),
-                    ] {
-                        if ui
-                            .small_button(label)
-                            .on_hover_text(self.tr.tip_position)
-                            .clicked()
-                        {
-                            self.propose(Action::SetPosition(value.map(str::to_string)));
-                        }
-                    }
-                });
-            });
-        });
+        if select_all {
+            self.selected = self.visible_rows.iter().cloned().collect();
+        }
+        if select_none {
+            self.clear_selection();
+        }
+        if let Some(action) = wanted {
+            self.propose(action);
+        }
         let _ = ctx;
     }
 
@@ -3795,6 +3888,16 @@ impl App {
                 ui.heading(self.tr.detail_title);
                 ui.separator();
 
+                // Nothing selected means nobody has worked with this window
+                // yet — `rebuild_visible` focuses the first row by itself, so
+                // an empty detail pane is not the signal it looks like. The
+                // three steps go away at the first click or arrow key, because
+                // both of those select, and that is exactly how long they are
+                // worth reading.
+                if self.selected.is_empty() {
+                    intro(ui, self.tr);
+                }
+
                 // Through `resolve`, so the detail pane shows the submenu
                 // child that was clicked rather than its parent.
                 let Some(entry) = self
@@ -4528,8 +4631,12 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
 /// Test-only because the buttons carry their own literals — a list the code
 /// indexed into would be less readable at every call site than the character
 /// itself, and it is the *checking* that has to be complete, not the plumbing.
+///
+/// The padlock is in here late: `badges` had been drawing it since the table
+/// existed without it ever being listed, so the one glyph on every read-only
+/// row was the one glyph nothing checked.
 #[cfg(test)]
-const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}";
+const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}\u{2195}\u{1f441}\u{1f6ab}\u{1f512}";
 
 /// What Windows substitutes in a command line, and what each one means.
 ///
@@ -4924,6 +5031,276 @@ fn detail_text(entry: &ContextEntry) -> &str {
     }
 }
 
+/// What this program is, in three steps and one promise.
+///
+/// It sits in the detail pane rather than in a window of its own: that pane is
+/// where the eye goes before anything has been clicked, it is already
+/// scrollable, and a dialog on first start would have to be dismissed by
+/// people who never needed it.
+fn intro(ui: &mut Ui, tr: &'static Strings) {
+    ui.label(egui::RichText::new(tr.intro_title).strong());
+    ui.add_space(6.0);
+    for step in [tr.intro_step_one, tr.intro_step_two, tr.intro_step_three] {
+        ui.add(egui::Label::new(step).wrap());
+        ui.add_space(4.0);
+    }
+    ui.add_space(4.0);
+    ui.add(egui::Label::new(egui::RichText::new(tr.intro_safety).weak().small()).wrap());
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(4.0);
+}
+
+/// The line above the switches: what is selected, or what to do about that.
+///
+/// It replaces a bare "0 ausgewählt". The count was true and useless — it sat
+/// at the far left of a bar full of grey buttons and never connected the two,
+/// so the reason everything was disabled went unread.
+fn selection_summary(tr: &'static Strings, state: &SelectionState) -> String {
+    if state.count == 0 {
+        return tr.hint_no_selection.to_string();
+    }
+    if state.read_only > 0 {
+        // Said here rather than discovered in the report afterwards: these
+        // rows stay in the plan on purpose, and knowing beforehand that some
+        // of them need administrator rights is the difference between a
+        // surprise and a decision.
+        return tr
+            .fmt_selection_readonly
+            .replacen("{}", &state.count.to_string(), 1)
+            .replacen("{}", &state.read_only.to_string(), 1);
+    }
+    tr.fmt_selected_count
+        .replace("{}", &state.count.to_string())
+}
+
+/// The four state switches, and the action a click on one of them asks for.
+///
+/// Each group is one axis with the selection sitting somewhere on it. Where
+/// there used to be a button per direction — `Hide` here, `Show` a row below in
+/// a smaller size — there is now one group per axis that also answers the
+/// question the buttons never did: which end are these entries at right now?
+fn switch_groups(ui: &mut Ui, tr: &'static Strings, state: &SelectionState) -> Option<Action> {
+    let mut wanted = None;
+
+    // With nothing selected every group is off for the same reason, so they
+    // all give the same answer when hovered.
+    let needs_rows = (state.count == 0).then_some(tr.tip_needs_selection);
+
+    if let Some(index) = switch_group(
+        ui,
+        "👁",
+        mixed_marker(tr, state.hidden == Agreement::Mixed),
+        &group_tip(tr.group_visibility, tr.tip_group_visibility),
+        needs_rows,
+        &[
+            (tr.seg_visible, state.hidden == Agreement::Same(false)),
+            (tr.seg_hidden, state.hidden == Agreement::Same(true)),
+        ],
+    ) {
+        wanted = Some(match index {
+            0 => Action::Show,
+            _ => Action::Hide,
+        });
+    }
+
+    // The same arrow the table draws on an entry that carries `Extended`, so
+    // the badge in the row and the switch that changes it are one vocabulary.
+    if let Some(index) = switch_group(
+        ui,
+        "⇧",
+        mixed_marker(tr, state.extended == Agreement::Mixed),
+        &group_tip(tr.group_shift, tr.tip_group_shift),
+        needs_rows,
+        &[
+            (tr.seg_always, state.extended == Agreement::Same(false)),
+            (tr.seg_shift_only, state.extended == Agreement::Same(true)),
+        ],
+    ) {
+        wanted = Some(match index {
+            0 => Action::AlwaysShow,
+            _ => Action::ShiftOnly,
+        });
+    }
+
+    // Blocking is a COM-handler mechanism, so a selection of static verbs
+    // cannot use it. The old bar offered the button anyway and answered with
+    // an error window after the click; the reason is known before it.
+    let blocking = needs_rows.or((state.blockable == 0).then_some(tr.tip_needs_clsid));
+    // Not the padlock: that one already means "read-only" in the table, and
+    // two meanings for one symbol is worse than no symbol.
+    if let Some(index) = switch_group(
+        ui,
+        "🚫",
+        mixed_marker(tr, state.blocked == Agreement::Mixed),
+        &group_tip(tr.group_systemwide, tr.tip_group_systemwide),
+        blocking,
+        &[
+            (tr.seg_free, state.blocked == Agreement::Same(false)),
+            (tr.seg_blocked, state.blocked == Agreement::Same(true)),
+        ],
+    ) {
+        wanted = Some(match index {
+            0 => Action::Unblock,
+            _ => Action::Block,
+        });
+    }
+
+    // Both values verified on Windows 10 by writing probe verbs and
+    // photographing a real right-click: an entry with Top rises above
+    // alphabetically earlier siblings, one with Bottom sinks below everything.
+    // Three coarse blocks are all Windows actually gives.
+    let at = |value: Option<&str>| state.position == Agreement::Same(value.map(str::to_string));
+    let top = format!("↑ {}", tr.pos_top);
+    let bottom = format!("↓ {}", tr.pos_bottom);
+    if let Some(index) = switch_group(
+        ui,
+        "↕",
+        mixed_marker(tr, state.position == Agreement::Mixed),
+        &group_tip(tr.group_position, tr.tip_position),
+        needs_rows,
+        &[
+            (tr.pos_default, at(None)),
+            (&top, at(Some("Top"))),
+            (&bottom, at(Some("Bottom"))),
+        ],
+    ) {
+        wanted = Some(Action::SetPosition(match index {
+            1 => Some("Top".to_string()),
+            2 => Some("Bottom".to_string()),
+            _ => None,
+        }));
+    }
+
+    wanted
+}
+
+/// One titled group of segments, drawn as a unit.
+///
+/// `ui.group` rather than loose widgets for two reasons: the frame is the only
+/// thing on screen saying that these are four groups and not nine buttons, and
+/// it keeps a title with its own segments when the bar wraps to a second line.
+///
+/// A lit segment is where the selection already is, so clicking it would ask
+/// for a change that has already happened. It stays clickable rather than
+/// being disabled — with a mixed selection the lit segment is the one worth
+/// clicking, to bring the rest into line.
+fn switch_group(
+    ui: &mut Ui,
+    symbol: &str,
+    mixed: Option<&str>,
+    tip: &str,
+    reason: Option<&str>,
+    segments: &[(&str, bool)],
+) -> Option<usize> {
+    // A wrapping row breaks between widgets whose width it is told in advance,
+    // and `ui.group` never tells it: the frame takes the rest of the line and
+    // reports what it used afterwards. Measured at 1267 points, that pushed the
+    // last two groups off the right edge instead of onto a second line — the
+    // same complaint the old bar earned. Reserving the measured width first
+    // gives the row something to decide with.
+    let needed = group_width(ui, symbol, mixed, segments);
+    // The height has to be reserved too, and honestly: with zero the groups
+    // came out as a staircase, each one starting a little lower than the last,
+    // because a wrapping row aligns what it is given and was given nothing.
+    let height = group_height(ui);
+    let mut clicked = None;
+    ui.allocate_ui_with_layout(
+        egui::vec2(needed, height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.group(|ui| {
+                // The symbol at full size and the words small beside it. Both
+                // in one small label — which is what this was at first — turned
+                // the symbol into a speck: the part meant to be recognisable at
+                // a glance was the least legible thing in the group.
+                let spacing = ui.spacing().item_spacing.x;
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.label(symbol);
+                // Only when the rows disagree. A group carrying its name in
+                // words was wider than the name was worth — the segments say
+                // what the choice is, and the name is one hover away. "gemischt"
+                // is not: without it a mixed selection, where no segment lights
+                // up, looks exactly like an empty one.
+                if let Some(mixed) = mixed {
+                    ui.label(egui::RichText::new(mixed).weak().small());
+                }
+                ui.spacing_mut().item_spacing.x = spacing;
+                for (index, (label, current)) in segments.iter().enumerate() {
+                    // `Button::selectable`, not `SelectableLabel`: egui 0.36
+                    // folded the second into the first, and the tab row above
+                    // takes the same shape through `ui.selectable_label`.
+                    let response = ui
+                        .add_enabled(reason.is_none(), egui::Button::selectable(*current, *label))
+                        .on_hover_text(tip)
+                        // A greyed-out control that explains nothing is the
+                        // thing this whole bar was rebuilt to get rid of.
+                        .on_disabled_hover_text(reason.unwrap_or(tip));
+                    if response.clicked() {
+                        clicked = Some(index);
+                    }
+                }
+            });
+        },
+    );
+    clicked
+}
+
+/// How much room a switch group is about to need.
+///
+/// Measured against the fonts actually loaded rather than guessed at with a
+/// constant: the German labels are longer than the English ones, the user can
+/// switch language at runtime, and a wrong guess here shows up as a group
+/// hanging over the right edge.
+fn group_width(ui: &Ui, symbol: &str, mixed: Option<&str>, segments: &[(&str, bool)]) -> f32 {
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    // Through the painter rather than `ui.fonts`: laying text out fills a cache
+    // and therefore needs `&mut`, which the closure form does not hand out.
+    // Nothing is drawn — the galley is measured and dropped.
+    let measure = |text: &str, font: &egui::FontId| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+
+    let spacing = ui.spacing().item_spacing.x;
+    let padding = ui.spacing().button_padding.x * 2.0;
+    let mut width = measure(symbol, &body) + 3.0 + mixed.map_or(0.0, |text| measure(text, &small));
+    for (label, _) in segments {
+        width += spacing + padding + measure(label, &body);
+    }
+    // The frame's own border and inner margin, plus the gap to the next group.
+    width + spacing * 2.0 + 16.0
+}
+
+/// How tall a switch group comes out, frame included.
+fn group_height(ui: &Ui) -> f32 {
+    let frame = egui::Frame::group(ui.style());
+    let content = ui
+        .spacing()
+        .interact_size
+        .y
+        .max(ui.text_style_height(&egui::TextStyle::Body))
+        + ui.spacing().button_padding.y * 2.0;
+    content + frame.inner_margin.sum().y + frame.stroke.width * 2.0
+}
+
+/// The word for a selection that does not agree with itself, or nothing.
+fn mixed_marker(tr: &'static Strings, mixed: bool) -> Option<&'static str> {
+    mixed.then_some(tr.seg_mixed)
+}
+
+/// What a group is about, in front of what it does.
+///
+/// The name used to stand beside the symbol and now only lives here: with the
+/// words gone from the bar, the tooltip is the one place left that says which
+/// of the three mechanisms this symbol stands for.
+fn group_tip(name: &str, explanation: &str) -> String {
+    format!("{name} — {explanation}")
+}
+
 fn badges(ui: &mut Ui, entry: &ContextEntry, tr: &'static Strings) {
     // Colours come out of the current visuals rather than being fixed: the
     // same RGB is not equally readable in both themes (ToDo 9.2).
@@ -5178,6 +5555,114 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::synthetic;
+
+    fn rows(indices: &[usize]) -> rustc_hash::FxHashSet<Row> {
+        indices.iter().map(|index| Row::top(*index)).collect()
+    }
+
+    #[test]
+    fn agreement_needs_something_to_agree_about() {
+        assert_eq!(agreement(Vec::<bool>::new()), Agreement::Empty);
+        assert_eq!(agreement([true]), Agreement::Same(true));
+        assert_eq!(agreement([false, false, false]), Agreement::Same(false));
+        assert_eq!(agreement([true, false]), Agreement::Mixed);
+    }
+
+    #[test]
+    fn an_empty_selection_leaves_every_switch_without_a_current_segment() {
+        let scan = synthetic::scan_result(8);
+        let state = selection_state(Some(&scan), &rows(&[]));
+
+        assert_eq!(state.count, 0);
+        assert_eq!(state.resolved, 0);
+        assert_eq!(state.hidden, Agreement::Empty);
+        assert_eq!(state.extended, Agreement::Empty);
+        assert_eq!(state.blocked, Agreement::Empty);
+        assert_eq!(state.position, Agreement::Empty);
+    }
+
+    #[test]
+    fn a_selection_that_agrees_says_so() {
+        let mut scan = synthetic::scan_result(8);
+        for entry in &mut scan.entries {
+            entry.hidden = true;
+            entry.extended = false;
+            entry.position = Some("Top".into());
+        }
+
+        let state = selection_state(Some(&scan), &rows(&[0, 1, 2]));
+
+        assert_eq!(state.count, 3);
+        assert_eq!(state.resolved, 3);
+        assert_eq!(state.hidden, Agreement::Same(true));
+        assert_eq!(state.extended, Agreement::Same(false));
+        assert_eq!(state.position, Agreement::Same(Some("Top".to_string())));
+    }
+
+    #[test]
+    fn one_dissenter_is_enough_to_light_no_segment() {
+        let mut scan = synthetic::scan_result(8);
+        for entry in &mut scan.entries {
+            entry.hidden = true;
+        }
+        scan.entries[2].hidden = false;
+
+        let state = selection_state(Some(&scan), &rows(&[0, 1, 2]));
+
+        assert_eq!(state.hidden, Agreement::Mixed);
+    }
+
+    #[test]
+    fn a_selection_without_a_com_handler_has_no_blocked_state_at_all() {
+        let scan = synthetic::scan_result(8);
+        // Every fourth synthetic entry is a COM handler; 0..=2 are static
+        // verbs, and a static verb has no CLSID to put on the blocked list.
+        let verbs = selection_state(Some(&scan), &rows(&[0, 1, 2]));
+        assert_eq!(verbs.blockable, 0);
+        assert_eq!(
+            verbs.blocked,
+            Agreement::Empty,
+            "no CLSID means no answer, not the answer 'free'"
+        );
+
+        // Mixing one in: only that row counts towards the blocking switch.
+        let mixed = selection_state(Some(&scan), &rows(&[0, 1, 3]));
+        assert_eq!(mixed.blockable, 1);
+        assert_eq!(mixed.blocked, Agreement::Same(true), "entry 3 is blocked");
+    }
+
+    #[test]
+    fn a_row_the_scan_no_longer_knows_is_counted_but_not_read() {
+        let scan = synthetic::scan_result(4);
+        let state = selection_state(Some(&scan), &rows(&[0, 99]));
+
+        assert_eq!(state.count, 2, "the user did select two rows");
+        assert_eq!(state.resolved, 1, "one of them no longer exists");
+    }
+
+    #[test]
+    fn read_only_rows_are_counted_rather_than_dropped() {
+        let mut scan = synthetic::scan_result(4);
+        scan.entries[0].read_only = true;
+        scan.entries[1].read_only = true;
+
+        let state = selection_state(Some(&scan), &rows(&[0, 1, 2]));
+
+        // Reported, not vetoed: `plan_for_selection` keeps such rows on
+        // purpose, and an elevated run can write what this one cannot.
+        assert_eq!(state.read_only, 2);
+        assert_eq!(state.resolved, 3);
+    }
+
+    #[test]
+    fn without_a_scan_only_the_count_is_known() {
+        let state = selection_state(None, &rows(&[0, 1]));
+
+        assert_eq!(state.count, 2);
+        assert_eq!(state.resolved, 0);
+        assert_eq!(state.changeable, 0);
+        assert_eq!(state.hidden, Agreement::Empty);
+    }
 
     #[test]
     fn a_new_entry_starts_where_the_user_is_looking() {
