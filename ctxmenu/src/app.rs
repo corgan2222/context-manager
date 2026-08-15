@@ -3798,9 +3798,12 @@ impl App {
                 Ok(target) => {
                     elevation::notify_shell();
                     self.start_scan(ctx);
-                    self.dialog = Some(Dialog::Error(
-                        self.tr.fmt_fav_placed.replace("{}", &target.full_path()),
-                    ));
+                    // `Created`, not `Error`. Announcing a finished entry in a
+                    // red window titled "Error", under a button that says
+                    // Cancel, tells the user the opposite of what happened --
+                    // and this one also carries the question that always
+                    // follows, which is whether to restart Explorer.
+                    self.dialog = Some(Dialog::Created(target.full_path()));
                 }
                 Err(error) => {
                     self.dialog = Some(Dialog::Error(format!("{error:#}")));
@@ -4178,17 +4181,52 @@ impl App {
 
             Dialog::Error(message) => {
                 let mut close = false;
+                let mut copy = false;
                 egui::Window::new(self.tr.title_error)
                     .collapsible(false)
                     .resizable(false)
+                    .max_width(560.0)
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ui.ctx(), |ui| {
-                        ui.colored_label(ui.visuals().error_fg_color, &message);
-                        ui.add_space(6.0);
-                        if ui.button(self.tr.btn_cancel).clicked() {
-                            close = true;
+                        // Wrapped, because an error carrying a registry path or
+                        // a service's answer is longer than a window is wide,
+                        // and a message cut off at the edge cannot be acted on.
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&message).color(ui.visuals().error_fg_color),
+                            )
+                            .wrap(),
+                        );
+
+                        // What the message means, in the cases where the
+                        // wording alone leaves the user guessing. The text
+                        // above says what went wrong; this says what to do.
+                        if let Some(advice) = advice_for(&message, self.tr) {
+                            ui.add_space(6.0);
+                            ui.add(egui::Label::new(advice).wrap());
                         }
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            // "Cancel" was wrong here: there is nothing left to
+                            // call off, the thing already failed.
+                            if ui.button(self.tr.btn_close).clicked() {
+                                close = true;
+                            }
+                            // So the message can go into a bug report without
+                            // being typed off the screen.
+                            if ui
+                                .button(labelled(self.glyphs.copy, self.tr.btn_copy_error))
+                                .on_hover_text(self.tr.tip_copy_error)
+                                .clicked()
+                            {
+                                copy = true;
+                            }
+                        });
                     });
+                if copy {
+                    ui.ctx().copy_text(message.clone());
+                }
                 if !close {
                     self.dialog = Some(Dialog::Error(message));
                 }
@@ -6175,9 +6213,16 @@ fn settings_json(
         let value = match &field.kind {
             spec::FieldKind::Flag => serde_json::Value::Bool(raw == "true"),
             spec::FieldKind::Number { .. } => match raw.parse::<f64>() {
+                // A whole number goes out whole. `json!(1024.0_f64)` writes
+                // "1024.0", and a service that declared the field as `integer`
+                // is entitled to refuse that -- which is exactly the sort of
+                // failure that looks like the program sent nothing at all.
+                Ok(number) if number.fract() == 0.0 && number.abs() < 9e15 => {
+                    serde_json::json!(number as i64)
+                }
+                Ok(number) => serde_json::json!(number),
                 // A number that does not parse travels as the text it is: the
                 // service's own error message says more than a silent drop.
-                Ok(number) => serde_json::json!(number),
                 Err(_) => serde_json::Value::String(raw.to_string()),
             },
             _ => serde_json::Value::String(raw.to_string()),
@@ -6198,6 +6243,53 @@ fn number_hint(minimum: Option<f64>, maximum: Option<f64>) -> String {
         (None, Some(high)) => format!("\u{2264} {high}"),
         (None, None) => String::new(),
     }
+}
+
+/// What to do about an error, where the message alone leaves that open.
+///
+/// The messages below the surface say what the API refused, in the words of the
+/// API: "Zugriff verweigert", "5", "der Dienst antwortete mit 401". True, and
+/// useless on its own -- the user is left to work out that a key expired or that
+/// this key lives under HKLM. So the technical sentence stays exactly as it is,
+/// and a second one says what it means here.
+///
+/// Matched on the wording rather than on typed errors: these come from four
+/// layers through `anyhow`, and threading an error kind through all of them
+/// would be a rebuild of every signature for the sake of a hint. The cost of a
+/// missed match is one missing sentence.
+fn advice_for(message: &str, tr: &'static Strings) -> Option<&'static str> {
+    let lower = message.to_lowercase();
+
+    // Windows refuses the write itself: either the key belongs to the machine
+    // rather than the user, or something else holds it open.
+    if lower.contains("zugriff verweigert")
+        || lower.contains("access is denied")
+        || lower.contains("os error 5")
+    {
+        return Some(tr.why_access_denied);
+    }
+    // The service turned the request away rather than failing to answer it.
+    if lower.contains(" 401") || lower.contains(" 403") {
+        return Some(tr.why_unauthorised);
+    }
+    if lower.contains(" 404") {
+        return Some(tr.why_not_found);
+    }
+    // WinHTTP could not reach the host at all.
+    if lower.contains("winhttpconnect")
+        || lower.contains("winhttpsendrequest")
+        || lower.contains("timed out")
+        || lower.contains("zeit\u{fc}berschreitung")
+    {
+        return Some(tr.why_unreachable);
+    }
+    if lower.contains("schon vergeben") || lower.contains("already taken") {
+        return Some(tr.why_id_taken);
+    }
+    if lower.contains("existiert bereits") || lower.contains("already exists") {
+        return Some(tr.why_key_exists);
+    }
+    None
 }
 
 /// Where a service documents one of its tools, for a human to read.
@@ -7887,13 +7979,41 @@ mod tests {
         .expect("three fields were filled in");
 
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["width"], 1920.0, "a number, not the string \"1920\"");
+        assert_eq!(value["width"], 1920, "a number, not the string \"1920\"");
+        // And a whole one at that: a field declared `integer` refuses 1920.0.
+        assert!(!json.contains("1920.0"), "no decimal point: {json}");
         assert_eq!(value["grayscale"], true);
         assert_eq!(value["format"], "webp");
         assert!(
             value.get("untouched").is_none(),
             "an empty field means the service decides, not an empty string"
         );
+    }
+
+    #[test]
+    fn a_whole_number_goes_out_whole_and_a_fraction_keeps_its_point() {
+        let field = |name: &str| spec::Field {
+            name: name.into(),
+            kind: spec::FieldKind::Number {
+                minimum: None,
+                maximum: None,
+            },
+            required: false,
+            description: None,
+        };
+        let fields = vec![field("targetSizeKb"), field("opacity")];
+
+        let json = settings_json(&fields, &|name| match name {
+            "targetSizeKb" => Some("1024".into()),
+            _ => Some("0.75".into()),
+        })
+        .expect("both were filled in");
+
+        // "1024.0" is what json!(f64) writes, and a service that declared the
+        // field as `integer` may refuse it.
+        assert!(json.contains("1024"), "{json}");
+        assert!(!json.contains("1024.0"), "{json}");
+        assert!(json.contains("0.75"), "a fraction stays one: {json}");
     }
 
     #[test]
@@ -7905,6 +8025,34 @@ mod tests {
             description: None,
         }];
         assert_eq!(settings_json(&fields, &|_| None), None);
+    }
+
+    #[test]
+    fn an_error_that_leaves_the_user_guessing_is_explained() {
+        let tr = &i18n::DE;
+
+        // The wordings these really arrive in, from four different layers.
+        for (message, expected) in [
+            ("Zugriff verweigert. (os error 5)", tr.why_access_denied),
+            ("Access is denied. (os error 5)", tr.why_access_denied),
+            ("Der Dienst antwortete mit 401", tr.why_unauthorised),
+            ("the service answered 403", tr.why_unauthorised),
+            ("Die Beschreibung antwortete mit 404", tr.why_not_found),
+            ("WinHttpSendRequest: timed out", tr.why_unreachable),
+            (
+                "Kennung schon vergeben / id already taken: x",
+                tr.why_id_taken,
+            ),
+        ] {
+            assert_eq!(
+                advice_for(message, tr),
+                Some(expected),
+                "no advice for {message:?}"
+            );
+        }
+
+        // And nothing invented for a message that speaks for itself.
+        assert_eq!(advice_for("Datei zu gro\u{df}", tr), None);
     }
 
     #[test]
