@@ -237,12 +237,27 @@ fn read_settings(
         };
     }
 
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    // No schema, but the prose may still list the fields one by one. Measured
+    // on the test service: 113 of 227 option descriptions do, and become a form
+    // of 431 inputs instead of an empty box asking for JSON.
+    if let Some(text) = &description {
+        let fields = fields_from_prose(text);
+        if !fields.is_empty() {
+            return Settings::Fields {
+                field: name.clone(),
+                fields,
+            };
+        }
+    }
+
     Settings::Text {
         field: name.clone(),
-        description: value
-            .get("description")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        description,
     }
 }
 
@@ -309,6 +324,800 @@ fn last_segment(path: &str) -> &str {
     path.rsplit('/')
         .find(|part| !part.is_empty())
         .unwrap_or(path)
+}
+
+// ---------------------------------------------------------------------------
+// Field declarations written as prose.
+// ---------------------------------------------------------------------------
+//
+// A service that declares its options as one `type: string` field usually still
+// says what belongs inside — as a bullet list in that field's `description`.
+// Measured on the test service (2026-08-16): of its 227 option descriptions,
+// 113 become a form of 431 inputs, 105 list nothing and keep their text box,
+// and 9 name an array or an object somewhere in the list, which also keeps the
+// text box — see below.
+//
+// The reading is deliberately literal, and every step may fail. A line that
+// cannot be read whole is not a field, and a list that contains a declaration
+// this cannot draw yields no fields at all, so that the caller keeps its
+// free-text box. A wrongly read field would be sent to a real service under a
+// name or a type it does not know; a missed one costs a checkbox.
+
+/// Reads field declarations out of the prose a service wrote about its options.
+///
+/// The shape understood is the Markdown bullet list that Zod and JSON-Schema
+/// documentation generators emit:
+///
+/// ```text
+/// JSON string with options:
+/// - `left` (number, required) - Left offset in pixels (min 0)
+/// - `unit` (string, optional) - One of: px, percent
+/// ```
+///
+/// Variants of it are accepted: `*`, `+`, `•`, a dash of any width or `1.` as
+/// the bullet; `**name**`, `*name*`, `__name__` or a bare name instead of
+/// backticks; `:`, `--` or an em dash instead of ` - `; a bracket that names
+/// only `optional`; no bracket at all when the sentence names a default or a
+/// list of values.
+///
+/// Nothing is guessed. A line becomes a field only when something in it
+/// *declares* — a type word, `required`/`optional`, a default with a value, or
+/// a `One of:` list. That is what separates a declaration from the glossary
+/// lists documentation is full of, where ``- `png` - Lossless, supports
+/// transparency`` names a value rather than a setting.
+///
+/// Two shapes end the reading of a whole description, because a form built
+/// from what is left would be worse than no form: a declaration whose name is
+/// not a key that can be filled in (`steps[].toolId`), and one whose type no
+/// single input can hold (`object`, `array`, `string[]`). Both return an empty
+/// list, and the caller falls back to the free-text field it had before —
+/// where the user can still type the array by hand.
+pub fn fields_from_prose(text: &str) -> Vec<Field> {
+    let mut fields: Vec<Field> = Vec::new();
+    // The indent of the list currently being read. Bullets deeper than this
+    // belong to the item above them and are that item's business, not the
+    // settings object's. Taking the first bullet of each list rather than the
+    // smallest indent in the whole text keeps a note further down from
+    // redefining what "outermost" means.
+    let mut base: Option<usize> = None;
+
+    for line in text.lines() {
+        let Some((indent, body)) = split_bullet(line) else {
+            // A paragraph of its own ends the list; the next one starts fresh.
+            if !line.trim().is_empty() && indent_of(line) <= base.unwrap_or(0) {
+                base = None;
+            }
+            continue;
+        };
+        let outermost = *base.get_or_insert(indent);
+        if indent > outermost {
+            continue;
+        }
+        match read_declaration(body) {
+            Reading::Prose => {}
+            Reading::Undrawable => return Vec::new(),
+            Reading::Declared(field) => {
+                if !fields.iter().any(|seen| seen.name == field.name) {
+                    fields.push(field);
+                }
+            }
+        }
+    }
+    fields
+}
+
+/// What one list item turned out to be.
+enum Reading {
+    /// A field, ready to be drawn.
+    Declared(Field),
+    /// Not a declaration: a note, a value, a sentence.
+    Prose,
+    /// A declaration, but not one an input can hold. The whole list has to be
+    /// given up, or the form would quietly drop a setting the user needs.
+    Undrawable,
+}
+
+// --- the line -----------------------------------------------------------
+
+/// How far a line is indented, counting a tab as four columns.
+fn indent_of(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+/// The indent and the text of a list item, if the line is one.
+///
+/// A marker has to be followed by a space, which is what tells `- text` from a
+/// `---` rule and `**bold**` from a `*` bullet.
+fn split_bullet(line: &str) -> Option<(usize, &str)> {
+    let rest = line.trim_start();
+    let body = strip_marker(rest)?;
+    if !body.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some((indent_of(line), body.trim()))
+}
+
+/// What follows the bullet marker, if the text opens with one.
+fn strip_marker(rest: &str) -> Option<&str> {
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    if matches!(
+        first,
+        '-' | '*' | '+' | '\u{2022}' | '\u{00B7}' | '\u{2013}' | '\u{2014}'
+    ) {
+        return Some(chars.as_str());
+    }
+    // `1.` and `2)` are bullets as well, and generators do write them.
+    if first.is_ascii_digit() {
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let after = &rest[digits..];
+        if let Some(body) = after.strip_prefix('.').or_else(|| after.strip_prefix(')')) {
+            return Some(body);
+        }
+    }
+    None
+}
+
+/// One list item, read as a field declaration — or not.
+fn read_declaration(body: &str) -> Reading {
+    let Some(read) = read_name(body) else {
+        return Reading::Prose;
+    };
+    let Name {
+        text: name,
+        marked,
+        required_marker,
+        optional_marker,
+        rest,
+    } = read;
+
+    let (bracket, rest) = take_bracket(rest);
+    let Some(tail) = strip_separator(rest) else {
+        // Text that follows the name without a separator is a sentence about
+        // the name, not a description of it: "- Quality (integer) defaults to
+        // 82 for JPEG output" declares nothing.
+        return Reading::Prose;
+    };
+
+    let mut declared = Declared::default();
+    if let Some(bracket) = bracket {
+        declared.read_bracket(bracket);
+    }
+    let choices = choices_in(tail);
+    if !declared.declares() {
+        // No bracket, or nothing in it that declares. The sentence may still
+        // do it — but only with a spelled-out default or a list of values.
+        declared.default = default_in(tail);
+        if declared.default.is_none() && choices.is_none() {
+            return Reading::Prose;
+        }
+        // On this thin evidence the name has to look like a key rather than
+        // like the start of a sentence, or every "- **Note** - Default: 80 is
+        // used for JPEG" turns into a field named `Note`.
+        if !starts_lower(name) {
+            return Reading::Prose;
+        }
+    }
+    if !marked && !starts_lower(name) {
+        // An unmarked capitalised word is the first word of a sentence far
+        // more often than it is a key: "- Width (number) - is capped".
+        return Reading::Prose;
+    }
+    if !is_key(name) {
+        return Reading::Undrawable;
+    }
+
+    match declared.kind(tail, choices) {
+        Some(kind) => Reading::Declared(Field {
+            name: name.to_string(),
+            kind,
+            required: (declared.required == Some(true) || required_marker) && !optional_marker,
+            description: (!tail.is_empty()).then(|| tail.to_string()),
+        }),
+        None => Reading::Undrawable,
+    }
+}
+
+/// The name at the head of a list item.
+struct Name<'a> {
+    text: &'a str,
+    /// Was it marked up as a name — backticks, bold, italics, quotes?
+    marked: bool,
+    /// A `*` or `!` stuck to the name, which some generators use for "required".
+    required_marker: bool,
+    /// A `?` stuck to the name, which is how the other half write "optional".
+    optional_marker: bool,
+    rest: &'a str,
+}
+
+/// Wrappers a name may come in, longest first so `**` is not read as an empty
+/// `*` pair.
+const WRAPPERS: [&str; 6] = ["**", "__", "`", "*", "_", "\""];
+
+fn read_name(body: &str) -> Option<Name<'_>> {
+    let mut marked = false;
+    let mut text = body;
+    let mut rest = "";
+
+    for wrapper in WRAPPERS {
+        if let Some(after) = body.strip_prefix(wrapper)
+            && let Some(end) = after.find(wrapper)
+        {
+            marked = true;
+            text = &after[..end];
+            rest = &after[end + wrapper.len()..];
+            break;
+        }
+    }
+    if marked {
+        // `**`name`**`: keep peeling as long as both ends match.
+        loop {
+            let inner = text.trim();
+            let Some(peeled) = WRAPPERS.iter().find_map(|wrapper| {
+                inner
+                    .strip_prefix(wrapper)
+                    .and_then(|rest| rest.strip_suffix(wrapper))
+            }) else {
+                break;
+            };
+            text = peeled;
+        }
+    } else {
+        let end = body.find(|c: char| !is_key_char(c)).unwrap_or(body.len());
+        if end == 0 {
+            return None;
+        }
+        text = &body[..end];
+        rest = &body[end..];
+    }
+
+    let text = text.trim();
+    // `width*` and `width!` mean required; `width?` means optional. A `*`
+    // behind the markup counts too, but only when a space follows it — before
+    // a bracket it is the italics of `*(number, optional)*`.
+    let (text, mut required_marker) = match text.strip_suffix(['*', '!']) {
+        Some(shortened) => (shortened.trim_end(), true),
+        None => (text, false),
+    };
+    let (text, optional_marker) = match text.strip_suffix('?') {
+        Some(shortened) => (shortened, true),
+        None => (text, false),
+    };
+    if let Some(after) = rest.strip_prefix('*')
+        && after.starts_with(char::is_whitespace)
+    {
+        required_marker = true;
+        rest = after;
+    }
+
+    Some(Name {
+        text,
+        marked,
+        required_marker,
+        optional_marker,
+        rest,
+    })
+}
+
+fn is_key_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '$')
+}
+
+/// Could this be a key of a settings object?
+///
+/// Deliberately narrow. `steps[].toolId` and `width or height` are described
+/// in the very same lists and are not keys anybody can fill in.
+fn is_key(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(is_key_char)
+}
+
+fn starts_lower(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_lowercase() || c == '_')
+}
+
+/// The bracket that belongs to the name, and what follows it.
+///
+/// Only a bracket that stands directly behind the name is the type
+/// specification; one further along belongs to the sentence. Italics around
+/// it — `*(number, optional)*` — are stripped, that is how several generators
+/// write it.
+fn take_bracket(rest: &str) -> (Option<&str>, &str) {
+    let trimmed = rest.trim_start();
+    let opened = trimmed.trim_start_matches(['*', '_']);
+    let Some(after) = opened.strip_prefix('(') else {
+        return (None, rest);
+    };
+
+    let mut depth = 1usize;
+    let mut quote: Option<char> = None;
+    for (at, c) in after.char_indices() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    let tail = after[at + 1..].trim_start_matches(['*', '_']);
+                    return (Some(&after[..at]), tail);
+                }
+            }
+            (None, _) => {}
+        }
+    }
+    // A bracket that never closes: leave the line as it was, and the missing
+    // separator will throw it away.
+    (None, rest)
+}
+
+/// What the line says about the field, after the separator that announces it.
+///
+/// Nothing left is fine — the declaration ends with its bracket. Text without
+/// a separator in front of it is not.
+fn strip_separator(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return Some("");
+    }
+    if let Some(after) = rest.strip_prefix([':', '\u{2192}']) {
+        return Some(after.trim());
+    }
+    for dash in ["--", "-", "\u{2014}", "\u{2013}"] {
+        if let Some(after) = rest.strip_prefix(dash) {
+            if after.is_empty() {
+                return Some("");
+            }
+            if after.starts_with(char::is_whitespace) {
+                return Some(after.trim());
+            }
+        }
+    }
+    None
+}
+
+// --- the bracket --------------------------------------------------------
+
+/// What the bracket behind a name declared.
+#[derive(Default)]
+struct Declared {
+    base: Option<Base>,
+    required: Option<bool>,
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    /// A default was named, and what its value looked like.
+    default: Option<Base>,
+    /// Something in the bracket was understood at all.
+    understood: bool,
+}
+
+/// The families of input that can be drawn. Everything else is prose.
+#[derive(Clone, Copy, PartialEq)]
+enum Base {
+    Textual,
+    Numeric,
+    Boolean,
+    /// An object, an array, a `string[]`: real, but nothing a single input can
+    /// hold.
+    Container,
+}
+
+impl Declared {
+    /// Did anything here declare a field, rather than describe one?
+    fn declares(&self) -> bool {
+        self.understood
+    }
+
+    fn read_bracket(&mut self, bracket: &str) {
+        let mut loose_range = None;
+        for part in split_commas(bracket) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let lower = part.to_lowercase();
+            match lower.as_str() {
+                "required" | "mandatory" | "erforderlich" | "pflicht" => {
+                    self.required = Some(true);
+                    self.understood = true;
+                }
+                "optional" | "nullable" | "not required" => {
+                    self.required = self.required.or(Some(false));
+                    self.understood = true;
+                }
+                "deprecated" | "readonly" | "read-only" => self.understood = true,
+                _ => {
+                    if let Some(value) = after_word(&lower, &["default", "defaults to", "standard"])
+                    {
+                        self.default = Some(shape_of(value));
+                        self.required = self.required.or(Some(false));
+                        self.understood = true;
+                    } else if let Some(value) = after_word(&lower, &["min", "minimum", "at least"])
+                    {
+                        self.minimum = number(value);
+                        self.understood = true;
+                    } else if let Some(value) = after_word(&lower, &["max", "maximum", "at most"]) {
+                        self.maximum = number(value);
+                        self.understood = true;
+                    } else if let Some((base, bounds)) = read_type(&lower) {
+                        // A type counts once. Further on it is a remark, as in
+                        // "(string, as a hex colour)".
+                        if self.base.is_none() {
+                            self.base = Some(base);
+                            self.minimum = self.minimum.or(bounds.0);
+                            self.maximum = self.maximum.or(bounds.1);
+                            self.understood = true;
+                        }
+                    } else if let Some(bounds) = read_range(&lower) {
+                        // "(number, 0-100)": the range in a part of its own.
+                        loose_range = Some(bounds);
+                    }
+                }
+            }
+        }
+        // A range means numbers — but only where the type does not say
+        // otherwise. On "(string, 1-256)" it counts characters, and a spinner
+        // would then cap the text at 256 instead of allowing 256 of them. A
+        // bracket that holds nothing but a range says number by itself.
+        if let Some((low, high)) = loose_range
+            && matches!(self.base, None | Some(Base::Numeric))
+        {
+            self.base = Some(Base::Numeric);
+            self.understood = true;
+            self.minimum = self.minimum.or(low);
+            self.maximum = self.maximum.or(high);
+        }
+    }
+
+    /// What kind of input this deserves, or nothing when no input can hold it.
+    fn kind(&self, tail: &str, choices: Option<Vec<String>>) -> Option<FieldKind> {
+        let base = match self.base {
+            Some(base) => base,
+            // No type word. A default that is plainly a number or a boolean
+            // still says what the value is.
+            None => match self.default {
+                Some(Base::Numeric) => Base::Numeric,
+                Some(Base::Boolean) => Base::Boolean,
+                _ => Base::Textual,
+            },
+        };
+        match base {
+            Base::Container => None,
+            Base::Boolean => Some(FieldKind::Flag),
+            Base::Numeric => {
+                let (low, high) = bound_behind(tail);
+                Some(ordered(self.minimum.or(low), self.maximum.or(high)))
+            }
+            // A list of values only becomes a drop-down for a textual field.
+            // On a number the entries would travel as strings, and a service
+            // that asked for 90 rejects "90".
+            Base::Textual => Some(choices.map_or(FieldKind::Text, FieldKind::Choice)),
+        }
+    }
+}
+
+/// A number field, with a range only where the two ends make one.
+///
+/// "(number, min 5, max 1)" is a misread somewhere, and a spinner that accepts
+/// nothing is worse than one without limits.
+fn ordered(minimum: Option<f64>, maximum: Option<f64>) -> FieldKind {
+    match (minimum, maximum) {
+        (Some(low), Some(high)) if low > high => FieldKind::Number {
+            minimum: None,
+            maximum: None,
+        },
+        _ => FieldKind::Number { minimum, maximum },
+    }
+}
+
+/// `string`, `hex string`, `integer >= 0`, `number 0-100`, `array of {id}`.
+///
+/// Only the first and the last word of the leading run of words are read as
+/// the type; the ones between them qualify it. That is what keeps the English
+/// language out: "(Mean Time to Detect)" has `time` in the middle of it and
+/// declares nothing, while "hex string" and "number of pages" still do.
+///
+/// Written as a loop rather than as recursion: a bracket of ten thousand words
+/// is a strange thing to meet, but not a reason to run out of stack.
+fn read_type(lower: &str) -> Option<(Base, Bounds)> {
+    let mut words: Vec<&str> = Vec::new();
+    let mut rest = lower.trim();
+    while !rest.is_empty() {
+        let (word, after) = match rest.find(char::is_whitespace) {
+            Some(at) => (&rest[..at], rest[at..].trim_start()),
+            None => (rest, ""),
+        };
+        let bare = word.trim_end_matches("[]");
+        if bare.len() < word.len() {
+            // `string[]`, `number[]`: an array however it is written.
+            return Some((Base::Container, (None, None)));
+        }
+        // A word is a word while it is made of letters; "0-100" and ">=" are
+        // where the type ends and the range begins.
+        if !bare.chars().all(|c| c.is_alphabetic() || c == '/') {
+            break;
+        }
+        words.push(bare);
+        rest = after;
+    }
+
+    if words
+        .iter()
+        .any(|word| base_of(word) == Some(Base::Container))
+    {
+        return Some((Base::Container, (None, None)));
+    }
+    let base = base_of(words.last()?).or_else(|| base_of(words.first()?))?;
+    let bounds = if base == Base::Numeric {
+        read_range(rest).unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
+    Some((base, bounds))
+}
+
+/// The type words. Kept short on purpose: every word here is a word that turns
+/// a bracket into a declaration, so `time`, `id` or `path` — which stand in
+/// English sentences far more often than in type specifications — are not on
+/// the list.
+fn base_of(word: &str) -> Option<Base> {
+    match word {
+        "boolean" | "bool" | "flag" | "switch" | "checkbox" | "true/false" | "yes/no"
+        | "wahrheitswert" => Some(Base::Boolean),
+        "number" | "integer" | "int" | "float" | "double" | "decimal" | "numeric" | "zahl"
+        | "ganzzahl" | "kommazahl" => Some(Base::Numeric),
+        "string" | "str" | "enum" | "char" | "chars" | "hex" | "color" | "colour" | "date"
+        | "datetime" | "zeichenkette" => Some(Base::Textual),
+        "object" | "array" | "list" | "map" | "dict" | "dictionary" | "record" | "json"
+        | "tuple" | "objekt" | "liste" => Some(Base::Container),
+        _ => None,
+    }
+}
+
+/// A lower and an upper bound, either of which the prose may leave out.
+type Bounds = (Option<f64>, Option<f64>);
+
+/// `0-100`, `-100 to 100`, `>= 0`, `<= 5`, `0.25-4`.
+///
+/// Everything has to be accounted for. A range that cannot be read whole is no
+/// range, because half of one would silently bar valid values.
+fn read_range(text: &str) -> Option<Bounds> {
+    let text = text.trim();
+    for (mark, is_minimum) in [
+        (">=", true),
+        ("\u{2265}", true),
+        (">", true),
+        ("<=", false),
+        ("\u{2264}", false),
+        ("<", false),
+    ] {
+        if let Some(rest) = text.strip_prefix(mark) {
+            let bound = number(rest)?;
+            return Some(if is_minimum {
+                (Some(bound), None)
+            } else {
+                (None, Some(bound))
+            });
+        }
+    }
+    for split in [" to ", "\u{2026}", "..", "\u{2013}"] {
+        if let Some((low, high)) = text.split_once(split) {
+            return Some((Some(number(low)?), Some(number(high)?)));
+        }
+    }
+    // `0-100`, `0.25-4`, `-80--20`: the separating hyphen is the one that
+    // follows a digit, so a leading minus sign is not mistaken for it.
+    let bytes = text.as_bytes();
+    let at = (1..bytes.len()).find(|&at| bytes[at] == b'-' && bytes[at - 1].is_ascii_digit())?;
+    Some((Some(number(&text[..at])?), Some(number(&text[at + 1..])?)))
+}
+
+/// A plain decimal number. `inf` and `NaN` parse as floats and are not one.
+fn number(text: &str) -> Option<f64> {
+    let text = text.trim().trim_end_matches(['.', ',', ';']).trim();
+    if !text.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '-' | '+' | '.')) {
+        return None;
+    }
+    text.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+/// Is this literal a number, a boolean, or something textual?
+fn shape_of(value: &str) -> Base {
+    let value = value.trim().trim_matches(['"', '\'', '`']);
+    match value {
+        "true" | "false" => Base::Boolean,
+        _ if number(value).is_some() => Base::Numeric,
+        _ => Base::Textual,
+    }
+}
+
+/// What follows one of these words, when the text opens with it.
+///
+/// The word has to be followed by a separator and by something: `min 0` and
+/// `min: 0` name a bound, `mint green` does not.
+fn after_word<'a>(text: &'a str, words: &[&str]) -> Option<&'a str> {
+    for word in words {
+        let Some(rest) = text.strip_prefix(word) else {
+            continue;
+        };
+        if !rest.starts_with([' ', '\t', ':', '=']) {
+            continue;
+        }
+        let rest = rest.trim_start_matches([' ', '\t', ':', '=']).trim();
+        if !rest.is_empty() {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+/// Splits on commas that are outside brackets and quotes.
+fn split_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut start = 0usize;
+    for (at, c) in text.char_indices() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(' | '[' | '{') => depth += 1,
+            (None, ')' | ']' | '}') => depth = depth.saturating_sub(1),
+            (None, ',') if depth == 0 => {
+                parts.push(&text[start..at]);
+                start = at + 1;
+            }
+            (None, _) => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+// --- the sentence behind the field --------------------------------------
+
+/// `Default: 80` written into the sentence rather than into the bracket.
+///
+/// The colon is required. "the default tier" and "defaults to whatever the
+/// image has" are prose about a value, not the declaration of one.
+fn default_in(tail: &str) -> Option<Base> {
+    let after = ["defaults", "default", "standard", "vorgabe"]
+        .iter()
+        .find_map(|word| find_word(tail, word).map(|at| &tail[at + word.len()..]))?;
+    let value = after.trim_start().strip_prefix([':', '='])?.trim();
+    let value = value.split_whitespace().next()?;
+    (!value.is_empty()).then(|| shape_of(value))
+}
+
+/// A trailing bracket that holds a bound and nothing else: `(min 0)`, `(1-100)`.
+///
+/// Only the last bracket of the sentence counts, and only when the sentence
+/// ends with it, so that "(0 = no limit)" and "(must be after `start`)" stay
+/// what they are: remarks.
+fn bound_behind(tail: &str) -> Bounds {
+    let trimmed = tail.trim_end_matches(['.', ' ']);
+    let Some(inside) = trimmed.strip_suffix(')') else {
+        return (None, None);
+    };
+    let Some(open) = inside.rfind('(') else {
+        return (None, None);
+    };
+    let inside = inside[open + 1..].to_lowercase();
+    if let Some(value) = after_word(&inside, &["min", "minimum", "at least"]) {
+        return (number(value), None);
+    }
+    if let Some(value) = after_word(&inside, &["max", "maximum", "at most"]) {
+        return (None, number(value));
+    }
+    read_range(&inside).unwrap_or((None, None))
+}
+
+/// Phrases that announce a list of allowed values.
+const CHOICE_PHRASES: [&str; 5] = ["one of", "any of", "either of", "eines von", "einer von"];
+
+/// The values behind a `One of: …`, when every one of them is a value.
+///
+/// All or nothing: a list with one entry that cannot be read is dropped whole,
+/// because a drop-down missing an option cannot say what the user means.
+fn choices_in(tail: &str) -> Option<Vec<String>> {
+    let at = CHOICE_PHRASES
+        .iter()
+        .find_map(|phrase| clause_with(tail, phrase))?;
+    let list = tail[at..].trim_start_matches([':', ' ', '\t']);
+
+    // The list ends where the sentence does. `1.5` keeps its dot, because the
+    // one that ends a sentence is followed by a space or by nothing.
+    let end = list
+        .char_indices()
+        .find(|&(at, c)| {
+            matches!(c, '.' | ';')
+                && list[at + c.len_utf8()..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+        })
+        .map_or(list.len(), |(at, _)| at);
+
+    let mut values: Vec<String> = Vec::new();
+    for piece in list[..end]
+        .split([',', '|'])
+        .flat_map(|piece| piece.split(" or ").flat_map(|piece| piece.split(" oder ")))
+    {
+        let piece = piece.trim();
+        let piece = piece
+            .strip_prefix("or ")
+            .or_else(|| piece.strip_prefix("and "))
+            .or_else(|| piece.strip_prefix("oder "))
+            .unwrap_or(piece);
+        // "attention (alias for subject)" names the value and remarks on it.
+        let piece = match piece.find('(') {
+            Some(at) => &piece[..at],
+            None => piece,
+        };
+        let value = piece.trim().trim_matches(['`', '"', '\'']).trim();
+        if !is_value(value) {
+            return None;
+        }
+        if !values.iter().any(|seen| seen == value) {
+            values.push(value.to_string());
+        }
+    }
+    (values.len() >= 2).then_some(values)
+}
+
+/// Where a phrase begins a clause of its own, rather than sitting inside one.
+///
+/// Returns the offset just behind it. "Unit, one of: px, percent" announces a
+/// list; "Mutually exclusive with one of `preset`, `tier`" mentions other
+/// fields, and reading that as a drop-down would offer their names as values.
+fn clause_with(tail: &str, phrase: &str) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(at) = find_word(&tail[from..], phrase) {
+        let at = from + at;
+        let before = tail[..at].trim_end().chars().next_back();
+        if before.is_none_or(|c| matches!(c, '.' | ',' | ';' | ':' | '(' | '-' | '\u{2014}')) {
+            return Some(at + phrase.len());
+        }
+        from = at + phrase.len();
+    }
+    None
+}
+
+/// Where an ASCII phrase stands, whatever case it is written in, as a word of
+/// its own.
+///
+/// Searching a lowercased copy and indexing the original would be wrong:
+/// lowercasing can change a string's length, and the two would drift apart
+/// until a slice landed inside a character.
+fn find_word(haystack: &str, needle: &str) -> Option<usize> {
+    let (bytes, wanted) = (haystack.as_bytes(), needle.as_bytes());
+    (0..bytes.len().checked_sub(wanted.len())? + 1).find(|&at| {
+        haystack.is_char_boundary(at)
+            && bytes[at..at + wanted.len()].eq_ignore_ascii_case(wanted)
+            && !bytes[..at]
+                .last()
+                .is_some_and(|c| c.is_ascii_alphanumeric())
+            && haystack[at + wanted.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric())
+    })
+}
+
+/// Could this be a value the service accepts literally?
+fn is_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 40
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.:+/@#%".contains(c))
 }
 
 #[cfg(test)]
@@ -529,5 +1338,418 @@ mod tests {
         assert!(tools(&serde_json::json!({})).is_empty());
         assert!(tools(&serde_json::json!({ "paths": 42 })).is_empty());
         assert!(tools(&serde_json::json!({ "paths": { "/x": { "post": {} } } })).is_empty());
+    }
+    // The one field a line declares, so a test can speak about it in one breath.
+    fn one(text: &str) -> Field {
+        let mut fields = fields_from_prose(text);
+        assert_eq!(fields.len(), 1, "expected one field from {text:?}");
+        fields.remove(0)
+    }
+
+    fn names(text: &str) -> Vec<String> {
+        fields_from_prose(text)
+            .into_iter()
+            .map(|field| field.name)
+            .collect()
+    }
+
+    #[test]
+    fn the_list_a_schema_generator_writes_becomes_one_field_per_line() {
+        let fields = fields_from_prose(
+            "JSON string with options:\n\
+         - `left` (number, required) - Left offset in pixels (min 0)\n\
+         - `unit` (string, optional) - One of: px, percent\n\
+         - `withoutEnlargement` (boolean, default false) - Prevent upscaling\n",
+        );
+
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name, "left");
+        assert!(fields[0].required);
+        assert_eq!(
+            fields[0].kind,
+            FieldKind::Number {
+                minimum: Some(0.0),
+                maximum: None
+            }
+        );
+        assert_eq!(
+            fields[0].description.as_deref(),
+            Some("Left offset in pixels (min 0)")
+        );
+        assert!(!fields[1].required);
+        assert_eq!(
+            fields[1].kind,
+            FieldKind::Choice(vec!["px".into(), "percent".into()])
+        );
+        assert_eq!(fields[2].kind, FieldKind::Flag);
+    }
+
+    #[test]
+    fn a_field_declared_as_a_number_keeps_the_range_the_prose_names() {
+        for (line, minimum, maximum) in [
+            ("- `q` (number 0-100) - x", Some(0.0), Some(100.0)),
+            ("- `q` (number, 0-100) - x", Some(0.0), Some(100.0)),
+            ("- `q` (number -100 to 100) - x", Some(-100.0), Some(100.0)),
+            ("- `q` (number -80 to -20) - x", Some(-80.0), Some(-20.0)),
+            (
+                "- `q` (number 0.05-1, default 0.3) - x",
+                Some(0.05),
+                Some(1.0),
+            ),
+            ("- `q` (integer >= 16) - x", Some(16.0), None),
+            ("- `q` (number, min 10, optional) - x", Some(10.0), None),
+            ("- `q` (number, max 100) - x", None, Some(100.0)),
+            ("- `q` (0-100) - Quality", Some(0.0), Some(100.0)),
+            (
+                "- `q` (number, required) - Quality (min 0)",
+                Some(0.0),
+                None,
+            ),
+            (
+                "- `q` (number) - Output quality (1-100)",
+                Some(1.0),
+                Some(100.0),
+            ),
+        ] {
+            assert_eq!(
+                one(line).kind,
+                FieldKind::Number { minimum, maximum },
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_range_whose_ends_are_the_wrong_way_round_is_no_range_at_all() {
+        // Somebody misread something, here or in the prose. A spinner that accepts
+        // no value at all is worse than one without limits.
+        assert_eq!(
+            one("- `q` (number, min 5, max 1) - x").kind,
+            FieldKind::Number {
+                minimum: None,
+                maximum: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_number_the_prose_gives_no_range_for_gets_none_rather_than_a_guess() {
+        for line in [
+            "- `angle` (number, optional) - Rotation angle in degrees",
+            "- `maxWidth` (integer, default 0) - Max width (0 = no limit)",
+            "- `chunk` (integer, optional) - Every nth page (0 keeps them together)",
+        ] {
+            assert_eq!(
+                one(line).kind,
+                FieldKind::Number {
+                    minimum: None,
+                    maximum: None
+                },
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_length_limit_on_a_text_field_is_not_turned_into_a_range_of_values() {
+        for line in [
+            "- `pw` (string 1-256 chars, required) - Password",
+            "- `title` (string, optional, max 500) - Document title",
+            "- `text` (string, required) - Watermark text (1-200 characters)",
+        ] {
+            assert_eq!(one(line).kind, FieldKind::Text, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_list_of_values_becomes_a_choice_however_the_service_writes_it() {
+        let wanted = FieldKind::Choice(vec!["px".into(), "percent".into()]);
+        for line in [
+            "- `unit` (string) - One of: px, percent",
+            "* `unit` (string): one of px, percent",
+            "- **unit** (string) -- one of `px` | `percent`",
+            "- `unit` (string) - Unit of the offsets, one of: px or percent",
+            "- `unit` (optional) - One of: px, percent",
+        ] {
+            assert_eq!(one(line).kind, wanted, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_remark_or_a_sentence_behind_a_value_stays_out_of_the_value() {
+        assert_eq!(
+        one("- `mode` (string, default \"subject\") - One of: subject, attention (alias for subject), trim").kind,
+        FieldKind::Choice(vec!["subject".into(), "attention".into(), "trim".into()])
+    );
+        assert_eq!(
+        one("- `lang` (string, default \"auto\") - One of: auto, en, ko. Korean is unsupported by the fast tier").kind,
+        FieldKind::Choice(vec!["auto".into(), "en".into(), "ko".into()])
+    );
+        assert_eq!(
+            one("- `target` (string, default \"9:16\") - One of: 16:9, 9:16, 1:1").kind,
+            FieldKind::Choice(vec!["16:9".into(), "9:16".into(), "1:1".into()])
+        );
+    }
+
+    #[test]
+    fn one_unreadable_value_drops_the_whole_list_rather_than_hiding_an_option() {
+        assert_eq!(
+            one("- `bg` (string) - One of: transparent, a hex colour of your choosing").kind,
+            FieldKind::Text
+        );
+    }
+
+    #[test]
+    fn a_sentence_that_merely_mentions_other_fields_is_not_a_list_of_values() {
+        // "one of `preset`, `tier`" names two other fields. Offering their names
+        // as the values of this one would send a word the service never heard of.
+        assert_eq!(
+            one("- `mode` (string, required) - Mutually exclusive with one of `preset`, `tier`")
+                .kind,
+            FieldKind::Text
+        );
+    }
+
+    #[test]
+    fn a_number_that_lists_its_allowed_values_stays_a_number() {
+        // A choice travels as a string, and an endpoint that asked for 90 refuses
+        // "90".
+        assert_eq!(
+            one("- `angle` (number, default 0) - Rotation angle, one of: 90, 180, 270").kind,
+            FieldKind::Number {
+                minimum: None,
+                maximum: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_bullet_the_markup_and_the_separator_may_all_be_written_differently() {
+        for line in [
+            "- `left` (number, required) - Left offset",
+            "* `left` (number, required) - Left offset",
+            "+ `left` (number, required) - Left offset",
+            "\u{2022} `left` (number, required) - Left offset",
+            "\u{2013} `left` (number, required) - Left offset",
+            "1. `left` (number, required) - Left offset",
+            "2) `left` (number, required) - Left offset",
+            "- **left** (number, required) - Left offset",
+            "- __left__ (number, required) - Left offset",
+            "- *left* (number, required) - Left offset",
+            "- **`left`** (number, required) - Left offset",
+            "- `left` *(number, required)* - Left offset",
+            "- left (number, required) - Left offset",
+            "- `left` (number, required): Left offset",
+            "- `left` (number, required) -- Left offset",
+            "- `left` (number, required) \u{2014} Left offset",
+            "- `left`* (number) - Left offset",
+            "- `left*` (number) - Left offset",
+        ] {
+            let field = one(line);
+            assert_eq!(field.name, "left", "{line}");
+            assert!(field.required, "{line}");
+            assert_eq!(field.description.as_deref(), Some("Left offset"), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_declaration_without_a_bracket_is_read_when_the_sentence_declares_instead() {
+        assert_eq!(
+            one("- `quality` - Output quality. Default: 80").kind,
+            FieldKind::Number {
+                minimum: None,
+                maximum: None
+            }
+        );
+        assert_eq!(one("- `keep` - Defaults: true").kind, FieldKind::Flag);
+        assert_eq!(
+            one("- `align`: One of: left, center, right").kind,
+            FieldKind::Choice(vec!["left".into(), "center".into(), "right".into()])
+        );
+    }
+
+    #[test]
+    fn a_name_with_nothing_to_vouch_for_it_is_left_alone() {
+        // The shape of every glossary in every piece of documentation: a marked
+        // name, a dash, an explanation. Reading these as fields would put three
+        // invented inputs on screen and take the JSON box away.
+        assert!(
+            fields_from_prose(
+                "Output format for the rendered page.\n\n\
+             Supported values:\n\
+             - `png` - Lossless, supports transparency\n\
+             - `jpeg` - Smaller files, no transparency\n\
+             - `webp` - Modern format, good compression\n"
+            )
+            .is_empty()
+        );
+        assert!(
+            fields_from_prose(
+                "Notes:\n\
+             - **Important** - the format is locked to PNG\n\
+             - *Tip* - use `width` to set the size\n\
+             - `E_TOO_LARGE` - the file exceeds 10 MB\n\
+             - `resize` - scales the image\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_sentence_that_happens_to_start_with_a_word_and_a_bracket_declares_nothing() {
+        // Without a separator behind the bracket the line is a sentence about a
+        // value, not the declaration of a setting — and the name would be sent
+        // capitalised, which no service knows.
+        assert!(
+            fields_from_prose(
+                "Notes:\n\
+             - Quality (integer) defaults to 82 for JPEG output\n\
+             - Transparency (boolean) is preserved for PNG\n\
+             - Position (string) is one of: top-left, top-right\n\
+             - Width (number, max 8000) is capped for free accounts\n\
+             - Note (string): this is not a setting\n"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn prose_that_lists_no_fields_yields_nothing_and_leaves_the_text_box_alone() {
+        for text in [
+            "",
+            "---",
+            "JSON string with options:",
+            "Dedicated JPG to PNG converter using the convert pipeline.",
+            "Optional settings: quality (number 1-100). The output format is locked by the endpoint.",
+            "- Supports PNG, JPEG and WebP\n- Maximum file size is 10 MB",
+            "- Choose one of: png, jpg, webp",
+            "- `width` and `height` must both be given\n- 1920x1080 is a good starting point",
+            "- `png` (default) - Portable Network Graphics",
+        ] {
+            assert!(fields_from_prose(text).is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_declaration_no_single_input_can_hold_gives_up_the_whole_list() {
+        // Reading the rest and dropping this one would build a form that cannot
+        // send `terms` at all — worse than the free-text box, where the user can
+        // still type the array by hand.
+        let text = "JSON string with options:\n\
+                - `terms` (string[], required) - Words to redact\n\
+                - `caseSensitive` (boolean, default false) - Match case\n";
+        assert!(fields_from_prose(text).is_empty());
+
+        for line in [
+            "- `region` (object, optional) - Restrict to a rectangle",
+            "- `stops` (array, optional) - Gradient stops",
+            "- `boxes` (array of {id, text}) - Text for each position",
+            "- `steps[].toolId` (string, required) - Tool ID for this step",
+        ] {
+            assert!(fields_from_prose(line).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn what_belongs_inside_an_object_is_not_offered_beside_it() {
+        // The sub-bullets describe the object, and the object itself already ends
+        // the reading — but the same must hold when they are the only thing that
+        // is indented.
+        let text = "JSON string with options:\n\
+                - `blockSize` (integer 2-128, default 12) - Pixel block size\n\
+                - `deep` (boolean, default false) - Use the slow model\n  \
+                  - `left` (integer >= 0) - Left offset\n";
+        assert_eq!(
+            names(text),
+            vec!["blockSize".to_string(), "deep".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_note_further_down_does_not_decide_what_counts_as_the_outermost_list() {
+        // The list is indented as a whole and the note is not. Measuring the
+        // outermost level across the whole text would drop every field here.
+        let text = "Options:\n  \
+                - `width` (number, optional) - Viewport width\n  \
+                - `height` (number, optional) - Viewport height\n\
+                \n\
+                - All sizes are CSS pixels.\n";
+        assert_eq!(names(text), vec!["width".to_string(), "height".to_string()]);
+    }
+
+    #[test]
+    fn required_is_only_believed_where_it_stands_for_the_field_itself() {
+        let fields = fields_from_prose(
+            "- `left` (number, required) - Left offset\n\
+         - `unit` (string, optional) - Unit\n\
+         - `fit` (string, default \"contain\") - Fit\n\
+         - `note` (string) - Free text\n\
+         - `everyN` (integer, optional) - Chunk size (required when mode is \"every\")\n\
+         - `bg` (string) - Required for JPEG output, ignored otherwise\n\
+         - `mode` (string) - Required. The thing to do\n",
+        );
+        let required: Vec<bool> = fields.iter().map(|field| field.required).collect();
+        assert_eq!(
+            required,
+            vec![true, false, false, false, false, false, false]
+        );
+    }
+
+    #[test]
+    fn the_same_field_named_twice_is_taken_once() {
+        let fields = fields_from_prose(
+            "- `format` (string) - Output format\n- `format` (number 1-9) - Again",
+        );
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].kind, FieldKind::Text);
+    }
+
+    #[test]
+    fn a_service_that_declares_its_options_in_german_is_read_as_well() {
+        let fields = fields_from_prose(
+            "JSON-Zeichenkette mit Einstellungen:\n\
+         - `breite` (Zahl, erforderlich) - Zielbreite in Pixeln\n\
+         - `guete` (Ganzzahl 1-100, Standard: 80) - Ausgabequalitaet\n\
+         - `metadaten` (Wahrheitswert, optional) - Metadaten behalten\n\
+         - `ausrichtung` (Zeichenkette) - Eines von: quer, hoch\n",
+        );
+        let kinds: Vec<&FieldKind> = fields.iter().map(|field| &field.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &FieldKind::Number {
+                    minimum: None,
+                    maximum: None
+                },
+                &FieldKind::Number {
+                    minimum: Some(1.0),
+                    maximum: Some(100.0)
+                },
+                &FieldKind::Flag,
+                &FieldKind::Choice(vec!["quer".into(), "hoch".into()]),
+            ]
+        );
+        assert!(fields[0].required);
+    }
+
+    #[test]
+    fn text_that_is_not_ascii_is_read_without_falling_over() {
+        // Lowercasing is not length-preserving. Indexing the original string with
+        // an offset found in a lowercased copy would slice into a character.
+        let field = one("- `size` (number) - Gr\u{f6}\u{df}e in Pixeln. Default: 80");
+        assert_eq!(field.name, "size");
+        assert!(fields_from_prose("- \u{130}I\u{130} ist keine Deklaration").is_empty());
+        assert!(
+            fields_from_prose("- \u{4f60}\u{597d} (\u{6570}\u{5b57}) - \u{6d4b}\u{8bd5}")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_line_of_any_length_is_read_without_running_out_of_stack() {
+        let long = format!("- `x` ({}) - y", "zzz ".repeat(50_000));
+        assert!(fields_from_prose(&long).is_empty());
+        let deep = format!("- `x` ({}) - y", "(".repeat(20_000));
+        assert!(fields_from_prose(&deep).is_empty());
     }
 }
