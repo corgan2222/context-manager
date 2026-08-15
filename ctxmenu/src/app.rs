@@ -239,6 +239,11 @@ const REPO_URL: &str = "https://github.com/corgan2222/context-manager";
 const AUTHOR_URL: &str = "https://github.com/corgan2222";
 const AUTHOR_NAME: &str = "Stefan Knaak";
 
+/// A web address as a menu entry, with the doubled `&` the help text warns
+/// about. Written out here rather than in `i18n` because a command line is not
+/// a translation.
+const URL_EXAMPLE: &str = r#"explorer "https://www.google.com/search?q=ctxmenu&&hl=de""#;
+
 /// The Feather glyphs this window draws, looked up once at startup.
 ///
 /// `try_icon` searches a generated table of some three hundred names. Doing that
@@ -267,11 +272,12 @@ struct Glyphs {
     new: char,
     backup: char,
     inspect: char,
+    copy: char,
 }
 
 impl Glyphs {
     /// The names, in one place, so the test below can walk the same list.
-    const NAMES: [&'static str; 16] = [
+    const NAMES: [&'static str; 17] = [
         "check-circle",
         "circle",
         "eye",
@@ -288,6 +294,7 @@ impl Glyphs {
         "plus",
         "save",
         "info",
+        "copy",
     ];
 
     fn load() -> Self {
@@ -310,6 +317,7 @@ impl Glyphs {
             new: next(),
             backup: next(),
             inspect: next(),
+            copy: next(),
         }
     }
 }
@@ -329,6 +337,28 @@ fn feather(name: &str) -> char {
     .ok()
     .and_then(|icon| char::from_u32(icon.codepoint))
     .unwrap_or(' ')
+}
+
+/// A command line to read, select or copy with one click.
+///
+/// Selectable text alone was not enough: an example is there to be used, and
+/// dragging across a line of quotes and percent signs to catch every character
+/// is a worse way to spend a click than pressing a button beside it.
+fn copyable_command(ui: &mut Ui, glyphs: Glyphs, tr: &'static Strings, command: &str) {
+    ui.horizontal(|ui| {
+        if ui
+            .small_button(glyphs.copy.to_string())
+            .on_hover_text(tr.tip_copy)
+            .clicked()
+        {
+            ui.ctx().copy_text(command.to_owned());
+        }
+        ui.add(
+            egui::Label::new(egui::RichText::new(command).monospace())
+                .selectable(true)
+                .wrap(),
+        );
+    });
 }
 
 /// An icon in front of its label, the shape every button in the bar takes.
@@ -3108,6 +3138,7 @@ impl App {
 
             Dialog::About => {
                 let mut close = false;
+                let mut open_url: Option<&str> = None;
                 let logo = self.logo_texture(ui.ctx());
                 egui::Window::new(self.tr.about_title)
                     .collapsible(false)
@@ -3132,8 +3163,22 @@ impl App {
                             ui.add_space(8.0);
                             ui.label(AUTHOR_NAME);
                             ui.add_space(8.0);
-                            ui.hyperlink_to(self.tr.about_repo, REPO_URL);
-                            ui.hyperlink_to(self.tr.about_profile, AUTHOR_URL);
+                            // `ui.link` plus this program's own opener, not
+                            // `hyperlink_to`: egui hands the address to the
+                            // integration, and eframe only carries a native
+                            // opener when it is built with the feature for it —
+                            // which this one is not, so the links did nothing at
+                            // all. `webtool::shell::open` is here anyway, is
+                            // used by every favourite, and refuses anything that
+                            // is not http, https or file.
+                            for (label, url) in [
+                                (self.tr.about_repo, REPO_URL),
+                                (self.tr.about_profile, AUTHOR_URL),
+                            ] {
+                                if ui.link(label).on_hover_text(url).clicked() {
+                                    open_url = Some(url);
+                                }
+                            }
                             ui.add_space(10.0);
                             if ui.button(self.tr.btn_close).clicked() {
                                 close = true;
@@ -3141,6 +3186,14 @@ impl App {
                             ui.add_space(2.0);
                         });
                     });
+                if let Some(url) = open_url
+                    && let Err(error) = crate::webtool::shell::open(url)
+                {
+                    // Rare, but silence here would look exactly like the bug
+                    // this replaced: a link that does nothing when clicked.
+                    self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                    close = true;
+                }
                 if !close {
                     self.dialog = Some(Dialog::About);
                 }
@@ -3571,18 +3624,17 @@ impl App {
                             for (command, meaning) in EXAMPLES {
                                 ui.add_space(4.0);
                                 ui.add(egui::Label::new(meaning(self.tr)).wrap());
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(*command).monospace().small(),
-                                    )
-                                    .selectable(true)
-                                    .wrap(),
-                                );
+                                copyable_command(ui, self.glyphs, self.tr, command);
                             }
 
                             ui.add_space(10.0);
                             ui.label(egui::RichText::new(self.tr.help_urls_title).strong());
                             ui.add(egui::Label::new(self.tr.help_urls).wrap());
+                            ui.add_space(4.0);
+                            // With an `&` in it on purpose: the paragraph above
+                            // says it has to be doubled, and a rule is easier to
+                            // believe with the example beside it.
+                            copyable_command(ui, self.glyphs, self.tr, URL_EXAMPLE);
                         });
 
                     // What this tool created before — a reminder while
@@ -6465,6 +6517,7 @@ mod tests {
             glyphs.new,
             glyphs.backup,
             glyphs.inspect,
+            glyphs.copy,
         ];
 
         assert_eq!(filled.len(), Glyphs::NAMES.len());
