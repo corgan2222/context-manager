@@ -307,11 +307,13 @@ struct Glyphs {
     inspect: char,
     copy: char,
     restore: char,
+    explorer: char,
+    link: char,
 }
 
 impl Glyphs {
     /// The names, in one place, so the test below can walk the same list.
-    const NAMES: [&'static str; 18] = [
+    const NAMES: [&'static str; 20] = [
         "check-circle",
         "circle",
         "eye",
@@ -330,6 +332,8 @@ impl Glyphs {
         "info",
         "copy",
         "rotate-ccw",
+        "folder",
+        "external-link",
     ];
 
     fn load() -> Self {
@@ -354,6 +358,8 @@ impl Glyphs {
             inspect: next(),
             copy: next(),
             restore: next(),
+            explorer: next(),
+            link: next(),
         }
     }
 }
@@ -2392,6 +2398,25 @@ impl App {
                     self.backup_now();
                 }
 
+                // Windows reads the context menu keys once, when Explorer
+                // starts. Until now the restart was only offered right after a
+                // change -- but the entry that does not show up is noticed
+                // later, and then there was no way to it except the task
+                // manager. Enabled everywhere, because it has nothing to do
+                // with the selection or the tab.
+                if ui
+                    .button(labelled(self.glyphs.explorer, self.tr.btn_restart_explorer))
+                    .on_hover_text(self.tr.tip_restart_explorer)
+                    .clicked()
+                {
+                    match elevation::restart_explorer() {
+                        Ok(()) => {
+                            self.dialog = Some(Dialog::Note(self.tr.msg_explorer_back.into()))
+                        }
+                        Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
+                    }
+                }
+
                 let search = ui
                     .add(
                         egui::TextEdit::singleline(&mut self.search)
@@ -3180,24 +3205,50 @@ impl App {
 
             if !usable {
                 ui.small(self.tr.svc_async);
-            } else if tool.settings != spec::Settings::None {
-                let open = self.service_open == Some(index);
+            } else {
+                // One tool, one click. Ticking a box and then finding the
+                // button that acts on the ticks is two steps for what is
+                // usually a decision about a single tool; the boxes stay for
+                // the case they were built for, which is a whole category.
                 if ui
-                    .small_button(match open {
-                        true => self.tr.svc_settings_hide,
-                        false => self.tr.svc_settings_show,
-                    })
-                    .on_hover_text(self.tr.tip_svc_settings)
+                    .small_button(self.glyphs.new.to_string())
+                    .on_hover_text(self.tr.tip_svc_add_one)
                     .clicked()
                 {
-                    self.service_open = match open {
-                        true => None,
-                        false => Some(index),
-                    };
+                    self.create_one_tool(index);
                 }
-                if self.service_settings_filled(index, &tool) {
-                    ui.small(self.tr.svc_settings_set);
+
+                if tool.settings != spec::Settings::None {
+                    let open = self.service_open == Some(index);
+                    if ui
+                        .small_button(match open {
+                            true => self.tr.svc_settings_hide,
+                            false => self.tr.svc_settings_show,
+                        })
+                        .on_hover_text(self.tr.tip_svc_settings)
+                        .clicked()
+                    {
+                        self.service_open = match open {
+                            true => None,
+                            false => Some(index),
+                        };
+                    }
+                    if self.service_settings_filled(index, &tool) {
+                        ui.small(self.tr.svc_settings_set);
+                    }
                 }
+            }
+
+            // The service's own documentation, at the place this tool sits.
+            // Everything the settings need is spelled out there, and rebuilding
+            // that in a tooltip would be a worse copy of it.
+            if let Some(url) = self.doc_url_for(&tool)
+                && ui
+                    .small_button(self.glyphs.link.to_string())
+                    .on_hover_text(self.tr.tip_svc_docs)
+                    .clicked()
+            {
+                let _ = crate::webtool::shell::open(&url);
             }
         });
 
@@ -3308,6 +3359,28 @@ impl App {
 
     /// Turns every ticked tool into a favourite, in one go.
     fn create_picked_tools(&mut self) {
+        let mut picked: Vec<usize> = self.service_picked.iter().copied().collect();
+        // The order the description listed them in, so the menu reads the way
+        // the service's own documentation does.
+        picked.sort_unstable();
+        self.create_tools(&picked);
+    }
+
+    /// Where this tool is documented, if the service says enough to know.
+    fn doc_url_for(&self, tool: &spec::Tool) -> Option<String> {
+        let service = self
+            .service_focus
+            .and_then(|index| self.services.get(index))?;
+        Some(docs_url(&service.spec_url, tool))
+    }
+
+    /// Makes a favourite of one tool, right away.
+    fn create_one_tool(&mut self, index: usize) {
+        self.create_tools(&[index]);
+    }
+
+    /// The one road both ways of adding a tool travel.
+    fn create_tools(&mut self, indices: &[usize]) {
         let Some(service) = self
             .service_focus
             .and_then(|index| self.services.get(index))
@@ -3315,13 +3388,8 @@ impl App {
             return;
         };
 
-        let mut picked: Vec<usize> = self.service_picked.iter().copied().collect();
-        // The order the description listed them in, so the menu reads the way
-        // the service's own documentation does.
-        picked.sort_unstable();
-
         let mut made = Vec::new();
-        for index in picked {
+        for &index in indices {
             let Some(tool) = self.service_tools.get(index) else {
                 continue;
             };
@@ -3345,10 +3413,15 @@ impl App {
         }
 
         let count = made.len();
+        if count == 0 {
+            return;
+        }
         match favourites::add_many(made) {
             Ok(fresh) => {
                 self.reload_favourites();
-                self.service_picked.clear();
+                for index in indices {
+                    self.service_picked.remove(index);
+                }
                 self.dialog = Some(Dialog::Note(
                     self.tr
                         .fmt_svc_created
@@ -3374,6 +3447,29 @@ impl App {
         .default_width(620.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
+            // A template only fills in what cannot be read off the service
+            // itself. It is offered before the fields so it is the first thing
+            // tried, not a correction afterwards.
+            let mut hint = HINT_SPEC_URL;
+            ui.horizontal(|ui| {
+                ui.label(self.tr.svc_template)
+                    .on_hover_text(self.tr.tip_svc_template);
+                for template in service::TEMPLATES {
+                    if template.name.is_empty() {
+                        continue;
+                    }
+                    if draft.name.trim() == template.name {
+                        hint = template.address_hint;
+                    }
+                    if ui.small_button(template.name).clicked() {
+                        draft.name = template.name.to_string();
+                        draft.result_path = template.result_path.to_string();
+                        draft.allow_insecure = template.allow_insecure;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+
             egui::Grid::new("service-form")
                 .num_columns(2)
                 .spacing([10.0, 6.0])
@@ -3390,7 +3486,7 @@ impl App {
                     ui.add(
                         egui::TextEdit::singleline(&mut draft.spec_url)
                             .desired_width(420.0)
-                            .hint_text(HINT_SPEC_URL),
+                            .hint_text(hint),
                     );
                     ui.end_row();
 
@@ -6104,6 +6200,37 @@ fn number_hint(minimum: Option<f64>, maximum: Option<f64>) -> String {
     }
 }
 
+/// Where a service documents one of its tools, for a human to read.
+///
+/// The stored address is the machine readable document -- `…/api/docs/openapi.json`
+/// after a fetch. The page people read is its directory, and the two viewers in
+/// wide use (Scalar and Swagger UI) both address a single operation with the same
+/// fragment: `#tag/<tag>/<method><path>`. A fragment that does not match leaves
+/// the reader on the front page of the documentation, which is still the right
+/// place -- so guessing costs nothing and usually saves the search.
+fn docs_url(spec_url: &str, tool: &spec::Tool) -> String {
+    let base = spec_url.trim().split('#').next().unwrap_or("").trim_end();
+    let page = match base.rsplit_once('/') {
+        // A document, not a page: its directory is what a human opens.
+        Some((directory, file))
+            if file.ends_with(".json") || file.ends_with(".yaml") || file.ends_with(".yml") =>
+        {
+            format!("{directory}/")
+        }
+        _ => base.to_string(),
+    };
+
+    match &tool.tag {
+        Some(tag) => format!(
+            "{page}#tag/{}/{}{}",
+            tag.to_lowercase(),
+            tool.method.to_uppercase(),
+            tool.path
+        ),
+        None => page,
+    }
+}
+
 /// Cuts a service's own prose down to something a panel can hold.
 fn shorten(text: &str, limit: usize) -> String {
     let text = text.trim();
@@ -6342,6 +6469,46 @@ fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload, field_wid
                 ResultAction::Report => {}
             }
         });
+
+    // The form fields that travel beside the file. This is where a tool's
+    // settings live, and until now they were invisible here: a favourite made
+    // on the services tab carried them, and opening it for editing showed no
+    // trace of them at all.
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(tr.fav_fields).on_hover_text(tr.tip_fav_fields);
+        if ui.small_button(tr.fav_header_add).clicked() {
+            upload.fields.push(Header {
+                name: String::new(),
+                value: String::new(),
+            });
+        }
+    });
+
+    let mut drop_field = None;
+    for (index, field) in upload.fields.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut field.name)
+                    .desired_width(160.0)
+                    .hint_text("settings"),
+            );
+            // Multiline: the value is usually JSON, and a single line hides
+            // everything past the first forty characters of it.
+            ui.add(
+                egui::TextEdit::multiline(&mut field.value)
+                    .desired_width(320.0)
+                    .desired_rows(2)
+                    .hint_text(HINT_SETTINGS),
+            );
+            if ui.small_button("\u{00d7}").clicked() {
+                drop_field = Some(index);
+            }
+        });
+    }
+    if let Some(index) = drop_field {
+        upload.fields.remove(index);
+    }
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -7741,6 +7908,30 @@ mod tests {
     }
 
     #[test]
+    fn the_documentation_of_a_tool_is_the_page_beside_its_description() {
+        let tagged = tool("Compress", Some("Tools"));
+
+        // The stored address is the document; a human wants its directory.
+        assert_eq!(
+            docs_url("http://host:1349/api/docs/openapi.json", &tagged),
+            "http://host:1349/api/docs/#tag/tools/POST/api/v1/tools/compress"
+        );
+        // An address that is already a page stays one.
+        assert_eq!(
+            docs_url("http://host:1349/api/docs/", &tagged),
+            "http://host:1349/api/docs/#tag/tools/POST/api/v1/tools/compress"
+        );
+
+        // Without a tag there is no anchor to build, and the front page of the
+        // documentation is still the right place to land.
+        let untagged = tool("Compress", None);
+        assert_eq!(
+            docs_url("http://host:1349/api/docs/", &untagged),
+            "http://host:1349/api/docs/"
+        );
+    }
+
+    #[test]
     fn the_range_of_a_number_is_offered_as_far_as_it_is_known() {
         assert_eq!(number_hint(Some(1.0), Some(100.0)), "1 \u{2013} 100");
         assert_eq!(number_hint(Some(1.0), None), "\u{2265} 1");
@@ -7983,6 +8174,8 @@ mod tests {
             glyphs.inspect,
             glyphs.copy,
             glyphs.restore,
+            glyphs.explorer,
+            glyphs.link,
         ];
 
         assert_eq!(filled.len(), Glyphs::NAMES.len());

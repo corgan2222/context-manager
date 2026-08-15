@@ -69,6 +69,43 @@ pub fn save(services: &[Service]) -> Result<()> {
     std::fs::write(&path, text).with_context(|| format!("{}", path.display()))
 }
 
+/// A service this program already knows the awkward answers for.
+///
+/// Not a directory of services and not an endorsement: an address on somebody
+/// else's network is useless here, and the key is theirs. What a template saves
+/// is the two fields nobody can guess from the outside -- where the answer names
+/// the finished file, and whether plain `http://` has to be allowed -- plus a
+/// hint of what the address looks like. Everything else the description says for
+/// itself.
+pub struct Template {
+    pub name: &'static str,
+    /// What the address usually looks like, as a hint in the empty field.
+    pub address_hint: &'static str,
+    pub result_path: &'static str,
+    pub allow_insecure: bool,
+}
+
+/// The templates on offer. Deliberately short: a wrong entry here costs more
+/// than a missing one, because it looks like knowledge.
+pub const TEMPLATES: &[Template] = &[
+    Template {
+        // Self-hosted, so the address is always a private one and the key is
+        // generated per installation. Measured against it on 2026-08-15.
+        name: "SnapOtter",
+        address_hint: "http://<host>:1349/api/docs/",
+        result_path: "downloadUrl",
+        allow_insecure: true,
+    },
+    Template {
+        // The empty template: everything blank, for a service nobody has
+        // written down yet. It exists so the picker is never a dead end.
+        name: "",
+        address_hint: "https://<host>/api/docs/",
+        result_path: "",
+        allow_insecure: false,
+    },
+];
+
 /// Addresses worth trying for a description, best guess first.
 ///
 /// What a user has in the clipboard is the page they were just reading —
