@@ -113,6 +113,7 @@ fn main() -> ExitCode {
         cli::Command::Created => cli::run_created(),
         cli::Command::Favourite(what) => cli::run_favourite(what),
         cli::Command::Backups => cli::run_backups(),
+        cli::Command::BackupAll => cli::run_backup_all(),
         cli::Command::Restore(directory) => cli::run_restore(&directory),
         cli::Command::Delete { path, confirmed } => cli::run_delete(&path, confirmed),
         cli::Command::Smoke => smoke::run().map_err(|e| anyhow::anyhow!("eframe: {e}")),

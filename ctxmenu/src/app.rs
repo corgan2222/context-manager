@@ -270,6 +270,11 @@ pub struct App {
 
     backups: Vec<(std::path::PathBuf, BackupManifest)>,
     backup_error: Option<String>,
+    /// Receives the result of a full backup.
+    ///
+    /// Its own channel and its own thread: a full backup is around forty
+    /// `reg.exe` calls, and the frame path cannot wait for that.
+    full_backup_rx: Option<Receiver<Result<String, String>>>,
 
     /// The tool box (`favourites.json`), read on entering the tab and after
     /// every change — never per frame.
@@ -540,6 +545,7 @@ impl App {
             progress_label: String::new(),
             backups: Vec::new(),
             backup_error: None,
+            full_backup_rx: None,
             favourites: Vec::new(),
             favourite_error: None,
             favourite_focus: None,
@@ -1428,6 +1434,62 @@ impl App {
         }
     }
 
+    /// Backs up every place this tool touches, on a worker thread.
+    ///
+    /// The "look first, decide later" button next to it takes what is on
+    /// screen; this one takes the lot, including the branches no scan
+    /// returned — the containers, so entries added since the last scan come
+    /// along too.
+    fn full_backup(&mut self, ctx: &egui::Context) {
+        if self.full_backup_rx.is_some() {
+            return;
+        }
+
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+
+        std::thread::Builder::new()
+            .name("full-backup".into())
+            .spawn(move || {
+                let paths = crate::registry::paths::full_backup_paths();
+                let result = backup::export("gesamt", &paths)
+                    .map(|token| token.directory().display().to_string())
+                    .map_err(|error| format!("{error:#}"));
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            })
+            .expect("backup thread");
+
+        self.full_backup_rx = Some(rx);
+    }
+
+    /// Picks up the result of a full backup. Never blocks.
+    fn poll_full_backup(&mut self) {
+        let Some(rx) = &self.full_backup_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(directory)) => {
+                self.full_backup_rx = None;
+                self.reload_backups();
+                self.dialog = Some(Dialog::Error(
+                    self.tr.fmt_backup_created.replace("{}", &directory),
+                ));
+            }
+            Ok(Err(error)) => {
+                self.full_backup_rx = None;
+                self.dialog = Some(Dialog::Error(error));
+            }
+            // Same lesson as `poll_scan`: a dead channel has to end the wait,
+            // or the button stays disabled for the rest of the session and
+            // looks exactly like a crash.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.full_backup_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     /// Applies a plan on a worker thread.
     ///
     /// On a thread because it takes a backup through `reg.exe` and may wait
@@ -1535,6 +1597,7 @@ impl eframe::App for App {
         // Cheap per-frame bookkeeping, all of it non-blocking.
         self.frame_times.push(ctx.input(|i| i.stable_dt));
         self.poll_scan();
+        self.poll_full_backup();
         self.icons.poll(&ctx);
         self.place_window_once();
         self.sync_titlebar(ui);
@@ -2597,10 +2660,21 @@ impl App {
                     self.tr.editor_title
                 })
                 .collapsible(false)
-                .resizable(false)
+                // Wide paths are the normal case — `"C:\Program Files\…" "%1"`
+                // does not fit in any width worth defaulting to — so the
+                // window can be pulled wider and the fields follow (see
+                // `field_width` below). Height stays automatic: it is the sum
+                // of the rows, and dragging it would only ever add blank space.
+                .resizable([true, false])
+                .default_width(620.0)
                 .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                 .show(ui.ctx(), |ui| {
                     ui.set_min_width(560.0);
+                    // What a text field may take: everything the window offers
+                    // minus the label column, the buttons behind the field and
+                    // the frame. Recomputed per frame, so dragging the edge
+                    // moves the fields with it.
+                    let field_width = (ui.available_width() - 150.0).max(240.0);
                     if let Some(path) = &existing {
                         ui.small(path);
                         ui.colored_label(ui.visuals().warn_fg_color, self.tr.editor_view_note);
@@ -2751,7 +2825,7 @@ impl App {
                                 let before = entry.display_name.clone();
                                 ui.add(
                                     egui::TextEdit::singleline(&mut entry.display_name)
-                                        .desired_width(400.0),
+                                        .desired_width(field_width),
                                 );
                                 // The key name follows the display name until the
                                 // moment someone edits it by hand; after that it is
@@ -2767,7 +2841,7 @@ impl App {
                                 ui.label(self.tr.editor_key_name);
                                 ui.add(
                                     egui::TextEdit::singleline(&mut entry.key_name)
-                                        .desired_width(400.0),
+                                        .desired_width(field_width),
                                 );
                                 ui.end_row();
 
@@ -2777,11 +2851,27 @@ impl App {
                                 // absent one.
                                 if !entry.is_submenu() {
                                     ui.label(self.tr.editor_command);
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut entry.command)
-                                            .desired_width(400.0)
-                                            .hint_text(HINT_COMMAND),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut entry.command)
+                                                .desired_width(field_width - 26.0)
+                                                .hint_text(HINT_COMMAND),
+                                        );
+                                        // Pick the program instead of typing
+                                        // its path. What comes back is quoted
+                                        // and given `"%1"`, which is what the
+                                        // field would have needed anyway.
+                                        if folder_button(ui, icons, self.tr.tip_pick_program)
+                                            && let Some(path) = crate::filedialog::pick_file(
+                                                None,
+                                                &crate::filedialog::PROGRAMS,
+                                                &entry.command,
+                                            )
+                                        {
+                                            entry.command =
+                                                format!("\"{}\" \"%1\"", path.display());
+                                        }
+                                    });
                                     ui.end_row();
                                 } else {
                                     ui.label(self.tr.editor_children);
@@ -2796,10 +2886,28 @@ impl App {
                                     let mut icon = entry.icon.clone().unwrap_or_default();
                                     ui.add(
                                         egui::TextEdit::singleline(&mut icon)
-                                            .desired_width(360.0)
+                                            .desired_width(field_width - 52.0)
                                             .hint_text(HINT_ICON),
                                     );
-                                    let icon = icon.trim().to_string();
+                                    let mut icon = icon.trim().to_string();
+
+                                    // The same picker as for the command, with
+                                    // `.ico`, `.exe` and `.dll` offered: an
+                                    // icon reference is a file first, and the
+                                    // index after the comma is the second step.
+                                    if folder_button(ui, icons, self.tr.tip_pick_icon)
+                                        && let Some(path) = crate::filedialog::pick_file(
+                                            None,
+                                            &crate::filedialog::ICONS,
+                                            &icon,
+                                        )
+                                    {
+                                        // `,0` because a reference is split at
+                                        // its last comma: without an index a
+                                        // path containing one would lose
+                                        // everything behind it.
+                                        icon = format!("{},0", path.display());
+                                    }
 
                                     // What the reference actually resolves to,
                                     // beside the field that names it. The table
@@ -2879,6 +2987,27 @@ impl App {
                             ui.colored_label(colour, fault_text(problem.fault(), self.tr));
                         }
                     }
+
+                    // What the placeholders mean. Folded away, because it is
+                    // needed once and then never again — and the one that
+                    // actually catches people out (`%1` in a background
+                    // category) is checked above and said out loud anyway.
+                    ui.add_space(4.0);
+                    egui::CollapsingHeader::new(self.tr.editor_placeholders)
+                        .id_salt("editor-placeholders")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            egui::Grid::new("editor-placeholder-grid")
+                                .num_columns(2)
+                                .spacing([12.0, 2.0])
+                                .show(ui, |ui| {
+                                    for (token, meaning) in PLACEHOLDERS {
+                                        ui.label(egui::RichText::new(*token).monospace());
+                                        ui.label(meaning(self.tr));
+                                        ui.end_row();
+                                    }
+                                });
+                        });
 
                     // What this tool created before — a reminder while
                     // adding something, and noise while reading somebody
@@ -3697,14 +3826,14 @@ impl App {
                             // are two different jobs — and this is the shortest
                             // way to "what actually is that program".
                             if let Some(path) = &target
-                                && ui
-                                    .small_button("\u{1f4c1}")
-                                    .on_hover_text(
-                                        self.tr
-                                            .fmt_tip_show_in_explorer
-                                            .replace("{}", &path.display().to_string()),
-                                    )
-                                    .clicked()
+                                && folder_button(
+                                    ui,
+                                    &mut self.icons,
+                                    &self
+                                        .tr
+                                        .fmt_tip_show_in_explorer
+                                        .replace("{}", &path.display().to_string()),
+                                )
                                 && let Err(error) = elevation::show_in_explorer(path)
                             {
                                 self.dialog = Some(Dialog::Error(format!("{error:#}")));
@@ -3796,18 +3925,50 @@ impl App {
                             ui.add_space(6.0);
                             ui.colored_label(ui.visuals().warn_fg_color, self.tr.msg_needs_admin);
                         }
+
+                        // What the symbols in the table's flag column mean, for
+                        // this entry and no other. A lock and an arrow say that
+                        // something is special about a row; only here is there
+                        // room to say what.
+                        let flags = explained_flags(entry, self.tr);
+                        if !flags.is_empty() {
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.label(egui::RichText::new(self.tr.detail_flags).weak().small());
+                            for (name, meaning) in flags {
+                                ui.add_space(2.0);
+                                ui.label(egui::RichText::new(name).strong());
+                                ui.add(egui::Label::new(meaning).wrap());
+                            }
+                        }
                     });
             });
     }
 
     fn backup_list(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
+        let mut start_full = false;
         ui.horizontal(|ui| {
             ui.heading(self.tr.tab_backups);
             if ui.button(self.tr.btn_rescan).clicked() {
                 self.reload_backups();
             }
+            let running = self.full_backup_rx.is_some();
+            if ui
+                .add_enabled(!running, egui::Button::new(self.tr.btn_backup_all))
+                .on_hover_text(self.tr.tip_backup_all)
+                .on_disabled_hover_text(self.tr.tip_backup_all)
+                .clicked()
+            {
+                start_full = true;
+            }
+            if running {
+                ui.spinner();
+            }
         });
+        if start_full {
+            self.full_backup(ui.ctx());
+        }
         ui.separator();
 
         if let Some(error) = &self.backup_error {
@@ -4339,7 +4500,30 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
 /// indexed into would be less readable at every call site than the character
 /// itself, and it is the *checking* that has to be complete, not the plumbing.
 #[cfg(test)]
-const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}\u{1f4c1}";
+const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}";
+
+/// What Windows substitutes in a command line, and what each one means.
+///
+/// The list is short on purpose: these five are what turns up in the 3118 real
+/// command lines this machine carries. `%*`, `%2`… exist as well and are for
+/// verbs invoked with several arguments, which a context menu never does.
+type Placeholder = (&'static str, fn(&'static Strings) -> &'static str);
+const PLACEHOLDERS: &[Placeholder] = &[
+    ("%1", |tr| tr.ph_one),
+    ("%L", |tr| tr.ph_long),
+    ("%V", |tr| tr.ph_verb),
+    ("%W", |tr| tr.ph_working),
+    ("%D", |tr| tr.ph_desktop),
+];
+
+/// Windows' own folder icon, for the buttons that open one.
+///
+/// The emoji `📁` was there first and came out as a pale outline from the
+/// fallback font — beside real, coloured shell icons in the same list it
+/// looked like a rendering fault. This is the same picture Explorer uses,
+/// pulled through the same extractor as every other icon here: resource 4 of
+/// `shell32.dll` is the plain closed folder.
+const FOLDER_ICON: &str = r"%SystemRoot%\system32\shell32.dll,-4";
 
 /// The three branches of the program tree.
 ///
@@ -4397,6 +4581,21 @@ impl Branch {
 /// language, and `1.0.0` reads as a version without help.
 fn window_title(tr: &'static Strings) -> String {
     format!("{} {}", tr.app_title, crate::VERSION)
+}
+
+/// A small button carrying Windows' folder icon. Returns whether it was hit.
+///
+/// One function for all of them, because there are four by now — the detail
+/// pane, the command field, the icon field — and a 16-pixel button assembled
+/// three times would drift apart in three directions.
+fn folder_button(ui: &mut Ui, icons: &mut IconCache, tooltip: &str) -> bool {
+    let texture = icons.get(FOLDER_ICON).clone();
+    ui.add(egui::Button::image(egui::load::SizedTexture::new(
+        texture.id(),
+        egui::vec2(16.0, 16.0),
+    )))
+    .on_hover_text(tooltip)
+    .clicked()
 }
 
 /// A fresh, empty row of the submenu list.
@@ -4696,6 +4895,47 @@ fn field(ui: &mut Ui, label: &str, value: &str) {
     ui.label(egui::RichText::new(label).weak().small());
     // Selectable so a registry path can be copied out into regedit.
     ui.add(egui::Label::new(value).selectable(true).wrap());
+}
+
+/// The flags of an entry, in words, for the detail pane.
+///
+/// The table has room for a symbol and no more; a lock and an arrow say *that*
+/// something is special and not *what*. Only what is actually set is listed —
+/// a fixed legend of six lines would be five lines of noise on most entries.
+fn explained_flags(
+    entry: &ContextEntry,
+    tr: &'static Strings,
+) -> Vec<(&'static str, &'static str)> {
+    let mut out = Vec::new();
+
+    if entry.read_only {
+        out.push((tr.badge_readonly, tr.why_readonly));
+    }
+    if entry.hidden {
+        out.push((tr.badge_hidden, tr.why_hidden));
+    }
+    if entry.extended {
+        out.push((tr.badge_shift, tr.why_extended));
+    }
+    if let EntryKind::ShellEx { blocked, .. } = &entry.kind {
+        if *blocked {
+            out.push((tr.badge_blocked, tr.why_blocked));
+        }
+        // Not a flag but the same question — "why can I not change the text" —
+        // and this is where it gets an answer.
+        out.push((tr.kind_shellex, tr.why_com_handler));
+    }
+    if entry.position.is_some() {
+        out.push((tr.detail_position, tr.why_position));
+    }
+    if matches!(
+        entry.scope,
+        crate::model::Scope::Machine | crate::model::Scope::Machine32
+    ) {
+        out.push((tr.badge_admin, tr.why_machine));
+    }
+
+    out
 }
 
 /// Segoe UI for the text, Segoe UI Symbol for everything that is not a letter.

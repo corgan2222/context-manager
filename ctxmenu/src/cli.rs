@@ -44,6 +44,8 @@ pub enum Command {
         confirmed: bool,
     },
     Backups,
+    /// Back up every place this tool touches, in one go.
+    BackupAll,
     Restore(String),
     Delete {
         path: String,
@@ -111,6 +113,8 @@ Verwendung / Usage:
                             nötigenfalls Rechteerhöhung / set or clear a flag,
                             with a backup and elevation if needed
   ctxmenu backups           Backups auflisten / list backups
+  ctxmenu backup-all        Alles sichern, was dieses Werkzeug anfasst /
+                            back up every place this tool touches
   ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
   ctxmenu delete <key> --yes
                             Schlüssel sichern und löschen /
@@ -267,6 +271,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             });
         }
         "backups" => return Ok(Command::Backups),
+        "backup-all" => return Ok(Command::BackupAll),
         "restore" => {
             let directory = args
                 .get(1)
@@ -1053,6 +1058,47 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Backs up every place this tool touches — the same set the window's
+/// "back up everything" button takes.
+pub fn run_backup_all() -> Result<()> {
+    let paths = crate::registry::paths::full_backup_paths();
+    let started = std::time::Instant::now();
+    let token = backup::export("gesamt", &paths)?;
+    let elapsed = started.elapsed();
+
+    let directory = token.directory();
+    let manifest = backup::read_manifest(directory)?;
+    // Size as well as count: "did it really take everything" is answered by
+    // the megabytes, not by the number of files.
+    let bytes: u64 = std::fs::read_dir(directory)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0);
+
+    crate::outln!(
+        "{} von {} Schlüsseln gesichert in {:.2} s, {:.1} MB / {} of {} keys in {:.2} s",
+        manifest.entries.len(),
+        paths.len(),
+        elapsed.as_secs_f32(),
+        bytes as f64 / (1024.0 * 1024.0),
+        manifest.entries.len(),
+        paths.len(),
+        elapsed.as_secs_f32(),
+    );
+    crate::outln!("{}", directory.display());
+    if !manifest.missing.is_empty() {
+        // Not a failure: not every category exists in every scope, and a
+        // machine without a 32-bit classes tree is normal.
+        crate::outln!("Nicht vorhanden / not present: {}", manifest.missing.len());
+    }
+    Ok(())
 }
 
 pub fn run_backups() -> Result<()> {

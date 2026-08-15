@@ -58,7 +58,9 @@ switchable at runtime; this README is German only.*
   *geschickt* — dazu unten mehr.
 - **Sichern und zurückholen.** Jede Aktion legt vorher ein Backup an, eine
   Gruppenaktion genau eines für die ganze Gruppe. Der Reiter *Sicherungen*
-  zeigt den Verlauf und spielt zurück.
+  zeigt den Verlauf und spielt zurück — und hat einen Knopf **Alles sichern**,
+  der jeden Ort mitnimmt, den dieses Werkzeug überhaupt anfasst (auf dieser
+  Maschine 1,2 MB in unter einer Sekunde).
 - **Untermenüs** werden mit ihren Kindern angezeigt, eingerückt unter dem
   Eintrag, in dem sie hängen.
 - **Einen Eintrag ansehen:** Doppelklick auf eine Zeile — oder Rechtsklick,
@@ -185,6 +187,7 @@ ctxmenu programs                         nach Programm gruppiert
 ctxmenu hide "<schlüssel>" --yes         ausblenden, mit Sicherung
 ctxmenu delete "<schlüssel>" --yes       löschen, mit Sicherung
 ctxmenu backups                          Sicherungen auflisten
+ctxmenu backup-all                       alles sichern, was das Werkzeug anfasst
 ctxmenu restore "<verzeichnis>"          Sicherung zurückspielen
 ctxmenu create --category directory --name "Mit Editor öffnen"
                --command "\"C:\Windows\notepad.exe\" \"%1\""

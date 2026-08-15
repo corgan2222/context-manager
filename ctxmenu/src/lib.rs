@@ -17,6 +17,7 @@ pub mod cli;
 pub mod console;
 pub mod elevation;
 pub mod favourites;
+pub mod filedialog;
 pub mod i18n;
 pub mod icons;
 pub mod model;

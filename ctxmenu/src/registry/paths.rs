@@ -143,6 +143,35 @@ pub fn base_sources() -> Vec<CategorySource> {
         .collect()
 }
 
+/// Every place this tool ever reads or writes, for a backup of the lot.
+///
+/// Containers, not individual entries: `reg.exe` exports a key with everything
+/// below it in one call, so fourteen locations per scope cover what nine
+/// hundred single exports would — and a container also captures the entries
+/// that were added *after* the last scan.
+///
+/// `SystemFileAssociations` is taken whole rather than per extension. It is
+/// one key with a few hundred children on this machine, and enumerating the
+/// 1674 registered extensions to name them individually would produce a
+/// slower backup of the same data.
+///
+/// The blocked-CLSID list is included although it lives outside the classes
+/// tree: it is the one thing this program writes that no category covers.
+pub fn full_backup_paths() -> Vec<String> {
+    let mut out = Vec::new();
+
+    for scope in Scope::ALL {
+        let at = Location::classes(scope);
+        for source in base_sources() {
+            out.push(at.display_path(&source.relative));
+        }
+        out.push(at.display_path("SystemFileAssociations"));
+    }
+
+    out.push(blocked_list_display_path());
+    out
+}
+
 /// Windows' own stock of verbs, as a location to scan.
 ///
 /// Not one of the base categories and never scanned per scope: the
@@ -362,6 +391,41 @@ pub fn blocked_list_display_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_backup_covers_every_place_this_tool_touches() {
+        let paths = full_backup_paths();
+
+        // Every base location, in every scope, plus the file type branch.
+        assert_eq!(
+            paths.len(),
+            (base_sources().len() + 1) * Scope::ALL.len() + 1,
+            "one path per source and scope, plus SystemFileAssociations and \
+             the blocked list"
+        );
+
+        let unique: std::collections::HashSet<&String> = paths.iter().collect();
+        assert_eq!(unique.len(), paths.len(), "a key exported twice is wasted");
+
+        for path in &paths {
+            assert!(
+                path.starts_with("HKCU\\") || path.starts_with("HKLM\\"),
+                "{path} is not in reg.exe notation"
+            );
+        }
+
+        // The three that would be missed by taking only what a scan returned.
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.ends_with(r"Classes\Directory\shell"))
+        );
+        assert!(paths.iter().any(|p| p.ends_with("SystemFileAssociations")));
+        assert!(paths.contains(&blocked_list_display_path()));
+
+        // The 32-bit view really is a third root and not a repeat of the first.
+        assert!(paths.iter().any(|p| p.contains("WOW6432Node")));
+    }
 
     #[test]
     fn every_base_category_has_at_least_one_source() {

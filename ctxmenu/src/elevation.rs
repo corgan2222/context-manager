@@ -156,17 +156,31 @@ pub fn notify_shell() {
 /// button is "which file is this", and a folder with two hundred entries and
 /// no selection does not answer it.
 ///
-/// The path is passed as one argument, not as a command line, so a program
-/// under `C:\Program Files\…` needs no quoting of ours — `Command` does it.
+/// Two rules, and getting either wrong opens the user's Documents folder
+/// instead — which is exactly what the first version of this did:
+///
+/// 1. **The quotes go around the path, not around the whole argument.**
+///    `Command::arg` quotes an argument containing spaces as a unit, so
+///    `explorer.exe "/select,C:\Program Files\…"` reaches Explorer, and
+///    Explorer does not recognise that as a switch at all. `raw_arg` passes
+///    the command line through untouched, and the quotes are placed by hand
+///    where Explorer wants them: `/select,"C:\Program Files\…"`.
+/// 2. **No space after the comma.** `/select, "…"` is read as two arguments.
+///
 /// Deliberately fire and forget: Explorer detaches immediately, and there is
 /// nothing to wait for or report.
 pub fn show_in_explorer(path: &Path) -> Result<()> {
-    // The parameter really is one string with a comma in it. `/select, "path"`
-    // with a space after the comma opens the wrong thing — Explorer treats the
-    // space as the start of a second argument.
-    let argument = format!("/select,{}", path.display());
-    Command::new("explorer.exe")
-        .arg(argument)
+    #[cfg(windows)]
+    use std::os::windows::process::CommandExt as _;
+
+    let argument = format!("/select,\"{}\"", path.display());
+    let mut command = Command::new("explorer.exe");
+    #[cfg(windows)]
+    command.raw_arg(&argument);
+    #[cfg(not(windows))]
+    command.arg(&argument);
+
+    command
         .spawn()
         .with_context(|| format!("Explorer für {path:?} / for {path:?}"))?;
     Ok(())

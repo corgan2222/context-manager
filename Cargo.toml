@@ -45,6 +45,7 @@ features = [
     "Win32_System_DataExchange",       # clipboard: Open/Empty/Set/CloseClipboard
     "Win32_System_Memory",             # GlobalAlloc/Lock/Unlock for the CF_HDROP block
     "Win32_UI_Shell",                  # SHLoadIndirectString, SHDefExtractIconW
+    "Win32_UI_Controls_Dialogs",       # GetOpenFileNameW: pick a program or an icon file
     "Win32_UI_WindowsAndMessaging",    # HICON, ICONINFO, DrawIconEx, SetWindowPos
     "Win32_Security",                  # token elevation check
     "Win32_Storage_FileSystem",        # version resource: FileDescription
