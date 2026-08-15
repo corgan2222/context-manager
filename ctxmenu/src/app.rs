@@ -24,7 +24,7 @@ use crate::registry::backup::{self, BackupManifest};
 use crate::registry::create::{self, Fault, NewChild, NewEntry, Problem};
 use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
-use crate::service::{self, Service, spec};
+use crate::service::{self, Service, grouping, spec};
 use crate::settings::{Language, Settings, ThemeChoice};
 use crate::theme;
 
@@ -830,6 +830,12 @@ pub struct App {
     /// Not persisted: a description is fetched again when it is wanted, and
     /// keeping a copy would mean showing tools the service no longer has.
     service_tools: Vec<spec::Tool>,
+    /// How this service's tools fall into groups.
+    ///
+    /// Worked out once when the description arrives, never per frame and never
+    /// from a filtered view: on the result of a search box the category segment
+    /// is often constant, and some incidental axis would win instead.
+    service_grouping: Option<grouping::Grouping>,
     /// Which tools are ticked, by index into `service_tools`.
     service_picked: rustc_hash::FxHashSet<usize>,
     /// What was typed into the settings field of a tool, by the same index.
@@ -846,6 +852,12 @@ pub struct App {
     /// Filters the tool list. With 351 endpoints the list is unusable without
     /// it, and it is the first thing anyone reaches for.
     service_search: String,
+    /// Whether the tools that answer with a job number are listed at all.
+    ///
+    /// Off: they cannot be made into a working entry, and on the test service
+    /// they are 52 of 232 — a fifth of the list that exists only to be greyed
+    /// out. The count stays visible so nothing disappears silently.
+    service_show_async: bool,
     /// Receives a fetched description: the address that answered and its tools.
     service_rx: Option<Receiver<FetchedSpec>>,
 
@@ -1129,11 +1141,13 @@ impl App {
             service_error: None,
             service_focus: None,
             service_tools: Vec::new(),
+            service_grouping: None,
             service_picked: rustc_hash::FxHashSet::default(),
             service_settings: rustc_hash::FxHashMap::default(),
             service_fields: rustc_hash::FxHashMap::default(),
             service_open: None,
             service_search: String::new(),
+            service_show_async: false,
             service_rx: None,
             icons: IconCache::new(&cc.egui_ctx),
             glyphs: Glyphs::load(),
@@ -2841,6 +2855,11 @@ impl App {
 
         match outcome {
             Ok((address, tools)) => {
+                // Once, over the complete description, before anything filters
+                // it. Costs one pass over a few hundred paths.
+                self.service_grouping = Some(
+                    grouping::Grouping::infer(&tools).with_other_label(self.tr.svc_group_other),
+                );
                 self.service_tools = tools;
                 // The address that answered is kept, so the next refresh is one
                 // request instead of six guesses.
@@ -3002,6 +3021,16 @@ impl App {
             return;
         }
 
+        let hidden = match self.service_show_async {
+            true => 0,
+            false => self
+                .service_tools
+                .iter()
+                .filter(|tool| tool.usable == spec::Usable::Asynchronous)
+                .count(),
+        };
+        let listed = self.service_tools.len() - hidden;
+
         let mut create = false;
         ui.horizontal(|ui| {
             ui.add(
@@ -3013,7 +3042,7 @@ impl App {
             ui.label(
                 self.tr
                     .fmt_svc_counts
-                    .replacen("{}", &self.service_tools.len().to_string(), 1)
+                    .replacen("{}", &listed.to_string(), 1)
                     .replacen("{}", &self.service_picked.len().to_string(), 1),
             );
 
@@ -3040,10 +3069,38 @@ impl App {
                 }
             });
         });
+
+        // What was left out, and the way back in. Silently dropping a fifth of
+        // a service's endpoints would be the kind of helpfulness nobody can
+        // check.
+        if hidden > 0 {
+            ui.horizontal(|ui| {
+                ui.small(
+                    self.tr
+                        .fmt_svc_async_hidden
+                        .replacen("{}", &hidden.to_string(), 1),
+                );
+                if ui
+                    .small_button(self.tr.svc_show_async)
+                    .on_hover_text(self.tr.tip_svc_show_async)
+                    .clicked()
+                {
+                    self.service_show_async = true;
+                }
+            });
+        }
         ui.separator();
 
         let needle = self.service_search.to_lowercase();
-        let groups = group_tools(&self.service_tools, &needle, self.tr.svc_group_other);
+        let Some(grouping) = self.service_grouping.clone() else {
+            return;
+        };
+        let groups = group_tools(
+            &self.service_tools,
+            &needle,
+            &grouping,
+            self.service_show_async,
+        );
 
         if groups.is_empty() {
             ui.add_space(12.0);
@@ -5961,22 +6018,32 @@ fn blank_service() -> Service {
 /// Order matters twice over: the groups appear in the order their first tool
 /// does, and the tools inside a group keep the order the description listed
 /// them in — which is the order the service's own documentation shows.
-fn group_tools<'a>(
-    tools: &'a [spec::Tool],
+fn group_tools(
+    tools: &[spec::Tool],
     needle: &str,
-    other: &'a str,
+    grouping: &grouping::Grouping,
+    with_async: bool,
 ) -> Vec<(String, Vec<usize>)> {
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (index, tool) in tools.iter().enumerate() {
+        if !with_async && tool.usable == spec::Usable::Asynchronous {
+            continue;
+        }
         if !needle.is_empty() && !matches_tool(tool, needle) {
             continue;
         }
-        let tag = tool.tag.clone().unwrap_or_else(|| other.to_string());
-        match groups.iter_mut().find(|(name, _)| *name == tag) {
+        // The grouping is asked, never recomputed: it belongs to the whole
+        // description, not to whatever the search box left standing.
+        let name = grouping.category_of(tool);
+        match groups.iter_mut().find(|(existing, _)| *existing == name) {
             Some((_, list)) => list.push(index),
-            None => groups.push((tag, vec![index])),
+            None => groups.push((name, vec![index])),
         }
     }
+    // Biggest first, ties alphabetical: with a hundred tools in one group and
+    // one in another, the order they happened to appear in says nothing.
+    groups
+        .sort_by(|(a_name, a), (b_name, b)| b.len().cmp(&a.len()).then_with(|| a_name.cmp(b_name)));
     groups
 }
 
@@ -7552,8 +7619,13 @@ mod tests {
         }
     }
 
+    /// The grouping of a whole description, the way the panel builds it.
+    fn grouped(tools: &[spec::Tool]) -> grouping::Grouping {
+        grouping::Grouping::infer(tools).with_other_label("Sonstige")
+    }
+
     #[test]
-    fn tools_group_the_way_the_service_groups_them_and_keep_its_order() {
+    fn tools_are_listed_under_the_group_the_description_puts_them_in() {
         let tools = vec![
             tool("Compress", Some("Image")),
             tool("Merge", Some("PDF")),
@@ -7561,27 +7633,49 @@ mod tests {
             tool("Convert", None),
         ];
 
-        let groups = group_tools(&tools, "", "Sonstige");
+        let groups = group_tools(&tools, "", &grouped(&tools), false);
 
-        // Groups in the order their first tool appeared, tools in the order the
-        // description listed them.
+        // Biggest group first, and inside it the order the description listed
+        // them in.
         assert_eq!(groups[0].0, "Image");
         assert_eq!(groups[0].1, vec![0, 2]);
-        assert_eq!(groups[1].0, "PDF");
-        assert_eq!(groups[2].0, "Sonstige", "an untagged tool lands in other");
-        assert_eq!(groups[2].1, vec![3]);
+        // Nothing is lost on the way into the groups.
+        assert_eq!(groups.iter().map(|(_, list)| list.len()).sum::<usize>(), 4);
     }
 
     #[test]
     fn a_search_covers_name_path_and_group_and_drops_empty_groups() {
         let tools = vec![tool("Compress", Some("Image")), tool("Merge", Some("PDF"))];
+        let grouping = grouped(&tools);
 
-        assert_eq!(group_tools(&tools, "compress", "-").len(), 1);
+        assert_eq!(group_tools(&tools, "compress", &grouping, false).len(), 1);
         // By path: every tool's path carries its name here.
-        assert_eq!(group_tools(&tools, "/api/v1/tools/merge", "-")[0].0, "PDF");
+        assert_eq!(
+            group_tools(&tools, "/api/v1/tools/merge", &grouping, false)[0].1,
+            vec![1]
+        );
         // By group: the whole group answers.
-        assert_eq!(group_tools(&tools, "image", "-")[0].1, vec![0]);
-        assert!(group_tools(&tools, "nothing like this", "-").is_empty());
+        assert_eq!(group_tools(&tools, "image", &grouping, false)[0].1, vec![0]);
+        assert!(group_tools(&tools, "nothing like this", &grouping, false).is_empty());
+    }
+
+    #[test]
+    fn tools_that_only_hand_back_a_job_number_stay_out_of_the_list() {
+        let mut tools = vec![
+            tool("Compress", Some("Image")),
+            tool("Transcribe", Some("Audio")),
+        ];
+        tools[1].usable = spec::Usable::Asynchronous;
+        let grouping = grouped(&tools);
+
+        // Off by default: on the test service these are 52 of 232, and none of
+        // them can become a working entry.
+        let groups = group_tools(&tools, "", &grouping, false);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, vec![0]);
+
+        // But reachable, so nothing vanishes without a way back.
+        assert_eq!(group_tools(&tools, "", &grouping, true).len(), 2);
     }
 
     #[test]

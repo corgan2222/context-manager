@@ -6,6 +6,7 @@
 //! rotated, a second machine gets the same set — and none of that should mean
 //! filling in six fields by hand per tool.
 
+pub mod grouping;
 pub mod spec;
 
 use std::path::PathBuf;
