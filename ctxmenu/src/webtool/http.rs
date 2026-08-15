@@ -227,16 +227,11 @@ pub fn fetch(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
 
     let status = status_of(&request)?;
     if !(200..300).contains(&status) {
-        let body = body_of(&request).unwrap_or_default();
-        let hint = String::from_utf8_lossy(&body);
-        let hint = hint.trim();
-        bail!(
-            "Die Beschreibung antwortete mit {status} / the description answered {status}{}",
-            match hint.is_empty() {
-                true => String::new(),
-                false => format!(": {}", &hint[..hint.len().min(300)]),
-            }
-        );
+        // Deliberately without the body. An error answer from a documentation
+        // host is an HTML page, and pouring the first 300 characters of
+        // "<!DOCTYPE html><head>…" into the window says nothing and pushes
+        // everything else off screen — which is exactly what it did.
+        bail!("{status}");
     }
 
     body_of(&request)

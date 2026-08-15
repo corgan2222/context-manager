@@ -137,6 +137,7 @@ pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
 
     let headers: Vec<crate::favourites::Header> = service.auth_header.clone().into_iter().collect();
 
+    let tried = candidates.len();
     let mut first_error = None;
     for candidate in candidates {
         let body = match crate::webtool::http::fetch(&candidate, &headers) {
@@ -162,16 +163,21 @@ pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
         }
     }
 
-    match first_error {
-        Some(error) => anyhow::bail!(
-            "Keine lesbare Beschreibung gefunden. Erster Fehler: {error} / \
-             no readable description found"
-        ),
-        None => anyhow::bail!(
-            "Unter dieser Adresse steht keine OpenAPI-Beschreibung / \
-             no OpenAPI description at this address"
-        ),
-    }
+    // What the user needs is the next step, not the first error: they gave an
+    // address that exists, and the answer is that the machine readable document
+    // is somewhere else. Whether the first guess was a 404 or a timeout does
+    // not change what to do about it, so it goes at the end.
+    anyhow::bail!(
+        "Unter dieser Adresse steht keine maschinenlesbare Beschreibung \
+         (OpenAPI/Swagger). {tried} Adresse(n) geprüft. Wenn der Dienst eine \
+         hat, ist sie meist als openapi.json verlinkt — diese Adresse direkt \
+         eintragen. / no machine readable description at this address; {tried} \
+         tried{}",
+        match first_error {
+            Some(error) => format!(" [{error}]"),
+            None => String::new(),
+        }
+    )
 }
 
 /// A readable, stable id from a name — the same rule favourites use.

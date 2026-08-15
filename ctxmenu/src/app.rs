@@ -2977,6 +2977,10 @@ impl App {
         if let Some(error) = &self.service_error {
             ui.colored_label(ui.visuals().error_fg_color, error);
             ui.separator();
+            // Nothing else to say. "This service has no tool that takes a file"
+            // underneath a message about the description not being readable
+            // reads as a second, contradictory finding.
+            return;
         }
 
         if self.service_focus.is_none() {
