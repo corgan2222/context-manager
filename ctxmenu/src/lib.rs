@@ -23,6 +23,7 @@ pub mod icons;
 pub mod model;
 pub mod program;
 pub mod registry;
+pub mod service;
 pub mod settings;
 pub mod smoke;
 pub mod synthetic;

@@ -169,6 +169,24 @@ fn host_of(url: &str) -> &str {
         .unwrap_or(url)
 }
 
+/// Did the service take the job rather than do it?
+///
+/// `202` is the polite signal, and a body carrying `"async": true` is the one
+/// that turns up when the description said `200`. Measured on SnapOtter
+/// (2026-08-15): `image/sharpening` lists only `200` in its own OpenAPI
+/// description and answers `202 {"jobId": …, "async": true}` — so reading the
+/// description is not enough, and a saved file would be a JSON stub with a
+/// picture's name.
+fn took_the_job(answer: &http::Answer) -> bool {
+    if answer.status == 202 {
+        return true;
+    }
+    serde_json::from_slice::<serde_json::Value>(&answer.body)
+        .ok()
+        .and_then(|value| value.get("async").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
+}
+
 /// Turns the answer into something the user can see or keep.
 fn apply_result(
     action: &ResultAction,
@@ -176,6 +194,16 @@ fn apply_result(
     file: &Path,
     endpoint: &str,
 ) -> Result<String> {
+    // Before anything is fetched or written: what came back is a receipt, not
+    // a result, and every path below would make a mess of it.
+    if took_the_job(answer) && !matches!(action, ResultAction::Report) {
+        bail!(
+            "Der Dienst arbeitet im Hintergrund und hat nur eine Auftragsnummer geschickt. \
+             Dieses Werkzeug kann das Ergebnis noch nicht abholen. / the service queued the \
+             job and answered with an id only; fetching that result is not supported yet"
+        );
+    }
+
     match action {
         ResultAction::Report => Ok(format!(
             "Antwort {} / status {}, {} Bytes",
@@ -465,6 +493,49 @@ mod tests {
         assert_eq!(json_path(&value, "output.size").as_deref(), Some("842"));
         assert_eq!(json_path(&value, "output.gibtsnicht"), None);
         assert_eq!(json_path(&value, "input"), Some(r#"{"size":9000}"#.into()));
+    }
+
+    #[test]
+    fn a_queued_job_is_reported_rather_than_saved_as_a_picture() {
+        let file = Path::new("bild.png");
+        let save = ResultAction::Save {
+            source: ResultSource::Body,
+            suffix: ".neu".into(),
+        };
+
+        // The polite signal.
+        let accepted = http::Answer {
+            status: 202,
+            headers: Vec::new(),
+            body: br#"{"jobId":"abc"}"#.to_vec(),
+        };
+        assert!(apply_result(&save, &accepted, file, "http://x/y").is_err());
+
+        // And the one that turns up when the description promised 200:
+        // measured on a real service, which answers this to a tool its own
+        // OpenAPI lists as synchronous.
+        let lying = http::Answer {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"jobId":"abc","async":true}"#.to_vec(),
+        };
+        assert!(apply_result(&save, &lying, file, "http://x/y").is_err());
+
+        // Reporting is still allowed: that is the mode for looking at what a
+        // service actually says.
+        assert!(apply_result(&ResultAction::Report, &accepted, file, "http://x/y").is_ok());
+
+        // An ordinary answer is untouched by any of this.
+        let ordinary = http::Answer {
+            status: 200,
+            headers: Vec::new(),
+            body: b"nicht wirklich ein PNG".to_vec(),
+        };
+        let directory = std::env::temp_dir().join("ctxmenu_async_test");
+        let _ = std::fs::create_dir_all(&directory);
+        let target = directory.join("bild.png");
+        assert!(apply_result(&save, &ordinary, &target, "http://x/y").is_ok());
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
