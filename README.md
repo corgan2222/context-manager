@@ -192,6 +192,7 @@ ctxmenu favourite add --name "PNG verkleinern"
         --url https://squoosh.app --mode clipboard
 ctxmenu favourite place <kennung> --ext .png
 ctxmenu favourite run <kennung> <datei>  ausführen wie ein Klick
+ctxmenu --version                        welche Fassung das ist
 ctxmenu --help                           die vollständige Liste
 ```
 

@@ -58,6 +58,8 @@ pub enum Command {
     Favourite(FavouriteCommand),
     Smoke,
     Help,
+    /// Which build this is — the question every bug report starts with.
+    Version,
 }
 
 pub enum FavouriteCommand {
@@ -146,6 +148,7 @@ Verwendung / Usage:
                             flip the system theme once, report whether the
                             window followed, then restore it
   ctxmenu --smoke           Smoke-Test-Fenster / open the smoke test window
+  ctxmenu --version         Fassung nennen / print the version
   ctxmenu --help            Diese Hilfe / this help
 
 Optionen / Options:
@@ -180,6 +183,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
 
     match args[0].as_str() {
         "--help" | "-h" | "help" => return Ok(Command::Help),
+        "--version" | "-V" | "version" => return Ok(Command::Version),
         "--smoke" => return Ok(Command::Smoke),
         // Takes no value, so it cannot join the loop below.
         "--theme-probe" => {
@@ -1239,6 +1243,27 @@ mod tests {
             }
         ));
         assert!(matches!(parse_args(&["--help"]).unwrap(), Command::Help));
+    }
+
+    #[test]
+    fn the_version_is_asked_for_the_way_every_tool_answers_it() {
+        for flag in ["--version", "-V", "version"] {
+            assert!(
+                matches!(parse_args(&[flag]).unwrap(), Command::Version),
+                "{flag} must report the version"
+            );
+        }
+
+        // One source, and it has to look like a version: the window title, the
+        // command line and the file properties of the .exe all derive from
+        // this string, so a malformed one would be wrong in three places.
+        let parts: Vec<&str> = crate::VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "semantic versioning has three parts");
+        assert!(
+            parts.iter().all(|p| p.parse::<u32>().is_ok()),
+            "every part is a number: {}",
+            crate::VERSION
+        );
     }
 
     #[test]

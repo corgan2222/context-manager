@@ -3,7 +3,12 @@ members = ["ctxmenu"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+# Semantic versioning, read as an application rather than as a library:
+# MAJOR when a stored format or a command-line contract breaks (entries.json,
+# favourites.json, settings.json, the backup manifest, a subcommand), MINOR for
+# a new ability, PATCH for a fix. 1.0.0 on 2026-08-15, when the v1 acceptance
+# list was complete and the build plan had nothing left in it.
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"

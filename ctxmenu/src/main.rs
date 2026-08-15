@@ -86,6 +86,12 @@ fn main() -> ExitCode {
             ctxmenu::outln!("{}", cli::HELP);
             Ok(())
         }
+        cli::Command::Version => {
+            // Name and number, the shape every command line tool answers in —
+            // and the first thing to ask when a report says "it does not work".
+            ctxmenu::outln!("ctxmenu {}", ctxmenu::VERSION);
+            Ok(())
+        }
         cli::Command::Gui {
             synthetic,
             bench,

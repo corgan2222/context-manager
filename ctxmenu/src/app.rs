@@ -1015,7 +1015,7 @@ impl App {
             return;
         }
         self.title_language = Some(self.settings.language);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.tr.app_title.to_string()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(window_title(self.tr)));
     }
 
     /// Moves the window to the leftmost screen, once, on automatic runs.
@@ -4089,6 +4089,17 @@ fn appears_on(entry: &ContextEntry, tr: &'static Strings) -> String {
 #[cfg(test)]
 const UI_GLYPHS: &str = "\u{2192}\u{2191}\u{2193}\u{00d7}\u{21b3}\u{25b4}\u{25b8}\u{25be}\u{00b7}\u{2026}\u{21e7}\u{2713}\u{2717}";
 
+/// What stands in the title bar: the name in the chosen language, then the
+/// version.
+///
+/// The version belongs where the window can be identified without opening
+/// anything — a screenshot in a report says which build it came from. Not
+/// translated and not prefixed with a `v`: the number is the same in every
+/// language, and `1.0.0` reads as a version without help.
+fn window_title(tr: &'static Strings) -> String {
+    format!("{} {}", tr.app_title, crate::VERSION)
+}
+
 /// A fresh, empty row of the submenu list.
 fn empty_child() -> NewChild {
     NewChild {
@@ -4541,7 +4552,10 @@ pub fn run(
 ) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(i18n::DE.app_title)
+            // German here and corrected in the first frame, because the
+            // settings are not read yet — `sync_title` puts both the language
+            // and the version right before anyone can read this one.
+            .with_title(window_title(&i18n::DE))
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
@@ -4648,6 +4662,22 @@ mod tests {
                 "{category:?} maps to {chosen:?}, which cannot be written"
             );
         }
+    }
+
+    #[test]
+    fn the_title_names_the_program_and_the_build() {
+        // A screenshot in a bug report should say which build it came from,
+        // and the name still has to follow the language setting.
+        for tr in [&i18n::DE, &i18n::EN] {
+            let title = window_title(tr);
+            assert!(title.starts_with(tr.app_title), "{title}");
+            assert!(title.ends_with(crate::VERSION), "{title}");
+        }
+        assert_ne!(
+            window_title(&i18n::DE),
+            window_title(&i18n::EN),
+            "the name is translated even though the number is not"
+        );
     }
 
     #[test]
