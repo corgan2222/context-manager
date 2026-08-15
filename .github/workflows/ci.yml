@@ -1,0 +1,72 @@
+name: CI
+
+# Every pull request and every push to main. main only ever moves through a
+# pull request, so the second trigger is the merge itself.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # windows-latest is not a preference: this program is Win32 calls from top
+    # to bottom -- registry, GDI, WinHTTP, shell -- and most of the test suite
+    # reads a real Windows machine. On any other runner it would not compile.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the toolchain the repository asks for
+        # rust-toolchain.toml pins the version; rustup honours it on the first
+        # cargo call, so nothing has to be named twice.
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        # -D warnings, the same as locally. A lint that is only a warning in CI
+        # is a lint nobody fixes.
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        # Including the integration tests, which read this runner's own
+        # registry -- that is the point of them.
+        run: cargo test
+
+      - name: Release build
+        # Not just `cargo build`: lto and codegen-units = 1 apply to the
+        # release profile only, and what fails there fails for users, not here.
+        run: cargo build --release
+
+      - name: The binary reports the version the manifest names
+        shell: pwsh
+        run: |
+          $exe = 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe'
+          if (-not (Test-Path $exe)) {
+            throw "no binary at $exe -- did .cargo/config.toml change its target?"
+          }
+
+          # Piped into Out-String rather than assigned: the release build is a
+          # GUI-subsystem binary that attaches to the parent console, and a
+          # plain assignment hands PowerShell nothing at all.
+          $reported = (& $exe --version | Out-String).Trim()
+          if ([string]::IsNullOrWhiteSpace($reported)) {
+            throw 'the binary printed nothing -- this check cannot verify anything'
+          }
+
+          $manifest = Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' |
+            Select-Object -First 1
+          $version = $manifest.Matches[0].Groups[1].Value
+          Write-Host "reported: $reported, manifest: $version"
+          if ($reported -cne "ctxmenu $version") {
+            throw "binary reports '$reported', manifest says $version"
+          }

@@ -1,0 +1,202 @@
+name: Release
+
+# On publishing a release, not on pushing a tag: the draft is reviewed and
+# published by hand, and that click is the decision. This carries it out.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Validate the release tag
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $pattern = '\Av?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\z'
+          $match = [regex]::Match($env:RELEASE_TAG, $pattern)
+          if (-not $match.Success) {
+            throw "release tag must be v?X.Y.Z without leading zeroes, got '$env:RELEASE_TAG'"
+          }
+          $version = $match.Groups[1].Value
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - uses: actions/checkout@v7
+        with:
+          # The tag, not the default branch: a release must be built from what
+          # it claims to be.
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check before building
+        # Nothing ships that the test suite has not seen, even though the same
+        # commit passed CI on its way in.
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Build
+        run: cargo build --release
+
+      - name: The binary reports the released version
+        # A tag that disagrees with the compiled version means the bump never
+        # landed. Better to fail here than to publish it.
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $exe = 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe'
+          $reported = (& $exe --version | Out-String).Trim()
+          if ([string]::IsNullOrWhiteSpace($reported)) {
+            throw 'the binary printed nothing -- this check cannot verify anything'
+          }
+          Write-Host "reported: $reported"
+          if ($reported -cne "ctxmenu $env:RELEASE_VERSION") {
+            throw "binary reports '$reported', expected ctxmenu $env:RELEASE_VERSION"
+          }
+
+      - name: Assemble the release files
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          Copy-Item 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe' `
+            'release-assets\ctxmenu.exe'
+
+          # A zip beside the bare .exe: the updater fetches the archive, and a
+          # browser download of a bare .exe is what SmartScreen objects to
+          # loudest.
+          $zip = "release-assets\ctxmenu_${env:RELEASE_VERSION}_windows_amd64.zip"
+          Compress-Archive -LiteralPath 'release-assets\ctxmenu.exe' `
+            -DestinationPath $zip -CompressionLevel Optimal
+
+          # The updater expects exactly one executable at the archive root.
+          # Asserted here so a future packaging change cannot produce a release
+          # that the program offers but cannot install.
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+          try {
+            $entries = @($archive.Entries | ForEach-Object { $_.FullName })
+            if ($entries.Count -ne 1 -or $entries[0] -cne 'ctxmenu.exe') {
+              throw "unexpected archive entries: $($entries -join ', ')"
+            }
+          } finally {
+            $archive.Dispose()
+          }
+
+      - name: Checksums
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          Push-Location release-assets
+          try {
+            $lines = Get-ChildItem -File | Where-Object { $_.Name -ne 'checksums.txt' } |
+              Sort-Object Name | ForEach-Object {
+                # sha256sum format: uppercase digest, exactly two spaces, name.
+                # The updater parses this, so the shape is a contract.
+                "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"
+              }
+            $lines | Set-Content -Encoding ascii checksums.txt
+            $lines | ForEach-Object { Write-Host $_ }
+          } finally {
+            Pop-Location
+          }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      # This job alone may attach assets to the release.
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Revalidate before publishing
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          Push-Location release-assets
+          try {
+            $expected = @(
+              'checksums.txt'
+              'ctxmenu.exe'
+              "ctxmenu_${env:RELEASE_VERSION}_windows_amd64.zip"
+            )
+            $actual = @(Get-ChildItem -File | Sort-Object Name | ForEach-Object Name)
+            if (($expected -join '|') -cne ($actual -join '|')) {
+              throw "unexpected asset set: $($actual -join ', ')"
+            }
+
+            # The digests are recomputed rather than trusted: the artifact
+            # travelled between two jobs, and checksums.txt is what the updater
+            # will believe.
+            $recorded = @(Get-Content checksums.txt)
+            $rebuilt = @(
+              Get-ChildItem -File | Where-Object { $_.Name -ne 'checksums.txt' } |
+                Sort-Object Name | ForEach-Object {
+                  "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"
+                }
+            )
+            if (($recorded -join "`n") -cne ($rebuilt -join "`n")) {
+              throw 'checksums.txt does not match the files beside it'
+            }
+          } finally {
+            Pop-Location
+          }
+
+      # ---------------------------------------------------------------------
+      # Code signing goes here, once there is a certificate.
+      #
+      # There is none today, and the difference matters more than it looks:
+      #
+      #   * An OV certificate (~300 EUR a year) removes the "unknown publisher"
+      #     line but not the SmartScreen warning -- that only fades once enough
+      #     people have downloaded the signed binary and Windows has built a
+      #     reputation for it.
+      #   * An EV certificate (~600 EUR a year, on a hardware token or in a
+      #     cloud HSM) carries reputation from the first download, and is what
+      #     "no warning at all" actually costs.
+      #   * A self-signed certificate changes nothing for anyone but the
+      #     machine that trusts it, and is worse than none: it looks like a
+      #     signature without being one.
+      #
+      # With a certificate in Azure Trusted Signing or a PKCS#11 token, the step
+      # is one action between this comment and the upload, and it must run
+      # *before* the checksums are attached -- signing changes the file, and a
+      # digest taken before it would be wrong.
+      # ---------------------------------------------------------------------
+
+      - name: Attach the assets to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload $env:RELEASE_TAG (Get-ChildItem release-assets -File) `
+            --clobber --repo $env:GITHUB_REPOSITORY

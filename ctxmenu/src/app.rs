@@ -771,6 +771,11 @@ pub struct App {
     selected: rustc_hash::FxHashSet<Row>,
     /// The row whose details are shown — the last one clicked.
     focused: Option<Row>,
+    /// The last error already written to the log.
+    ///
+    /// An error dialog re-sets itself every frame it stays open, so without
+    /// this the log would grow by sixty identical lines a second.
+    logged_error: Option<String>,
     /// Which backup the detail pane is describing.
     ///
     /// The list used to hide everything behind a collapsing header, which meant
@@ -1120,6 +1125,7 @@ impl App {
             focused: None,
             anchor: None,
             selected_backup: None,
+            logged_error: None,
             drop_target: None,
             search: start_search,
             dialog: None,
@@ -4118,6 +4124,7 @@ impl App {
             Dialog::About => {
                 let mut close = false;
                 let mut open_url: Option<&str> = None;
+                let mut open_log = false;
                 let logo = self.logo_texture(ui.ctx());
                 egui::Window::new(self.tr.about_title)
                     .collapsible(false)
@@ -4158,6 +4165,23 @@ impl App {
                                     open_url = Some(url);
                                 }
                             }
+
+                            // The log, from the one window every user finds.
+                            // A path in a bug report is worth more than a
+                            // remembered wording, and nobody types
+                            // %LOCALAPPDATA% from a dialog they cannot copy.
+                            if let Some(log) = crate::log::path() {
+                                ui.add_space(6.0);
+                                let exists = log.exists();
+                                let link = ui
+                                    .add_enabled(exists, egui::Link::new(self.tr.about_log))
+                                    .on_hover_text(log.display().to_string())
+                                    .on_disabled_hover_text(self.tr.tip_log_empty);
+                                if link.clicked() {
+                                    open_log = true;
+                                }
+                            }
+
                             ui.add_space(10.0);
                             if ui.button(self.tr.btn_close).clicked() {
                                 close = true;
@@ -4173,6 +4197,18 @@ impl App {
                     self.dialog = Some(Dialog::Error(format!("{error:#}")));
                     close = true;
                 }
+                // Selected in Explorer rather than opened: `.log` has no handler
+                // on a fresh Windows, so opening it would raise the "how do you
+                // want to open this file" dialog. A window with the file
+                // highlighted always works, and the folder next to it is where
+                // the backups are.
+                if open_log
+                    && let Some(file) = crate::log::path()
+                    && let Err(error) = crate::elevation::show_in_explorer(&file)
+                {
+                    self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                    close = true;
+                }
                 if !close {
                     self.dialog = Some(Dialog::About);
                 }
@@ -4180,6 +4216,17 @@ impl App {
             }
 
             Dialog::Error(message) => {
+                // Logged here rather than at each of the seventeen places that
+                // raise one: this is the one point every error passes through,
+                // and it is where "the user was actually shown this" becomes
+                // true. Guarded against the message that a dialog re-sets every
+                // frame -- without the guard the log would fill at sixty lines
+                // a second while the window stands open.
+                if self.logged_error.as_deref() != Some(message.as_str()) {
+                    crate::log::write(crate::log::Kind::Error, &message);
+                    self.logged_error = Some(message.clone());
+                }
+
                 let mut close = false;
                 let mut copy = false;
                 egui::Window::new(self.tr.title_error)
@@ -7828,6 +7875,15 @@ pub fn run(
     start_ext: Option<String>,
     theme_probe: bool,
 ) -> eframe::Result<()> {
+    // One line per run, so the entries under it can be told apart -- and so a
+    // log that ends without a matching error says "it just closed", which is
+    // itself worth knowing.
+    let how = match synthetic {
+        Some(rows) => format!("window, {rows} synthetic rows"),
+        None => "window".to_string(),
+    };
+    crate::log::note_start(&how);
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             // German here and corrected in the first frame, because the

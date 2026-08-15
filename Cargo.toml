@@ -10,11 +10,16 @@ resolver = "3"
 # list was complete and the build plan had nothing left in it. 1.0.1 the same
 # day: seven commits of polish on tabs that already existed — program icons and
 # tree, a working Explorer button, file pickers in both forms — no new
-# subcommand and no stored format touched.
-version = "1.0.1"
+# subcommand and no stored format touched. 1.1.0 on 2026-08-16: the services
+# tab, which reads an OpenAPI description and makes favourites from it, plus a
+# services.json beside the other stored files — a new ability, and one that
+# older versions simply ignore.
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.95"
-license = "MIT OR Apache-2.0"
+# MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
+# nothing here forced the decision either way — see THIRD-PARTY-NOTICES.md.
+license = "MIT"
 
 # Zentral gepflegt, damit die spätere IExplorerCommand-DLL (ToDo Abschnitt 14)
 # ohne Versionsdrift danebengesetzt werden kann.

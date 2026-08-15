@@ -13,6 +13,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod app;
+pub mod bilingual;
 pub mod cli;
 pub mod console;
 pub mod elevation;
@@ -20,6 +21,7 @@ pub mod favourites;
 pub mod filedialog;
 pub mod i18n;
 pub mod icons;
+pub mod log;
 pub mod model;
 pub mod program;
 pub mod registry;
@@ -28,4 +30,5 @@ pub mod settings;
 pub mod smoke;
 pub mod synthetic;
 pub mod theme;
+pub mod update;
 pub mod webtool;

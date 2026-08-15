@@ -4,12 +4,17 @@
 
 use std::process::ExitCode;
 
-use ctxmenu::{app, cli, console, elevation, errln, smoke, webtool};
+use ctxmenu::{app, cli, console, elevation, errln, log, smoke, webtool};
 
 fn main() -> ExitCode {
     // Before the first write: a GUI-subsystem binary starts without standard
     // handles, and attaching later would come too late (see console.rs).
     console::attach_to_parent();
+
+    // Before anything that could fail. The release profile aborts on panic, so
+    // this hook is the only moment at which one is still observable -- without
+    // it the window simply disappears and the user has nothing to report.
+    log::catch_panics();
 
     // The elevated job mode is intercepted before anything else: an elevated
     // instance must not open a second window (ToDo 13.2).
@@ -61,11 +66,13 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                webtool::shell::report(
-                    "ctxmenu",
-                    &format!("{error:#}"),
-                    webtool::shell::Report::Error,
-                );
+                // Logged as well as shown: this path runs from a context menu
+                // click, with no console and no window behind the box, so the
+                // message box is the only thing the user sees -- and it is gone
+                // the moment they click it away.
+                let message = format!("{error:#}");
+                log::write(log::Kind::Error, &format!("--favourite {id}: {message}"));
+                webtool::shell::report("ctxmenu", &message, webtool::shell::Report::Error);
                 ExitCode::FAILURE
             }
         };
@@ -122,7 +129,9 @@ fn main() -> ExitCode {
     let code = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            errln!("Fehler / error: {error:#}");
+            let message = format!("{error:#}");
+            log::write(log::Kind::Error, &message);
+            errln!("Fehler / error: {message}");
             ExitCode::FAILURE
         }
     };
