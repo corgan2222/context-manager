@@ -119,7 +119,8 @@ Verwendung / Usage:
   ctxmenu delete <key> --yes
                             Schlüssel sichern und löschen /
                             back up and delete a key
-  ctxmenu create --category <name> --name <text> --command <zeile>
+  ctxmenu create --category <name> | --ext .png | --perceived image
+                 --name <text> --command <zeile>
                  [--key <name>] [--icon <ref>] [--position top|bottom]
                  [--extended]
                             Eigenen Eintrag in HKCU anlegen /
@@ -322,6 +323,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                             format!("Unbekannte Kategorie / unknown category: {value}")
                         })?;
                     }
+                    // The same two ways `favourite place` has always offered.
+                    // Without them an entry of one's own could be written to a
+                    // base category and nowhere else from the command line,
+                    // while the window and the favourites could both do it —
+                    // which is where a submenu for `.png` ran aground.
+                    "--ext" => entry.category = Category::ExtAssoc(value.clone()),
+                    "--perceived" => entry.category = Category::PerceivedType(value.clone()),
                     "--name" => entry.display_name = value.clone(),
                     "--key" => entry.key_name = value.clone(),
                     "--command" => entry.command = value.clone(),

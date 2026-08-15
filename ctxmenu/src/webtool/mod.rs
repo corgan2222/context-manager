@@ -124,9 +124,36 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
             let answer = http::send(&upload.endpoint, &upload.method, &upload.headers, request)
                 .with_context(|| format!("{} {}", upload.method, upload.endpoint))?;
 
-            apply_result(&upload.result, &answer, file)
+            apply_result(&upload.result, &answer, file, &upload.endpoint)
         }
     }
+}
+
+/// Makes an address the service handed back usable on its own.
+///
+/// Services answer with a path at least as often as with a full address:
+/// SnapOtter returns `"downloadUrl": "/api/v1/download/…"`, and taken literally
+/// that is not somewhere anything can be fetched from. Resolved against the
+/// endpoint it came from, it is.
+///
+/// Only two cases, because only two occur: an address that already carries a
+/// scheme is returned untouched, and one starting with `/` is hung under the
+/// origin of the endpoint. A relative path without the leading slash would have
+/// to guess how much of the endpoint's own path to keep, and guessing at where
+/// to send a request is not something this should do quietly.
+fn absolute(address: &str, endpoint: &str) -> Result<String> {
+    if address.contains("://") {
+        return Ok(address.to_string());
+    }
+    if !address.starts_with('/') {
+        bail!("Weder Adresse noch Pfad / neither an address nor a path: {address}");
+    }
+
+    let (scheme, rest) = endpoint
+        .split_once("://")
+        .context("Endpunkt ohne Schema / endpoint without a scheme")?;
+    let host = rest.split('/').next().unwrap_or(rest);
+    Ok(format!("{scheme}://{host}{address}"))
 }
 
 /// Just the host of an address, for the question before sending.
@@ -143,7 +170,12 @@ fn host_of(url: &str) -> &str {
 }
 
 /// Turns the answer into something the user can see or keep.
-fn apply_result(action: &ResultAction, answer: &http::Answer, file: &Path) -> Result<String> {
+fn apply_result(
+    action: &ResultAction,
+    answer: &http::Answer,
+    file: &Path,
+    endpoint: &str,
+) -> Result<String> {
     match action {
         ResultAction::Report => Ok(format!(
             "Antwort {} / status {}, {} Bytes",
@@ -153,7 +185,7 @@ fn apply_result(action: &ResultAction, answer: &http::Answer, file: &Path) -> Re
         )),
 
         ResultAction::Open { source } => {
-            let address = locate(source, answer)?;
+            let address = absolute(&locate(source, answer)?, endpoint)?;
             shell::open(&address)?;
             Ok(format!("Ergebnis geöffnet / result opened: {address}"))
         }
@@ -164,7 +196,7 @@ fn apply_result(action: &ResultAction, answer: &http::Answer, file: &Path) -> Re
                 other => {
                     // The service answered with an address rather than the
                     // file; fetching it is the other half of the job.
-                    let address = locate(other, answer)?;
+                    let address = absolute(&locate(other, answer)?, endpoint)?;
                     http::download(&address).with_context(|| address.clone())?
                 }
             };
@@ -433,6 +465,29 @@ mod tests {
         assert_eq!(json_path(&value, "output.size").as_deref(), Some("842"));
         assert_eq!(json_path(&value, "output.gibtsnicht"), None);
         assert_eq!(json_path(&value, "input"), Some(r#"{"size":9000}"#.into()));
+    }
+
+    #[test]
+    fn a_path_in_the_answer_is_resolved_against_the_endpoint() {
+        // Measured against a real service on 2026-08-15: SnapOtter answers a
+        // compress request with `"downloadUrl": "/api/v1/download/…"`, which
+        // taken literally is nowhere.
+        let endpoint = "http://192.168.2.11:1349/api/v1/tools/image/compress";
+        assert_eq!(
+            absolute("/api/v1/download/abc/test_compress.png", endpoint).unwrap(),
+            "http://192.168.2.11:1349/api/v1/download/abc/test_compress.png"
+        );
+
+        // A full address is the service's own business and stays untouched,
+        // host and scheme included.
+        let full = "https://cdn.example/out/1.png";
+        assert_eq!(absolute(full, endpoint).unwrap(), full);
+
+        // Anything else is refused rather than guessed at: how much of the
+        // endpoint's path to keep is not something to decide quietly when the
+        // answer is where a request goes next.
+        assert!(absolute("out/1.png", endpoint).is_err());
+        assert!(absolute("/x", "kein-schema/api").is_err());
     }
 
     #[test]
