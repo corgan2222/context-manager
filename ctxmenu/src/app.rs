@@ -2143,16 +2143,22 @@ impl App {
             self.tr.fav_edit
         })
         .collapsible(false)
-        .resizable(true)
+        .resizable([true, false])
         .default_width(640.0)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ui.ctx(), |ui| {
+            // Same rule as the entry editor: the fields take what the window
+            // gives them, minus the label column and the button behind them.
+            // A path is as long as it is, and 440 pixels was a guess.
+            let field_width = (ui.available_width() - 150.0).max(240.0);
+            let icons = &mut self.icons;
+
             egui::Grid::new("fav-grid")
                 .num_columns(2)
                 .spacing([10.0, 6.0])
                 .show(ui, |ui| {
                     ui.label(self.tr.fav_name);
-                    ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(440.0));
+                    ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(field_width));
                     ui.end_row();
 
                     ui.label(self.tr.fav_kind);
@@ -2185,8 +2191,10 @@ impl App {
 
             ui.separator();
             match &mut draft.tool {
-                Tool::Program { path, args } => program_form(ui, self.tr, path, args),
-                Tool::Web(web) => web_form(ui, self.tr, web),
+                Tool::Program { path, args } => {
+                    program_form(ui, self.tr, path, args, field_width, icons)
+                }
+                Tool::Web(web) => web_form(ui, self.tr, web, field_width),
             }
 
             ui.separator();
@@ -2644,10 +2652,11 @@ impl App {
             } => {
                 let mut close = false;
                 let mut save = false;
-                // Looking at an entry that is already in the registry: the
-                // fields are filled in and switched off, because this dialog
-                // cannot write them back yet and a field that takes typing and
-                // drops it is worse than one that does not take any.
+                // Looking at an entry that is already in the registry. The
+                // fields are filled in and usable — trying values out is half
+                // of understanding what an entry does — but nothing is written
+                // back yet, and the note at the top says so rather than a grey
+                // form implying it.
                 let viewing = existing.is_some();
                 // Borrowed out here: the closure below already holds `self`
                 // for `self.tr`, and the cache needs a mutable borrow to queue
@@ -2680,10 +2689,11 @@ impl App {
                         ui.colored_label(ui.visuals().warn_fg_color, self.tr.editor_view_note);
                         ui.add_space(4.0);
                     }
-                    // One switch for the whole form. Everything below is
-                    // the same code as for a new entry, which is the point:
-                    // what is shown is exactly what would be written.
-                    ui.add_enabled_ui(!viewing, |ui| {
+                    // Not switched off any more: the form is the same one a
+                    // new entry uses, and typing in it is how somebody finds
+                    // out what a value does. What it does *not* do is save —
+                    // that is one button, and it is not there.
+                    {
                         egui::Grid::new("editor-grid")
                             .num_columns(2)
                             .spacing([10.0, 6.0])
@@ -2945,7 +2955,7 @@ impl App {
                                 ui.checkbox(&mut entry.extended, self.tr.editor_extended);
                                 ui.end_row();
                             });
-                    }); // add_enabled_ui
+                    }
 
                     ui.add_space(6.0);
                     // Where it will land, once that is decidable. When it
@@ -4101,31 +4111,44 @@ fn program_form(
     tr: &'static Strings,
     path: &mut std::path::PathBuf,
     args: &mut String,
+    field_width: f32,
+    icons: &mut IconCache,
 ) {
     egui::Grid::new("fav-program")
         .num_columns(2)
         .spacing([10.0, 6.0])
         .show(ui, |ui| {
             ui.label(tr.fav_path);
-            let mut text = path.to_string_lossy().to_string();
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut text)
-                        .desired_width(440.0)
-                        .hint_text(HINT_PROGRAM),
-                )
-                .changed()
-            {
-                // Pasted paths often arrive wrapped in quotes, and a quoted
-                // path resolves to nothing.
-                *path = std::path::PathBuf::from(text.trim().trim_matches('"'));
-            }
+            ui.horizontal(|ui| {
+                let mut text = path.to_string_lossy().to_string();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut text)
+                            .desired_width(field_width - 26.0)
+                            .hint_text(HINT_PROGRAM),
+                    )
+                    .changed()
+                {
+                    // Pasted paths often arrive wrapped in quotes, and a quoted
+                    // path resolves to nothing.
+                    *path = std::path::PathBuf::from(text.trim().trim_matches('"'));
+                }
+                // The same picker as in the entry editor. Here the bare path
+                // is what the field holds — the arguments have their own line
+                // below — so nothing is appended to it.
+                if folder_button(ui, icons, tr.tip_pick_program)
+                    && let Some(picked) =
+                        crate::filedialog::pick_file(None, &crate::filedialog::PROGRAMS, &text)
+                {
+                    *path = picked;
+                }
+            });
             ui.end_row();
 
             ui.label(tr.fav_args);
             ui.add(
                 egui::TextEdit::singleline(args)
-                    .desired_width(440.0)
+                    .desired_width(field_width)
                     .hint_text(HINT_ARGS),
             );
             ui.end_row();
@@ -4133,7 +4156,7 @@ fn program_form(
     ui.small(tr.fav_args_hint);
 }
 
-fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool) {
+fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool, field_width: f32) {
     ui.horizontal(|ui| {
         ui.label(tr.fav_mode);
         let current = mode_index(&web.mode);
@@ -4174,12 +4197,12 @@ fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool) {
                 ui.label(tr.fav_url);
                 ui.add(
                     egui::TextEdit::singleline(url)
-                        .desired_width(460.0)
+                        .desired_width(field_width)
                         .hint_text(HINT_URL),
                 );
             });
         }
-        WebMode::Upload(upload) => upload_form(ui, tr, upload),
+        WebMode::Upload(upload) => upload_form(ui, tr, upload, field_width),
     }
 
     ui.add_space(4.0);
@@ -4194,7 +4217,7 @@ fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool) {
     }
 }
 
-fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload) {
+fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload, field_width: f32) {
     egui::Grid::new("fav-upload")
         .num_columns(2)
         .spacing([10.0, 6.0])
@@ -4202,7 +4225,7 @@ fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload) {
             ui.label(tr.fav_endpoint);
             ui.add(
                 egui::TextEdit::singleline(&mut upload.endpoint)
-                    .desired_width(440.0)
+                    .desired_width(field_width)
                     .hint_text(HINT_ENDPOINT),
             );
             ui.end_row();
