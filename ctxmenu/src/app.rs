@@ -4422,6 +4422,10 @@ impl App {
     }
 
     fn entry_table(&mut self, ui: &mut Ui, scroll_to: Option<usize>) {
+        // First, so the rows drawn afterwards sit on top of it and only the
+        // space they leave over answers a right-click.
+        self.empty_space_menu(ui);
+
         // Destructured up front: the row closure needs the entries and the
         // icon cache at the same time, which a plain `&mut self` capture
         // would not allow.
@@ -4707,23 +4711,11 @@ impl App {
             });
         }
 
-        // The space below the last row is still part of the list, and a
-        // right-click there is a right-click on "this category" — which is
-        // where a new entry would go. Before this, the only way to that offer
-        // was the button in the tab row.
-        let mut new_here = None;
-        ui.response().context_menu(|ui| {
-            new_here = new_entry_menu(ui, &self.glyphs, self.tr, self.category_for_new());
-        });
-
         // Through the same `propose` the bar uses, so a menu line and a switch
         // reach the same confirmation, the same backup and the same elevation
         // path. The menu is another way in, not a second implementation.
         if let Some(action) = menu_action {
             self.propose(action);
-        }
-        if let Some(category) = new_here {
-            self.open_editor_for(category);
         }
 
         if let Some(column) = new_sort {
@@ -4739,6 +4731,35 @@ impl App {
                 _ => (column, true),
             };
             self.filter_dirty = true;
+        }
+    }
+
+    /// The right-click offer for the empty space below the last row.
+    ///
+    /// Claimed **before** the table is built, and that is the whole trick: egui
+    /// resolves a click against the last thing drawn over that point, so a
+    /// background claimed afterwards would swallow every row. Claimed first, the
+    /// rows sit on top of it and only the space they leave over is left to it.
+    ///
+    /// `ui.interact` and not `ui.response()`: the latter carries `Sense::hover`,
+    /// which never sees a right-click at all — which is why the first attempt at
+    /// this did nothing.
+    fn empty_space_menu(&mut self, ui: &mut Ui) {
+        let background = ui.interact(
+            ui.max_rect(),
+            ui.id().with("table-background"),
+            Sense::click(),
+        );
+
+        let mut new_here = None;
+        let glyphs = self.glyphs;
+        let category = self.category_for_new();
+        background.context_menu(|ui| {
+            new_here = new_entry_menu(ui, &glyphs, self.tr, category.clone());
+        });
+
+        if let Some(category) = new_here {
+            self.open_editor_for(category);
         }
     }
 
