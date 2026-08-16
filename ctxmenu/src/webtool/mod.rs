@@ -109,11 +109,14 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
 
                 // Remember the answer, but never let a failure to write it
                 // stop the upload the user just agreed to.
-                let mut remembered = favourite.clone();
-                if let Tool::Web(web) = &mut remembered.tool {
-                    web.confirmed = true;
-                }
-                let _ = crate::favourites::update(remembered);
+                //
+                // The one field, and not the whole favourite: this process was
+                // started by a right-click and the window may well be open
+                // beside it, with a favourite half renamed. Writing back the
+                // copy read at the top of this function would take that rename
+                // with it -- and that copy is now as old as the dialog above
+                // stood on screen.
+                let _ = crate::favourites::remember_consent(&favourite.id);
             }
 
             let bytes = std::fs::read(file).with_context(|| format!("{}", file.display()))?;
