@@ -21,7 +21,7 @@ use crate::model::Scope;
 pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
     if !token.covers(target) {
         bail!(
-            "Backup deckt diesen Schlüssel nicht ab / backup does not cover this key: {}",
+            "\x1eBackup deckt diesen Schlüssel nicht ab\x1fbackup does not cover this key\x1d: {}",
             target.full_path()
         );
     }
@@ -30,7 +30,7 @@ pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
         .remove_tree(target.key_path())
         .with_context(|| {
             format!(
-                "Löschen fehlgeschlagen / delete failed: {}",
+                "\x1eLöschen fehlgeschlagen\x1fdelete failed\x1d: {}",
                 target.full_path()
             )
         })?;
@@ -53,7 +53,7 @@ pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
 pub fn remove_own_new_key(target: &RegTarget) -> Result<()> {
     if target.scope() != Scope::User {
         bail!(
-            "Nur eigene HKCU-Schlüssel / own HKCU keys only: {}",
+            "\x1eNur eigene HKCU-Schlüssel\x1fown HKCU keys only\x1d: {}",
             target.full_path()
         );
     }
@@ -62,7 +62,7 @@ pub fn remove_own_new_key(target: &RegTarget) -> Result<()> {
         .remove_tree(target.key_path())
         .with_context(|| {
             format!(
-                "Zurücknehmen fehlgeschlagen / could not roll back: {}",
+                "\x1eZurücknehmen fehlgeschlagen\x1fcould not roll back\x1d: {}",
                 target.full_path()
             )
         })
@@ -106,7 +106,7 @@ pub fn set_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result<(
         .and_then(|key| key.set_string(name, ""))
         .with_context(|| {
             format!(
-                "{name} setzen fehlgeschlagen / could not set: {}",
+                "{name} \x1esetzen fehlgeschlagen\x1fcould not set\x1d: {}",
                 target.full_path()
             )
         })
@@ -123,7 +123,7 @@ pub fn clear_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result
         .open(target.key_path())
         .with_context(|| {
             format!(
-                "Öffnen fehlgeschlagen / could not open: {}",
+                "\x1eÖffnen fehlgeschlagen\x1fcould not open\x1d: {}",
                 target.full_path()
             )
         })?;
@@ -133,7 +133,7 @@ pub fn clear_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result
         // Already absent — the caller wanted it gone and it is gone.
         Err(_) if key.get_type(name).is_err() => Ok(()),
         Err(error) => Err(anyhow::Error::from(error).context(format!(
-            "{name} entfernen fehlgeschlagen / could not remove: {}",
+            "{name} \x1eentfernen fehlgeschlagen\x1fcould not remove\x1d: {}",
             target.full_path()
         ))),
     }
@@ -161,7 +161,7 @@ pub fn set_position(target: &RegTarget, value: Option<&str>, token: &BackupToken
                 .and_then(|key| key.set_string("Position", value))
                 .with_context(|| {
                     format!(
-                        "Position setzen fehlgeschlagen / could not set: {}",
+                        "\x1ePosition setzen fehlgeschlagen\x1fcould not set\x1d: {}",
                         target.full_path()
                     )
                 })
@@ -181,7 +181,9 @@ pub fn block_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
     LOCAL_MACHINE
         .create(paths::SHELL_EXTENSIONS_BLOCKED)
         .and_then(|key| key.set_string(clsid, ""))
-        .with_context(|| format!("CLSID blockieren fehlgeschlagen / could not block: {clsid}"))
+        .with_context(|| {
+            format!("\x1eCLSID blockieren fehlgeschlagen\x1fcould not block\x1d: {clsid}")
+        })
 }
 
 /// Takes a CLSID off the blocked list. Absent means already unblocked.
@@ -202,7 +204,7 @@ pub fn unblock_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
         Ok(()) => Ok(()),
         Err(_) if key.get_type(clsid).is_err() => Ok(()),
         Err(error) => Err(anyhow::Error::from(error).context(format!(
-            "CLSID freigeben fehlgeschlagen / could not unblock: {clsid}"
+            "\x1eCLSID freigeben fehlgeschlagen\x1fcould not unblock\x1d: {clsid}"
         ))),
     }
 }
@@ -247,7 +249,7 @@ fn require_backup(target: &RegTarget, token: &BackupToken) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "Backup deckt diesen Schlüssel nicht ab / backup does not cover this key: {}",
+        "\x1eBackup deckt diesen Schlüssel nicht ab\x1fbackup does not cover this key\x1d: {}",
         target.full_path()
     )
 }
@@ -256,7 +258,9 @@ fn require_blocked_backup(token: &BackupToken) -> Result<()> {
     if token.covers_path(paths::blocked_list_display_path()) {
         return Ok(());
     }
-    bail!("Backup deckt die Blocked-Liste nicht ab / backup does not cover the blocked list")
+    bail!(
+        "\x1eBackup deckt die Blocked-Liste nicht ab\x1fbackup does not cover the blocked list\x1d"
+    )
 }
 
 #[cfg(test)]

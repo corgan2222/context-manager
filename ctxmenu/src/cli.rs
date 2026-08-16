@@ -88,87 +88,148 @@ pub struct ScanArgs {
     pub quiet: bool,
 }
 
-pub const HELP: &str = "\
+/// The usage text, in the language this machine speaks.
+///
+/// The one text that could not take the markers of [`crate::bilingual`]: it is
+/// a table, and a table cut in half keeps the width of the half that was
+/// thrown away. Two texts instead, held side by side by a test that compares
+/// the commands they list.
+pub fn help() -> &'static str {
+    match crate::bilingual::language() {
+        crate::settings::Language::German => HELP_DE,
+        crate::settings::Language::English => HELP_EN,
+    }
+}
+
+const HELP_DE: &str = "\
 ctxmenu — Windows Context Menu Manager
 
-Verwendung / Usage:
-  ctxmenu                   Fenster öffnen / open the window
-  ctxmenu --tab <name>      Fenster auf einem Reiter oeffnen / open on a tab:
+Verwendung:
+  ctxmenu                   Fenster öffnen
+  ctxmenu --tab <name>      Fenster auf einem Reiter öffnen:
                             categories, filetypes, programs, favourites,
                             backups
-  ctxmenu --search <text>   Fenster mit gesetzter Suche oeffnen /
-                            open the window with the search box filled
-  ctxmenu --ext .png        Fenster auf dem Dateityp-Reiter, Endung gewaehlt /
-                            file type tab with that extension selected
+  ctxmenu --search <text>   Fenster mit gesetzter Suche öffnen
+  ctxmenu --ext .png        Fenster auf dem Dateityp-Reiter, Endung gewählt
   ctxmenu --synthetic <n> [--bench <frames>]
                             Fenster mit n erzeugten Zeilen, optional als
-                            Messlauf / window with n generated rows,
-                            optionally as a measured run
-  ctxmenu scan [Optionen]   Einträge auflisten / list context menu entries
-  ctxmenu programs          Nach Programm gruppieren / group by program
-  ctxmenu filetype <ext>    Auflösungskette eines Dateityps /
-                            resolution chain of one file type
+                            Messlauf
+  ctxmenu scan [Optionen]   Einträge auflisten
+  ctxmenu programs          Nach Programm gruppieren
+  ctxmenu filetype <ext>    Auflösungskette eines Dateityps
   ctxmenu hide|show|shift-only|always-show <key> --yes
                             Merkmal setzen oder entfernen, mit Backup und
-                            nötigenfalls Rechteerhöhung / set or clear a flag,
-                            with a backup and elevation if needed
-  ctxmenu backups           Backups auflisten / list backups
-  ctxmenu backup-all        Alles sichern, was dieses Werkzeug anfasst /
-                            back up every place this tool touches
-  ctxmenu restore <pfad>    Backup zurückspielen / restore a backup directory
+                            nötigenfalls Rechteerhöhung
+  ctxmenu backups           Backups auflisten
+  ctxmenu backup-all        Alles sichern, was dieses Werkzeug anfasst
+  ctxmenu restore <pfad>    Backup zurückspielen
   ctxmenu delete <key> --yes
-                            Schlüssel sichern und löschen /
-                            back up and delete a key
+                            Schlüssel sichern und löschen
   ctxmenu create --category <name> | --ext .png | --perceived image
                  --name <text> --command <zeile>
                  [--key <name>] [--icon <ref>] [--position top|bottom]
                  [--extended]
-                            Eigenen Eintrag in HKCU anlegen /
-                            create your own entry in HKCU
+                            Eigenen Eintrag in HKCU anlegen
                  --sub \"<text>|<zeile>\" [--sub-icon <ref>] ...
-                            Statt --command: Untermenue, ein --sub je
+                            Statt --command: Untermenü, ein --sub je
                             Untereintrag, getrennt am ersten senkrechten
-                            Strich; --sub-icon gilt dem davorstehenden --sub /
-                            instead of --command: a submenu, one --sub per
-                            child, split at the first vertical bar; --sub-icon
-                            applies to the --sub before it
-  ctxmenu created           Selbst angelegte Eintraege auflisten /
-                            list entries created by this tool
-  ctxmenu favourites        Favoriten auflisten / list favourites
+                            Strich; --sub-icon gilt dem davorstehenden --sub
+  ctxmenu created           Selbst angelegte Einträge auflisten
+  ctxmenu favourites        Favoriten auflisten
   ctxmenu favourite add --name <text>
-        --exe <pfad> [--args <zeile>]                  Programm / a program
+        --exe <pfad> [--args <zeile>]                  Programm
         --url <adresse> [--mode clipboard|open]        Webtool ohne Endpunkt
         --endpoint <adresse> [--raw] [--field <name>]  Webtool mit Upload
         [--header \"Name: Wert\"] [--result save|open|report]
         [--suffix .min] [--json-path output.url] [--insecure]
   ctxmenu favourite place <id> --category <name> | --ext .png | --perceived image
-                            Favorit ins Kontextmenue eintragen /
-                            put a favourite into the context menu
+                            Favorit ins Kontextmenü eintragen
   ctxmenu favourite remove <id>
   ctxmenu favourite run <id> <datei>
-                            Ausfuehren wie ein Klick, Ausgabe auf der Konsole /
-                            run as a click would, reporting on the console
+                            Ausführen wie ein Klick, Ausgabe auf der Konsole
   ctxmenu --theme-probe     Systemthema einmal umschalten und melden, ob das
-                            Fenster folgt; setzt die Einstellung danach zurueck /
-                            flip the system theme once, report whether the
-                            window followed, then restore it
-  ctxmenu --smoke           Smoke-Test-Fenster / open the smoke test window
-  ctxmenu --version         Fassung nennen / print the version
-  ctxmenu --help            Diese Hilfe / this help
+                            Fenster folgt; setzt die Einstellung danach zurück
+  ctxmenu --smoke           Smoke-Test-Fenster
+  ctxmenu --version         Fassung nennen
+  ctxmenu --help            Diese Hilfe
 
-Optionen / Options:
-  --category <name>   Nur eine Kategorie / single category only:
+Optionen:
+  --category <name>   Nur eine Kategorie:
                       allfiles, allfilesystemobjects, directory,
                       directorybackground, folder, desktopbackground, drive
   --scope <name>      user | machine | machine32 | all
-                      (Vorgabe / default: all)
-  --all-types         Auch die Dateityp-Kette, fuer die vorgegebene Liste und
-                      eigene Endungen / walk the file type chain for the
-                      curated list plus one's own extensions
-  --every-type        Statt dessen jede registrierte Endung dieses Rechners /
-                      instead: every extension registered on this machine
-  --json              Ausgabe als JSON / emit JSON on stdout
-  --quiet             Kein Fortschritt / suppress progress output
+                      (Vorgabe: all)
+  --all-types         Auch die Dateityp-Kette, für die vorgegebene Liste und
+                      eigene Endungen
+  --every-type        Statt dessen jede registrierte Endung dieses Rechners
+  --json              Ausgabe als JSON
+  --quiet             Kein Fortschritt
+";
+
+const HELP_EN: &str = "\
+ctxmenu — Windows Context Menu Manager
+
+Usage:
+  ctxmenu                   open the window
+  ctxmenu --tab <name>      open the window on a tab:
+                            categories, filetypes, programs, favourites,
+                            backups
+  ctxmenu --search <text>   open the window with the search box filled
+  ctxmenu --ext .png        open the file type tab with that extension
+                            selected
+  ctxmenu --synthetic <n> [--bench <frames>]
+                            window with n generated rows, optionally as a
+                            measured run
+  ctxmenu scan [options]    list context menu entries
+  ctxmenu programs          group by program
+  ctxmenu filetype <ext>    resolution chain of one file type
+  ctxmenu hide|show|shift-only|always-show <key> --yes
+                            set or clear a flag, with a backup and elevation
+                            if needed
+  ctxmenu backups           list backups
+  ctxmenu backup-all        back up every place this tool touches
+  ctxmenu restore <path>    restore a backup directory
+  ctxmenu delete <key> --yes
+                            back up and delete a key
+  ctxmenu create --category <name> | --ext .png | --perceived image
+                 --name <text> --command <line>
+                 [--key <name>] [--icon <ref>] [--position top|bottom]
+                 [--extended]
+                            create your own entry in HKCU
+                 --sub \"<text>|<line>\" [--sub-icon <ref>] ...
+                            instead of --command: a submenu, one --sub per
+                            child, split at the first vertical bar; --sub-icon
+                            applies to the --sub before it
+  ctxmenu created           list entries created by this tool
+  ctxmenu favourites        list favourites
+  ctxmenu favourite add --name <text>
+        --exe <path> [--args <line>]                   a program
+        --url <address> [--mode clipboard|open]        web tool, no endpoint
+        --endpoint <address> [--raw] [--field <name>]  web tool with upload
+        [--header \"Name: Value\"] [--result save|open|report]
+        [--suffix .min] [--json-path output.url] [--insecure]
+  ctxmenu favourite place <id> --category <name> | --ext .png | --perceived image
+                            put a favourite into the context menu
+  ctxmenu favourite remove <id>
+  ctxmenu favourite run <id> <file>
+                            run as a click would, reporting on the console
+  ctxmenu --theme-probe     flip the system theme once, report whether the
+                            window followed, then restore it
+  ctxmenu --smoke           open the smoke test window
+  ctxmenu --version         print the version
+  ctxmenu --help            this help
+
+Options:
+  --category <name>   single category only:
+                      allfiles, allfilesystemobjects, directory,
+                      directorybackground, folder, desktopbackground, drive
+  --scope <name>      user | machine | machine32 | all
+                      (default: all)
+  --all-types         walk the file type chain for the curated list plus
+                      one's own extensions
+  --every-type        instead: every extension registered on this machine
+  --json              emit JSON on stdout
+  --quiet             suppress progress output
 ";
 
 pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
@@ -210,9 +271,9 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             let mut rest = args.iter();
 
             while let Some(flag) = rest.next() {
-                let value = rest
-                    .next()
-                    .with_context(|| format!("{flag} erwartet einen Wert / expects a value"))?;
+                let value = rest.next().with_context(|| {
+                    format!("{flag} \x1eerwartet einen Wert\x1fexpects a value\x1d")
+                })?;
                 match flag.as_str() {
                     "--search" => search = value.clone(),
                     "--ext" => {
@@ -221,20 +282,23 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     }
                     "--tab" => {
                         tab = crate::app::Tab::from_slug(value).with_context(|| {
-                            format!("Unbekannter Reiter / unknown tab: {value}")
+                            format!("\x1eUnbekannter Reiter\x1funknown tab\x1d: {value}")
                         })?;
                     }
                     "--synthetic" | "--bench" => {
-                        let number = value
-                            .parse::<usize>()
-                            .with_context(|| format!("Keine Zahl / not a number: {value}"))?;
+                        let number = value.parse::<usize>().with_context(|| {
+                            format!("\x1eKeine Zahl\x1fnot a number\x1d: {value}")
+                        })?;
                         if flag == "--synthetic" {
                             synthetic = Some(number);
                         } else {
                             bench = Some(number);
                         }
                     }
-                    other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
+                    other => bail!(
+                        "\x1eUnbekannte Option\x1funknown option\x1d: {other}\n\n{}",
+                        help()
+                    ),
                 }
             }
 
@@ -251,7 +315,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
         "filetype" => {
             let ext = args
                 .get(1)
-                .context("filetype erwartet eine Erweiterung / expects an extension")?;
+                .context("\x1efiletype erwartet eine Erweiterung\x1fexpects an extension\x1d")?;
             return Ok(Command::FileType(ext.clone()));
         }
         "hide" | "show" | "shift-only" | "always-show" => {
@@ -276,13 +340,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
         "restore" => {
             let directory = args
                 .get(1)
-                .context("restore erwartet ein Verzeichnis / expects a directory")?;
+                .context("\x1erestore erwartet ein Verzeichnis\x1fexpects a directory\x1d")?;
             return Ok(Command::Restore(directory.clone()));
         }
         "delete" => {
-            let path = args
-                .get(1)
-                .context("delete erwartet einen Registry-Pfad / expects a registry path")?;
+            let path = args.get(1).context(
+                "\x1edelete erwartet einen Registry-Pfad\x1fexpects a registry path\x1d",
+            )?;
             return Ok(Command::Delete {
                 path: path.clone(),
                 confirmed: args.iter().any(|a| a == "--yes"),
@@ -314,13 +378,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     entry.extended = true;
                     continue;
                 }
-                let value = rest
-                    .next()
-                    .with_context(|| format!("{flag} erwartet einen Wert / expects a value"))?;
+                let value = rest.next().with_context(|| {
+                    format!("{flag} \x1eerwartet einen Wert\x1fexpects a value\x1d")
+                })?;
                 match flag.as_str() {
                     "--category" => {
                         entry.category = Category::from_slug(value).with_context(|| {
-                            format!("Unbekannte Kategorie / unknown category: {value}")
+                            format!("\x1eUnbekannte Kategorie\x1funknown category\x1d: {value}")
                         })?;
                     }
                     // The same two ways `favourite place` has always offered.
@@ -340,8 +404,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     "--sub" => {
                         let (name, command) = value.split_once('|').with_context(|| {
                             format!(
-                                "--sub erwartet \"Anzeigename|Befehl\" / expects \
-                                 \"display name|command\": {value}"
+                                "\x1e--sub erwartet \"Anzeigename|Befehl\"\
+                                 \x1f--sub expects \"display name|command\"\x1d: {value}"
                             )
                         })?;
                         entry.children.push(NewChild {
@@ -357,8 +421,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     // contain bars and an icon path may contain anything.
                     "--sub-icon" => {
                         let child = entry.children.last_mut().with_context(|| {
-                            "--sub-icon gehört zu einem vorangehenden --sub / \
-                             --sub-icon belongs to a preceding --sub"
+                            "\x1e--sub-icon gehört zu einem vorangehenden --sub\
+                             \x1f--sub-icon belongs to a preceding --sub\x1d"
                                 .to_string()
                         })?;
                         child.icon = Some(value.clone());
@@ -370,7 +434,10 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                             other => other.to_string(),
                         });
                     }
-                    other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
+                    other => bail!(
+                        "\x1eUnbekannte Option\x1funknown option\x1d: {other}\n\n{}",
+                        help()
+                    ),
                 }
             }
 
@@ -386,7 +453,10 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             return Ok(Command::Create(Box::new(entry)));
         }
         "scan" => {}
-        other => bail!("Unbekannter Befehl / unknown command: {other}\n\n{HELP}"),
+        other => bail!(
+            "\x1eUnbekannter Befehl\x1funknown command\x1d: {other}\n\n{}",
+            help()
+        ),
     }
 
     let mut options = ScanOptions::default();
@@ -419,25 +489,28 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             "--category" => {
                 let value = rest
                     .next()
-                    .context("--category erwartet einen Namen / expects a name")?;
-                let category = Category::from_slug(value)
-                    .with_context(|| format!("Unbekannte Kategorie / unknown category: {value}"))?;
+                    .context("\x1e--category erwartet einen Namen\x1fexpects a name\x1d")?;
+                let category = Category::from_slug(value).with_context(|| {
+                    format!("\x1eUnbekannte Kategorie\x1funknown category\x1d: {value}")
+                })?;
                 options.categories = Some(vec![category]);
             }
             "--scope" => {
                 let value = rest
                     .next()
-                    .context("--scope erwartet einen Namen / expects a name")?;
-                options.scopes =
-                    if value.eq_ignore_ascii_case("all") {
-                        Scope::ALL.to_vec()
-                    } else {
-                        vec![Scope::from_slug(value).with_context(|| {
-                            format!("Unbekannter Scope / unknown scope: {value}")
-                        })?]
-                    };
+                    .context("\x1e--scope erwartet einen Namen\x1fexpects a name\x1d")?;
+                options.scopes = if value.eq_ignore_ascii_case("all") {
+                    Scope::ALL.to_vec()
+                } else {
+                    vec![Scope::from_slug(value).with_context(|| {
+                        format!("\x1eUnbekannter Scope\x1funknown scope\x1d: {value}")
+                    })?]
+                };
             }
-            other => bail!("Unbekannte Option / unknown option: {other}\n\n{HELP}"),
+            other => bail!(
+                "\x1eUnbekannte Option\x1funknown option\x1d: {other}\n\n{}",
+                help()
+            ),
         }
     }
 
@@ -487,15 +560,16 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     // check that the second one did anything.
     if !args.options.file_types.is_empty() {
         crate::outln!(
-            "Dateitypen / file types: {} untersucht, {} davon registriert",
-            args.options.file_types.len(),
-            result.file_types.len()
+            "\x1e{walked} Dateitypen untersucht, {found} davon registriert\
+              \x1f{walked} file types examined, {found} of them registered\x1d",
+            walked = args.options.file_types.len(),
+            found = result.file_types.len()
         );
     }
     crate::outln!();
 
     crate::outln!(
-        "{:<7} {:<8} {:<22} {:<34} {:<7} Befehl / CLSID",
+        "{:<7} {:<8} {:<22} {:<34} {:<7} Befehl|CLSID",
         "Scope",
         "Typ",
         "Schlüssel",
@@ -541,7 +615,7 @@ pub fn run_programs() -> Result<()> {
         use crate::program::identity::Presence;
         let count = |wanted: Presence| groups.iter().filter(|g| g.presence == wanted).count();
         crate::outln!(
-            "Programme vorhanden / present: {}, nicht mehr da / gone: {}, nicht prüfbar / unknown: {}",
+            "\x1eProgramme vorhanden\x1fpresent\x1d: {}, \x1enicht mehr da\x1fgone\x1d: {}, \x1enicht prüfbar\x1funknown\x1d: {}",
             count(Presence::Present),
             count(Presence::Missing),
             count(Presence::Unknown)
@@ -557,7 +631,7 @@ pub fn run_programs() -> Result<()> {
             // The window paints this row red; the console has no colour, so it
             // says it in words.
             (group.presence == crate::program::identity::Presence::Missing)
-                .then_some("nicht mehr vorhanden / gone"),
+                .then_some("\x1enicht mehr vorhanden\x1fgone\x1d"),
         ]
         .into_iter()
         .flatten()
@@ -585,7 +659,7 @@ pub fn run_file_type(raw_ext: &str) -> Result<()> {
     use crate::registry::filetypes;
 
     let ext = filetypes::normalize_ext(raw_ext)
-        .with_context(|| format!("Keine Erweiterung / not an extension: {raw_ext}"))?;
+        .with_context(|| format!("\x1eKeine Erweiterung\x1fnot an extension\x1d: {raw_ext}"))?;
 
     let started = std::time::Instant::now();
     let result = scan::scan(
@@ -709,7 +783,7 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     let target = RegTarget::parse(path)?;
     if !write::exists(&target) {
         bail!(
-            "Schlüssel existiert nicht / key does not exist: {}",
+            "\x1eSchlüssel existiert nicht\x1fkey does not exist\x1d: {}",
             target.full_path()
         );
     }
@@ -728,23 +802,23 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     let needs_elevation = !elevated.is_empty();
 
     if !confirmed {
-        crate::outln!("Würde ausführen / would apply: {}", plan.label);
+        crate::outln!("\x1eWürde ausführen\x1fwould apply\x1d: {}", plan.label);
         crate::outln!("  {}", target.full_path());
         crate::outln!(
-            "  Rechteerhöhung nötig / elevation required: {}",
+            "  \x1eRechteerhöhung nötig\x1felevation required\x1d: {}",
             if needs_elevation {
-                "ja / yes"
+                "\x1eja\x1fyes\x1d"
             } else {
-                "nein / no"
+                "\x1enein\x1fno\x1d"
             }
         );
-        crate::outln!("Zum Ausführen --yes anhängen / append --yes to execute.");
+        crate::outln!("\x1eZum Ausführen --yes anhängen\x1fappend --yes to execute\x1d.");
         return Ok(());
     }
 
     let mut report = crate::registry::plan::execute(&direct)?;
     if needs_elevation {
-        crate::outln!("Starte erhöhten Vorgang / starting elevated run …");
+        crate::outln!("\x1eStarte erhöhten Vorgang\x1fstarting elevated run …\x1d");
         report.merge(crate::elevation::run_elevated(&elevated)?);
     }
 
@@ -752,7 +826,7 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     crate::elevation::notify_shell();
 
     crate::outln!(
-        "{} erfolgreich / succeeded, {} fehlgeschlagen / failed",
+        "{} \x1eerfolgreich\x1fsucceeded\x1d, {} \x1efehlgeschlagen\x1ffailed\x1d",
         report.succeeded(),
         report.failed()
     );
@@ -777,9 +851,9 @@ pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
         // The console has no language setting, so it gets both halves.
         let text = problem.message();
         if problem.is_error() {
-            crate::errln!("Fehler / error: {text}");
+            crate::errln!("\x1eFehler\x1ferror\x1d: {text}");
         } else {
-            crate::errln!("Warnung / warning: {text}");
+            crate::errln!("\x1eWarnung\x1fwarning\x1d: {text}");
         }
     }
 
@@ -788,7 +862,7 @@ pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
     // old menu -- which looks exactly like a failed write.
     crate::elevation::notify_shell();
 
-    crate::outln!("Angelegt / created: {}", target.full_path());
+    crate::outln!("\x1eAngelegt\x1fcreated\x1d: {}", target.full_path());
     if entry.is_submenu() {
         crate::outln!("  {} \u{25b8}", entry.display_name);
         for child in &entry.children {
@@ -805,7 +879,7 @@ pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
 pub fn run_created() -> Result<()> {
     let recorded = crate::registry::create::recorded()?;
     if recorded.is_empty() {
-        crate::outln!("Nichts angelegt / nothing created yet");
+        crate::outln!("\x1eNichts angelegt\x1fnothing created yet\x1d");
         return Ok(());
     }
 
@@ -847,7 +921,9 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
 
         "run" => {
             let (Some(id), Some(file)) = (args.get(1), args.get(2)) else {
-                bail!("run erwartet eine Kennung und eine Datei / expects an id and a file");
+                bail!(
+                    "\x1erun erwartet eine Kennung und eine Datei\x1fexpects an id and a file\x1d"
+                );
             };
             Ok(FavouriteCommand::Run {
                 id: id.clone(),
@@ -866,11 +942,11 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                     .with_context(|| format!("{flag} erwartet einen Wert"))?;
                 category = Some(match flag.as_str() {
                     "--category" => Category::from_slug(value).with_context(|| {
-                        format!("Unbekannte Kategorie / unknown category: {value}")
+                        format!("\x1eUnbekannte Kategorie\x1funknown category\x1d: {value}")
                     })?,
                     "--ext" => Category::ExtAssoc(value.clone()),
                     "--perceived" => Category::PerceivedType(value.clone()),
-                    other => bail!("Unbekannte Option / unknown option: {other}"),
+                    other => bail!("\x1eUnbekannte Option\x1funknown option\x1d: {other}"),
                 });
             }
 
@@ -934,7 +1010,7 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                             value: val.trim().to_string(),
                         });
                     }
-                    other => bail!("Unbekannte Option / unknown option: {other}"),
+                    other => bail!("\x1eUnbekannte Option\x1funknown option\x1d: {other}"),
                 }
             }
 
@@ -990,7 +1066,7 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
             })))
         }
 
-        other => bail!("Unbekannt / unknown: favourite {other}"),
+        other => bail!("\x1eUnbekannt\x1funknown\x1d: favourite {other}"),
     }
 }
 
@@ -1001,7 +1077,7 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
         FavouriteCommand::List => {
             let list = favourites::load()?;
             if list.is_empty() {
-                crate::outln!("Keine Favoriten / no favourites");
+                crate::outln!("\x1eKeine Favoriten\x1fno favourites\x1d");
                 crate::outln!("  {}", favourites::path()?.display());
                 return Ok(());
             }
@@ -1031,16 +1107,16 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
         FavouriteCommand::Add(favourite) => {
             for problem in favourite.problems() {
                 // The console has no language setting, so it gets both halves.
-                crate::errln!("Hinweis / note: {}", problem.bilingual());
+                crate::errln!("\x1eHinweis\x1fnote\x1d: {}", problem.marked());
             }
             let id = favourites::add(*favourite)?;
-            crate::outln!("Angelegt / created: {id}");
+            crate::outln!("\x1eAngelegt\x1fcreated\x1d: {id}");
             Ok(())
         }
 
         FavouriteCommand::Remove(id) => {
             favourites::remove(&id)?;
-            crate::outln!("Entfernt / removed: {id}");
+            crate::outln!("\x1eEntfernt\x1fremoved\x1d: {id}");
             Ok(())
         }
 
@@ -1050,12 +1126,12 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
             let entry = favourite.entry(category, &exe);
 
             for problem in crate::registry::create::check(&entry) {
-                crate::errln!("Hinweis / note: {}", problem.message());
+                crate::errln!("\x1eHinweis\x1fnote\x1d: {}", problem.message());
             }
 
             let target = crate::registry::create::create(&entry)?;
             crate::elevation::notify_shell();
-            crate::outln!("Angelegt / created: {}", target.full_path());
+            crate::outln!("\x1eAngelegt\x1fcreated\x1d: {}", target.full_path());
             crate::outln!("  {}", entry.command);
             Ok(())
         }
@@ -1091,20 +1167,21 @@ pub fn run_backup_all() -> Result<()> {
         .unwrap_or(0);
 
     crate::outln!(
-        "{} von {} Schlüsseln gesichert in {:.2} s, {:.1} MB / {} of {} keys in {:.2} s",
-        manifest.entries.len(),
-        paths.len(),
-        elapsed.as_secs_f32(),
-        bytes as f64 / (1024.0 * 1024.0),
-        manifest.entries.len(),
-        paths.len(),
-        elapsed.as_secs_f32(),
+        "\x1e{saved} von {all} Schlüsseln gesichert in {seconds:.2} s\
+          \x1f{saved} of {all} keys backed up in {seconds:.2} s\x1d, {megabytes:.1} MB",
+        saved = manifest.entries.len(),
+        all = paths.len(),
+        seconds = elapsed.as_secs_f32(),
+        megabytes = bytes as f64 / (1024.0 * 1024.0),
     );
     crate::outln!("{}", directory.display());
     if !manifest.missing.is_empty() {
         // Not a failure: not every category exists in every scope, and a
         // machine without a 32-bit classes tree is normal.
-        crate::outln!("Nicht vorhanden / not present: {}", manifest.missing.len());
+        crate::outln!(
+            "\x1eNicht vorhanden\x1fnot present\x1d: {}",
+            manifest.missing.len()
+        );
     }
     Ok(())
 }
@@ -1115,7 +1192,7 @@ pub fn run_backups() -> Result<()> {
         // `display()`, not `{:?}`: the debug form doubles every backslash, so
         // the path it prints is one nobody can paste anywhere.
         crate::outln!(
-            "Keine Backups unter {} / no backups yet",
+            "\x1eKeine Backups unter\x1fno backups yet in\x1d {}",
             backup::root_dir()?.display()
         );
         return Ok(());
@@ -1147,10 +1224,10 @@ pub fn run_backups() -> Result<()> {
 pub fn run_restore(directory: &str) -> Result<()> {
     let path = std::path::Path::new(directory);
     let restored = backup::restore(path)?;
-    crate::outln!("{restored} Datei(en) zurückgespielt / restored from {directory}");
+    crate::outln!("{restored} Datei(en) \x1ezurückgespielt\x1frestored from\x1d {directory}");
     crate::outln!(
-        "Hinweis: reg import fügt hinzu und überschreibt, entfernt aber nichts. / \
-         note: reg import adds and overwrites, it never removes."
+        "\x1eHinweis: reg import fügt hinzu und überschreibt, entfernt aber nichts.\
+         \x1fnote: reg import adds and overwrites, it never removes.\x1d"
     );
     Ok(())
 }
@@ -1165,15 +1242,15 @@ pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
 
     if !write::exists(&target) {
         bail!(
-            "Schlüssel existiert nicht / key does not exist: {}",
+            "\x1eSchlüssel existiert nicht\x1fkey does not exist\x1d: {}",
             target.full_path()
         );
     }
 
     if !confirmed {
-        crate::outln!("Würde sichern und löschen / would back up and delete:");
+        crate::outln!("\x1eWürde sichern und löschen\x1fwould back up and delete\x1d:");
         crate::outln!("  {}", target.full_path());
-        crate::outln!("Zum Ausführen --yes anhängen / append --yes to execute.");
+        crate::outln!("\x1eZum Ausführen --yes anhängen\x1fappend --yes to execute\x1d.");
         return Ok(());
     }
 
@@ -1188,9 +1265,9 @@ pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
     // Best effort, like there: the deletion succeeded, and failing to tidy the
     // bookkeeping is not a failed deletion.
     let _ = crate::registry::create::forget_target(&target);
-    crate::outln!("Gelöscht / deleted: {}", target.full_path());
+    crate::outln!("\x1eGelöscht\x1fdeleted\x1d: {}", target.full_path());
     crate::outln!(
-        "Zurückholen mit / restore with: ctxmenu restore \"{}\"",
+        "\x1eZurückholen mit\x1frestore with\x1d: ctxmenu restore \"{}\"",
         token.directory().display()
     );
     Ok(())

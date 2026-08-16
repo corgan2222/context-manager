@@ -333,28 +333,30 @@ pub enum Fault {
 }
 
 impl Fault {
-    /// Both languages at once, for the console and the log.
-    pub fn bilingual(&self) -> String {
+    /// Both languages, marked, so the reader is shown the one
+    /// they read. See [`crate::bilingual`].
+    pub fn marked(&self) -> String {
         match self {
-            Fault::MissingName => "Name fehlt / name is missing".into(),
-            Fault::MissingPath => "Pfad fehlt / path is missing".into(),
+            Fault::MissingName => "\x1eName fehlt\x1fname is missing\x1d".into(),
+            Fault::MissingPath => "\x1ePfad fehlt\x1fpath is missing\x1d".into(),
             Fault::FileNotFound(path) => {
-                format!("Datei nicht gefunden / file not found: {path}")
+                format!("\x1eDatei nicht gefunden\x1ffile not found\x1d: {path}")
             }
-            Fault::MissingAddress => "Adresse fehlt / address is missing".into(),
+            Fault::MissingAddress => "\x1eAdresse fehlt\x1faddress is missing\x1d".into(),
             Fault::InsecureAddress => {
-                "Unverschlüsselte Adresse: die Datei ginge im Klartext durchs Netz. \
-                 Nur mit ausdrücklicher Erlaubnis. / unencrypted address; the file \
-                 would travel in the clear."
+                "\x1eUnverschlüsselte Adresse: die Datei ginge im Klartext durchs Netz. \
+                 Nur mit ausdrücklicher Erlaubnis.\x1funencrypted address; the file \
+                 would travel in the clear.\x1d"
                     .into()
             }
             Fault::NotHttps => {
-                "Adresse muss mit https:// beginnen / address must start with https://".into()
+                "\x1eAdresse muss mit https:// beginnen\x1faddress must start with https://\x1d"
+                    .into()
             }
             Fault::NoPlaceholder => {
-                "Ohne Platzhalter wird die Datei gar nicht erwähnt — {name}, {stem}, \
-                 {path} oder {ext} einsetzen. / without a placeholder the file is never \
-                 mentioned."
+                "\x1eOhne Platzhalter wird die Datei gar nicht erwähnt — {name}, {stem}, \
+                 {path} oder {ext} einsetzen.\x1fwithout a placeholder the file is never \
+                 mentioned — put {name}, {stem}, {path} or {ext} in.\x1d"
                     .into()
             }
         }
@@ -363,7 +365,8 @@ impl Fault {
 
 /// `%LOCALAPPDATA%\ctxmenu\favourites.json`
 pub fn path() -> Result<PathBuf> {
-    let base = dirs::data_local_dir().context("kein LOCALAPPDATA / no local data directory")?;
+    let base =
+        dirs::data_local_dir().context("\x1ekein LOCALAPPDATA\x1fno local data directory\x1d")?;
     Ok(base.join("ctxmenu").join("favourites.json"))
 }
 
@@ -402,10 +405,9 @@ pub fn save(list: &[Favourite]) -> Result<()> {
 
 /// Finds one, for the run-time path of a web tool.
 pub fn find(id: &str) -> Result<Favourite> {
-    load()?
-        .into_iter()
-        .find(|f| f.id == id)
-        .with_context(|| format!("Kein Favorit mit dieser Kennung / no favourite with id {id}"))
+    load()?.into_iter().find(|f| f.id == id).with_context(|| {
+        format!("\x1eKein Favorit mit der Kennung {id}\x1fno favourite with id {id}\x1d")
+    })
 }
 
 /// Adds a favourite and hands back the id it got.
@@ -415,7 +417,7 @@ pub fn add(mut favourite: Favourite) -> Result<String> {
         favourite.id = free_id(&favourite.name, &list);
     } else if list.iter().any(|f| f.id == favourite.id) {
         bail!(
-            "Kennung schon vergeben / id already taken: {}",
+            "\x1eKennung schon vergeben\x1fid already taken\x1d: {}",
             favourite.id
         );
     }
@@ -464,8 +466,8 @@ pub fn update(favourite: Favourite) -> Result<()> {
         .find(|f| f.id == favourite.id)
         .with_context(|| {
             format!(
-                "Kein Favorit mit dieser Kennung / no favourite with id {}",
-                favourite.id
+                "\x1eKein Favorit mit der Kennung {id}\x1fno favourite with id {id}\x1d",
+                id = favourite.id
             )
         })?;
     *slot = favourite;

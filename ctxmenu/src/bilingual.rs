@@ -178,9 +178,8 @@ pub fn language() -> Language {
         ENGLISH => Language::English,
         _ => {
             static START: OnceLock<Language> = OnceLock::new();
-            *START.get_or_init(|| {
-                Settings::load_or_default(crate::theme::system_language()).language
-            })
+            *START
+                .get_or_init(|| Settings::load_or_default(crate::theme::system_language()).language)
         }
     }
 }
@@ -327,10 +326,7 @@ mod tests {
             pick(&message, GERMAN),
             "Kennung schon vergeben: Scan / Prüfen"
         );
-        assert_eq!(
-            pick(&message, ENGLISH),
-            "id already taken: Scan / Prüfen"
-        );
+        assert_eq!(pick(&message, ENGLISH), "id already taken: Scan / Prüfen");
     }
 
     #[test]
@@ -371,7 +367,10 @@ mod tests {
         let answer = format!("Der Dienst antwortete: feld{SPLIT}wert{CLOSE}ende");
 
         assert_eq!(pick(&answer, GERMAN), "Der Dienst antwortete: feldwertende");
-        assert_eq!(pick(&answer, ENGLISH), "Der Dienst antwortete: feldwertende");
+        assert_eq!(
+            pick(&answer, ENGLISH),
+            "Der Dienst antwortete: feldwertende"
+        );
     }
 
     #[test]
@@ -480,9 +479,17 @@ mod source {
         }
         let mut folded = String::with_capacity(text.len());
         let mut rest = text.as_str();
-        while let Some(cut) = rest.find("\\\n") {
+        // The working copy is checked out with CRLF, so the continuation is a
+        // backslash followed by two characters, not one.
+        while let Some(cut) = rest
+            .match_indices('\\')
+            .map(|(at, _)| at)
+            .find(|at| rest[at + 1..].starts_with(['\n', '\r']))
+        {
             folded.push_str(&rest[..cut]);
-            rest = rest[cut + 2..].trim_start_matches([' ', '\t']);
+            rest = rest[cut + 1..]
+                .trim_start_matches(['\r', '\n'])
+                .trim_start_matches([' ', '\t']);
         }
         folded.push_str(rest);
         folded
@@ -524,7 +531,7 @@ mod source {
                     )
                 });
                 assert!(
-                    !found.german.contains(['\n', '"']) && !found.english.contains(['\n', '"']),
+                    !runs_past_its_literal(found.german) && !runs_past_its_literal(found.english),
                     "{}: a group runs past the end of its literal: {:?}",
                     path.display(),
                     found.german
@@ -549,7 +556,12 @@ mod source {
                 .enumerate()
             {
                 if !line.trim_start().starts_with("//") && bilingual_looking(line) {
-                    left.push(format!("{}:{}: {}", path.display(), number + 1, line.trim()));
+                    left.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        number + 1,
+                        line.trim()
+                    ));
                 }
             }
         }
@@ -559,6 +571,26 @@ mod source {
             left.len(),
             left.join("\n")
         );
+    }
+
+    /// Did half a group swallow the end of the literal it lives in? A newline
+    /// or a quote that is not escaped means the closing marker was forgotten
+    /// and the group ran on into the code. `\"` is ordinary content — the
+    /// `--sub` message quotes its own example.
+    fn runs_past_its_literal(half: &str) -> bool {
+        if half.contains(['\n', '\r']) {
+            return true;
+        }
+        let mut escaped = false;
+        for c in half.chars() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// A German word, a slash, an English word, inside a string literal — the

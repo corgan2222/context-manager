@@ -39,21 +39,27 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
     let favourite = crate::favourites::find(id)?;
 
     if !file.exists() {
-        bail!("Datei nicht gefunden / file not found: {}", file.display());
+        bail!(
+            "\x1eDatei nicht gefunden\x1ffile not found\x1d: {}",
+            file.display()
+        );
     }
 
     let Tool::Web(web) = &favourite.tool else {
         // A program favourite has the executable in its own command line and
         // never comes through here. Reaching this point means an entry was
         // written from a favourite that has since been turned into a program.
-        bail!("„{}“ ist kein Webtool / is not a web tool", favourite.name);
+        bail!(
+            "„{}“ \x1eist kein Webtool\x1fis not a web tool\x1d",
+            favourite.name
+        );
     };
 
     match &web.mode {
         WebMode::Open { url } => {
             let address = fill(url, file);
             shell::open(&address)?;
-            Ok(format!("Geöffnet / opened: {address}"))
+            Ok(format!("\x1eGeöffnet\x1fopened\x1d: {address}"))
         }
 
         WebMode::Clipboard { url } => {
@@ -63,8 +69,8 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
             let address = fill(url, file);
             shell::open(&address)?;
             Ok(format!(
-                "{} liegt in der Zwischenablage — im Browser Strg+V drücken. / \
-                 on the clipboard; press Ctrl+V in the browser.",
+                "{} \x1eliegt in der Zwischenablage — im Browser Strg+V drücken.\
+                 \x1fis on the clipboard; press Ctrl+V in the browser.\x1d",
                 file.file_name().unwrap_or_default().to_string_lossy()
             ))
         }
@@ -76,26 +82,24 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
             if !web.confirmed {
                 let size = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
                 let agreed = shell::ask(
-                    "Datei senden? / Send the file?",
+                    "\x1eDatei senden?\x1fSend the file?\x1d",
                     &format!(
-                        "„{}“ schickt diese Datei an einen fremden Dienst:\n\n\
-                         Datei: {}\n\
-                         Größe: {} KB\n\
-                         Ziel:  {}\n\n\
-                         Einverstanden? Diese Frage kommt für dieses Werkzeug nur einmal.\n\n\
-                         — — —\n\n\
-                         \"{}\" sends this file to an external service.\n\
-                         Agree? You will be asked once per tool.",
-                        favourite.name,
-                        file.display(),
-                        size.div_ceil(1024),
-                        host_of(&upload.endpoint),
-                        favourite.name,
+                        "„{name}“ \x1eschickt diese Datei an einen fremden Dienst\
+                         \x1fsends this file to an external service\x1d:\n\n\
+                         \x1eDatei\x1fFile\x1d: {file}\n\
+                         \x1eGröße\x1fSize\x1d: {kilobytes} KB\n\
+                         \x1eZiel\x1fTo\x1d: {host}\n\n\
+                         \x1eEinverstanden? Diese Frage kommt für dieses Werkzeug nur einmal.\
+                         \x1fAgree? You will be asked once per tool.\x1d",
+                        name = favourite.name,
+                        file = file.display(),
+                        kilobytes = size.div_ceil(1024),
+                        host = host_of(&upload.endpoint),
                     ),
                 );
 
                 if !agreed {
-                    return Ok("Nichts gesendet / nothing was sent".into());
+                    return Ok("\x1eNichts gesendet\x1fnothing was sent\x1d".into());
                 }
 
                 // Remember the answer, but never let a failure to write it
@@ -146,12 +150,12 @@ fn absolute(address: &str, endpoint: &str) -> Result<String> {
         return Ok(address.to_string());
     }
     if !address.starts_with('/') {
-        bail!("Weder Adresse noch Pfad / neither an address nor a path: {address}");
+        bail!("\x1eWeder Adresse noch Pfad\x1fneither an address nor a path\x1d: {address}");
     }
 
     let (scheme, rest) = endpoint
         .split_once("://")
-        .context("Endpunkt ohne Schema / endpoint without a scheme")?;
+        .context("\x1eEndpunkt ohne Schema\x1fendpoint without a scheme\x1d")?;
     let host = rest.split('/').next().unwrap_or(rest);
     Ok(format!("{scheme}://{host}{address}"))
 }
@@ -198,16 +202,16 @@ fn apply_result(
     // a result, and every path below would make a mess of it.
     if took_the_job(answer) && !matches!(action, ResultAction::Report) {
         bail!(
-            "Der Dienst arbeitet im Hintergrund und hat nur eine Auftragsnummer geschickt. \
-             Dieses Werkzeug kann das Ergebnis noch nicht abholen. / the service queued the \
-             job and answered with an id only; fetching that result is not supported yet"
+            "\x1eDer Dienst arbeitet im Hintergrund und hat nur eine Auftragsnummer \
+             geschickt. Dieses Werkzeug kann das Ergebnis noch nicht abholen.\x1fthe \
+             service queued the job and answered with an id only; fetching that \
+             result is not supported yet\x1d"
         );
     }
 
     match action {
         ResultAction::Report => Ok(format!(
-            "Antwort {} / status {}, {} Bytes",
-            answer.status,
+            "\x1eAntwort\x1fstatus\x1d {}, {} Bytes",
             answer.status,
             answer.body.len()
         )),
@@ -215,7 +219,9 @@ fn apply_result(
         ResultAction::Open { source } => {
             let address = absolute(&locate(source, answer)?, endpoint)?;
             shell::open(&address)?;
-            Ok(format!("Ergebnis geöffnet / result opened: {address}"))
+            Ok(format!(
+                "\x1eErgebnis geöffnet\x1fresult opened\x1d: {address}"
+            ))
         }
 
         ResultAction::Save { source, suffix } => {
@@ -230,13 +236,13 @@ fn apply_result(
             };
 
             if bytes.is_empty() {
-                bail!("Antwort ohne Inhalt / empty answer, nothing to save");
+                bail!("\x1eAntwort ohne Inhalt\x1fempty answer\x1d, nothing to save");
             }
 
             let target = free_name(file, suffix);
             std::fs::write(&target, &bytes).with_context(|| format!("{}", target.display()))?;
             Ok(format!(
-                "Gespeichert / saved: {} ({} Bytes)",
+                "\x1eGespeichert\x1fsaved\x1d: {} ({} Bytes)",
                 target.display(),
                 bytes.len()
             ))
@@ -252,18 +258,19 @@ fn locate(source: &ResultSource, answer: &http::Answer) -> Result<String> {
             if text.starts_with("http") {
                 Ok(text)
             } else {
-                bail!("Antwort ist keine Adresse / the answer is not an address")
+                bail!("\x1eAntwort ist keine Adresse\x1fthe answer is not an address\x1d")
             }
         }
         ResultSource::Location => answer
             .header("Location")
             .map(str::to_string)
-            .context("Kein Location-Kopf in der Antwort / no Location header"),
+            .context("\x1eKein Location-Kopf in der Antwort\x1fno Location header\x1d"),
         ResultSource::Json { path } => {
             let value: serde_json::Value = serde_json::from_slice(&answer.body)
-                .context("Antwort ist kein JSON / the answer is not JSON")?;
-            json_path(&value, path)
-                .with_context(|| format!("Kein Feld {path} in der Antwort / no such field"))
+                .context("\x1eAntwort ist kein JSON\x1fthe answer is not JSON\x1d")?;
+            json_path(&value, path).with_context(|| {
+                format!("\x1eKein Feld {path} in der Antwort\x1fno field {path} in the answer\x1d")
+            })
         }
     }
 }

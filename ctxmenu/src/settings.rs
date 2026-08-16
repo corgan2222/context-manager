@@ -86,7 +86,8 @@ impl Default for Settings {
 impl Settings {
     /// `%LOCALAPPDATA%\ctxmenu\settings.json`
     pub fn path() -> Result<PathBuf> {
-        let base = dirs::data_local_dir().context("kein LOCALAPPDATA / no local data directory")?;
+        let base = dirs::data_local_dir()
+            .context("\x1ekein LOCALAPPDATA\x1fno local data directory\x1d")?;
         Ok(base.join("ctxmenu").join("settings.json"))
     }
 
@@ -120,7 +121,7 @@ impl Settings {
         let path = Self::path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("Verzeichnis / directory {parent:?}"))?;
+                .with_context(|| format!("\x1eVerzeichnis\x1fdirectory\x1d {parent:?}"))?;
         }
         std::fs::write(&path, serde_json::to_string_pretty(self)?)
             .with_context(|| format!("settings.json in {path:?}"))?;

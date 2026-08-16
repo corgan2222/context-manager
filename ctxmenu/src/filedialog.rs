@@ -25,7 +25,9 @@ impl Filter<'_> {
     fn encode(&self) -> Vec<u16> {
         let mut out = Vec::new();
         for (label, pattern) in self.0 {
-            out.extend(label.encode_utf16());
+            // The labels below are written in both languages; the dialog shows
+            // the one the window is showing.
+            out.extend(crate::bilingual::shown(label).encode_utf16());
             out.push(0);
             out.extend(pattern.encode_utf16());
             out.push(0);
@@ -38,14 +40,14 @@ impl Filter<'_> {
 
 /// Programs, plus everything, for the command line field.
 pub const PROGRAMS: Filter<'static> = Filter(&[
-    ("Programme / Programs", "*.exe;*.com;*.bat;*.cmd"),
-    ("Alle Dateien / All files", "*.*"),
+    ("\x1eProgramme\x1fPrograms\x1d", "*.exe;*.com;*.bat;*.cmd"),
+    ("\x1eAlle Dateien\x1fAll files\x1d", "*.*"),
 ]);
 
 /// Where icons live: resource carriers as well as icon files.
 pub const ICONS: Filter<'static> = Filter(&[
-    ("Symbole / Icons", "*.ico;*.exe;*.dll"),
-    ("Alle Dateien / All files", "*.*"),
+    ("\x1eSymbole\x1fIcons\x1d", "*.ico;*.exe;*.dll"),
+    ("\x1eAlle Dateien\x1fAll files\x1d", "*.*"),
 ]);
 
 /// Opens the file picker. `None` means the user cancelled, which is an answer

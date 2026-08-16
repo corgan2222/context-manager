@@ -46,7 +46,7 @@ pub fn open(address: &str) -> Result<()> {
     {
         // Anything else could be a local program or a protocol handler, and
         // this path exists to open web tools.
-        bail!("Keine Web-Adresse / not a web address: {address}");
+        bail!("\x1eKeine Web-Adresse\x1fnot a web address\x1d: {address}");
     }
 
     let verb = wide("open");
@@ -61,7 +61,8 @@ pub fn open(address: &str) -> Result<()> {
         ..Default::default()
     };
 
-    unsafe { ShellExecuteExW(&mut info) }.with_context(|| format!("Öffnen / opening {address}"))
+    unsafe { ShellExecuteExW(&mut info) }
+        .with_context(|| format!("\x1eÖffnen\x1fopening\x1d {address}"))
 }
 
 /// Says something to a user who has no console.
@@ -76,8 +77,10 @@ pub fn report(title: &str, text: &str, kind: Report) {
         MessageBoxW,
     };
 
-    let caption = wide(title);
-    let body = wide(text);
+    // A message box has no window behind it to ask which language is on
+    // screen, so it asks the process (see `crate::bilingual`).
+    let caption = wide(&crate::bilingual::shown(title));
+    let body = wide(&crate::bilingual::shown(text));
     let icon = match kind {
         Report::Info => MB_ICONINFORMATION,
         Report::Error => MB_ICONERROR,
@@ -109,8 +112,8 @@ pub fn ask(title: &str, text: &str) -> bool {
         MessageBoxW,
     };
 
-    let caption = wide(title);
-    let body = wide(text);
+    let caption = wide(&crate::bilingual::shown(title));
+    let body = wide(&crate::bilingual::shown(text));
 
     let answer = unsafe {
         MessageBoxW(
@@ -203,7 +206,7 @@ fn global_block(bytes: &[u8]) -> Result<Owned<HGLOBAL>> {
         let block = Owned::new(GlobalAlloc(GMEM_MOVEABLE, bytes.len()).context("GlobalAlloc")?);
         let target = GlobalLock(*block);
         if target.is_null() {
-            bail!("GlobalLock lieferte NULL / returned NULL");
+            bail!("\x1eGlobalLock lieferte NULL\x1freturned NULL\x1d");
         }
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), target as *mut u8, bytes.len());
         let _ = GlobalUnlock(*block);
@@ -226,7 +229,7 @@ fn hdrop_block(path: &str) -> Result<Owned<HGLOBAL>> {
         let block = Owned::new(GlobalAlloc(GMEM_MOVEABLE, total).context("GlobalAlloc")?);
         let base = GlobalLock(*block);
         if base.is_null() {
-            bail!("GlobalLock lieferte NULL / returned NULL");
+            bail!("\x1eGlobalLock lieferte NULL\x1freturned NULL\x1d");
         }
 
         let files = DROPFILES {
@@ -276,7 +279,7 @@ impl Clipboard {
         }
 
         Err(anyhow::Error::from(last.expect("at least one attempt"))
-            .context("Zwischenablage bleibt belegt / the clipboard stays busy"))
+            .context("\x1eZwischenablage bleibt belegt\x1fthe clipboard stays busy\x1d"))
     }
 }
 

@@ -84,7 +84,9 @@ pub fn is_elevated() -> bool {
 /// parent could never learn what happened.
 pub fn run_elevated_job(job: &Path) -> Outcome {
     let Ok(exe) = std::env::current_exe() else {
-        return Outcome::Failed("Eigenen Pfad nicht ermittelbar / cannot find own path".into());
+        return Outcome::Failed(
+            "\x1eEigenen Pfad nicht ermittelbar\x1fcannot find own path\x1d".into(),
+        );
     };
     let directory = exe.parent().map(Path::to_path_buf).unwrap_or_default();
 
@@ -125,7 +127,7 @@ pub fn run_elevated_job(job: &Path) -> Outcome {
         }
 
         if info.hProcess.is_invalid() {
-            return Outcome::Failed("Kein Prozess-Handle / no process handle".into());
+            return Outcome::Failed("\x1eKein Prozess-Handle\x1fno process handle\x1d".into());
         }
         let child = Owned::new(info.hProcess);
 
@@ -133,7 +135,7 @@ pub fn run_elevated_job(job: &Path) -> Outcome {
 
         let mut code = 0u32;
         if GetExitCodeProcess(*child, &mut code).is_err() {
-            return Outcome::Failed("Exitcode nicht lesbar / exit code unreadable".into());
+            return Outcome::Failed("\x1eExitcode nicht lesbar\x1fexit code unreadable\x1d".into());
         }
         Outcome::Finished(code)
     }
@@ -182,7 +184,7 @@ pub fn show_in_explorer(path: &Path) -> Result<()> {
 
     command
         .spawn()
-        .with_context(|| format!("Explorer für {path:?} / for {path:?}"))?;
+        .with_context(|| format!("\x1eExplorer für\x1fExplorer for\x1d {path:?}"))?;
     Ok(())
 }
 
@@ -214,9 +216,9 @@ pub fn restart_explorer() -> Result<()> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let output = command
-        .output()
-        .with_context(|| format!("{exe:?} konnte nicht gestartet werden / could not be started"))?;
+    let output = command.output().with_context(|| {
+        format!("{exe:?} \x1ekonnte nicht gestartet werden\x1fcould not be started\x1d")
+    })?;
 
     // Exit code 128 is "no such process" — the shell was already down, which
     // is not a reason to stop before starting it again.
@@ -240,7 +242,7 @@ pub fn restart_explorer() -> Result<()> {
     // in the user's face.
     Command::new("explorer.exe")
         .spawn()
-        .context("explorer.exe konnte nicht gestartet werden / could not be started")?;
+        .context("\x1eexplorer.exe konnte nicht gestartet werden\x1fcould not be started\x1d")?;
     Ok(())
 }
 
@@ -285,7 +287,7 @@ pub fn write_job(plan: &Plan) -> Result<PathBuf> {
     );
     let path = std::env::temp_dir().join(name);
     std::fs::write(&path, serde_json::to_string_pretty(plan)?)
-        .with_context(|| format!("Job-Datei / job file {path:?}"))?;
+        .with_context(|| format!("\x1eJob-Datei\x1fjob file\x1d {path:?}"))?;
     Ok(path)
 }
 
@@ -298,18 +300,20 @@ pub fn run_elevated(plan: &Plan) -> Result<Report> {
     let report = match outcome {
         Outcome::Cancelled => {
             let _ = std::fs::remove_file(&job);
-            bail!("Vom Benutzer abgebrochen / cancelled by the user");
+            bail!("\x1eVom Benutzer abgebrochen\x1fcancelled by the user\x1d");
         }
         Outcome::Failed(message) => {
             let _ = std::fs::remove_file(&job);
-            bail!("Start mit Administratorrechten fehlgeschlagen / elevation failed: {message}");
+            bail!(
+                "\x1eStart mit Administratorrechten fehlgeschlagen\x1felevation failed\x1d: {message}"
+            );
         }
         Outcome::Finished(_) => match std::fs::read_to_string(&result) {
             Ok(raw) => serde_json::from_str(&raw)
-                .context("Ergebnisdatei unlesbar / result file unreadable")?,
+                .context("\x1eErgebnisdatei unlesbar\x1fresult file unreadable\x1d")?,
             Err(_) => bail!(
-                "Der erhöhte Vorgang hat keinen Bericht hinterlassen / \
-                 the elevated run left no report"
+                "\x1eDer erhöhte Vorgang hat keinen Bericht hinterlasse\
+                 n\x1fthe elevated run left no report\x1d"
             ),
         },
     };
@@ -326,17 +330,17 @@ pub fn run_elevated(plan: &Plan) -> Result<Report> {
 /// undone and ask for elevation again.
 pub fn run_job(job: &Path) -> Result<()> {
     if !is_elevated() {
-        bail!("Job-Modus ohne Administratorrechte / job mode without elevation");
+        bail!("\x1eJob-Modus ohne Administratorrechte\x1fjob mode without elevation\x1d");
     }
 
-    let raw =
-        std::fs::read_to_string(job).with_context(|| format!("Job-Datei / job file {job:?}"))?;
+    let raw = std::fs::read_to_string(job)
+        .with_context(|| format!("\x1eJob-Datei\x1fjob file\x1d {job:?}"))?;
     let plan: Plan =
-        serde_json::from_str(&raw).context("Job-Datei unlesbar / job file unreadable")?;
+        serde_json::from_str(&raw).context("\x1eJob-Datei unlesbar\x1fjob file unreadable\x1d")?;
 
     let report = execute(&plan)?;
     std::fs::write(result_path(job), serde_json::to_string_pretty(&report)?)
-        .context("Ergebnisdatei / result file")?;
+        .context("\x1eErgebnisdatei\x1fresult file\x1d")?;
 
     Ok(())
 }

@@ -47,7 +47,8 @@ pub struct Service {
 /// works on its own, a service is where tools come from, and mixing the two
 /// would make the file that already exists harder to read by hand.
 pub fn path() -> Result<PathBuf> {
-    let base = dirs::data_local_dir().context("kein LOCALAPPDATA / no local data directory")?;
+    let base =
+        dirs::data_local_dir().context("\x1ekein LOCALAPPDATA\x1fno local data directory\x1d")?;
     Ok(base.join("ctxmenu").join("services.json"))
 }
 
@@ -160,7 +161,7 @@ pub fn spec_candidates(url: &str) -> Vec<String> {
 pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
     let candidates = spec_candidates(&service.spec_url);
     if candidates.is_empty() {
-        anyhow::bail!("Keine Adresse angegeben / no address given");
+        anyhow::bail!("\x1eKeine Adresse angegeben\x1fno address given\x1d");
     }
     if !service.allow_insecure
         && candidates
@@ -168,8 +169,8 @@ pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
             .is_some_and(|url| url.starts_with("http://"))
     {
         anyhow::bail!(
-            "Unverschlüsseltes http:// ist für diesen Dienst nicht erlaubt / \
-             unencrypted http:// is not allowed for this service"
+            "\x1eUnverschlüsseltes http:// ist für diesen Dienst nicht erlaubt\
+             \x1funencrypted http:// is not allowed for this service\x1d"
         );
     }
 
@@ -206,11 +207,12 @@ pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
     // is somewhere else. Whether the first guess was a 404 or a timeout does
     // not change what to do about it, so it goes at the end.
     anyhow::bail!(
-        "Unter dieser Adresse steht keine maschinenlesbare Beschreibung \
+        "\x1eUnter dieser Adresse steht keine maschinenlesbare Beschreibung \
          (OpenAPI/Swagger). {tried} Adresse(n) geprüft. Wenn der Dienst eine \
          hat, ist sie meist als openapi.json verlinkt — diese Adresse direkt \
-         eintragen. / no machine readable description at this address; {tried} \
-         tried{}",
+         eintragen.\x1fno machine readable description (OpenAPI/Swagger) at this \
+         address; {tried} address(es) tried. If the service has one it is usually \
+         linked as openapi.json — give that address directly.\x1d{}",
         match first_error {
             Some(error) => format!(" [{error}]"),
             None => String::new(),

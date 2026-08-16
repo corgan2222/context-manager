@@ -34,17 +34,21 @@ pub fn attach_to_parent() {
 /// which is what happens when output is piped into a command that exits early.
 /// A diagnostic tool aborting because its output went nowhere is the wrong
 /// trade every time.
+/// Every `outln!` goes through here, which is why the bilingual groups are cut
+/// at this point and nowhere in `cli.rs`: one place decides, and `--json`
+/// output is safe because [`crate::bilingual::shown`] leaves unmarked text
+/// alone.
 pub fn line(text: &str) {
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
-    let _ = writeln!(lock, "{text}");
+    let _ = writeln!(lock, "{}", crate::bilingual::shown(text));
 }
 
 /// Same for progress and error output.
 pub fn err_line(text: &str) {
     let stderr = std::io::stderr();
     let mut lock = stderr.lock();
-    let _ = writeln!(lock, "{text}");
+    let _ = writeln!(lock, "{}", crate::bilingual::shown(text));
 }
 
 /// Flushes what is left, ignoring failures for the reason above.

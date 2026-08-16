@@ -24,14 +24,14 @@ fn main() -> ExitCode {
             Some(job) => match elevation::run_job(std::path::Path::new(job)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    errln!("Job fehlgeschlagen / job failed: {error:#}");
+                    errln!("\x1eJob fehlgeschlagen\x1fjob failed\x1d: {error:#}");
                     console::flush();
                     ExitCode::FAILURE
                 }
             },
             None => {
                 errln!(
-                    "{} erwartet eine Job-Datei / expects a job file",
+                    "{} \x1eerwartet eine Job-Datei\x1fexpects a job file\x1d",
                     elevation::JOB_ARG
                 );
                 console::flush();
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
             webtool::shell::report(
                 "ctxmenu",
                 &format!(
-                    "{} erwartet eine Kennung und eine Datei / expects an id and a file",
+                    "{} \x1eerwartet eine Kennung und eine Datei\x1fexpects an id and a file\x1d",
                     webtool::RUN_ARG
                 ),
                 webtool::shell::Report::Error,
@@ -70,7 +70,7 @@ fn main() -> ExitCode {
                 // click, with no console and no window behind the box, so the
                 // message box is the only thing the user sees -- and it is gone
                 // the moment they click it away.
-                let message = format!("{error:#}");
+                let message = ctxmenu::bilingual::error(&error, ctxmenu::bilingual::language());
                 log::write(log::Kind::Error, &format!("--favourite {id}: {message}"));
                 webtool::shell::report("ctxmenu", &message, webtool::shell::Report::Error);
                 ExitCode::FAILURE
@@ -90,7 +90,7 @@ fn main() -> ExitCode {
 
     let result = match command {
         cli::Command::Help => {
-            ctxmenu::outln!("{}", cli::HELP);
+            ctxmenu::outln!("{}", cli::help());
             Ok(())
         }
         cli::Command::Version => {
@@ -129,9 +129,9 @@ fn main() -> ExitCode {
     let code = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let message = format!("{error:#}");
+            let message = ctxmenu::bilingual::error(&error, ctxmenu::bilingual::language());
             log::write(log::Kind::Error, &message);
-            errln!("Fehler / error: {message}");
+            errln!("\x1eFehler\x1ferror\x1d: {message}");
             ExitCode::FAILURE
         }
     };

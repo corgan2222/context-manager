@@ -253,11 +253,11 @@ fn apply(operation: &Operation, token: &BackupToken) -> Result<()> {
         }
         Action::Block => match &operation.clsid {
             Some(clsid) => write::block_clsid(clsid, token),
-            None => anyhow::bail!("Blockieren ohne CLSID / block without a CLSID"),
+            None => anyhow::bail!("\x1eBlockieren ohne CLSID\x1fblock without a CLSID\x1d"),
         },
         Action::Unblock => match &operation.clsid {
             Some(clsid) => write::unblock_clsid(clsid, token),
-            None => anyhow::bail!("Freigeben ohne CLSID / unblock without a CLSID"),
+            None => anyhow::bail!("\x1eFreigeben ohne CLSID\x1funblock without a CLSID\x1d"),
         },
         Action::Delete => {
             write::delete_tree(&operation.target, token)?;

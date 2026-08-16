@@ -248,7 +248,7 @@ pub fn latest() -> Result<Release> {
         },
     ];
     let body = crate::webtool::http::fetch(RELEASES, &headers).context("GitHub")?;
-    serde_json::from_slice(&body).context("Antwort von GitHub / answer from GitHub")
+    serde_json::from_slice(&body).context("\x1eAntwort von GitHub\x1fanswer from GitHub\x1d")
 }
 
 /// Puts the new executable in place of the running one.
@@ -258,10 +258,10 @@ pub fn latest() -> Result<Release> {
 /// Until that rename succeeds nothing has changed; after it, the old file is
 /// still on disk under another name.
 pub fn install(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
-    let running = std::env::current_exe().context("eigener Pfad / own path")?;
+    let running = std::env::current_exe().context("\x1eeigener Pfad\x1fown path\x1d")?;
     let directory = running
         .parent()
-        .context("kein Verzeichnis / no directory")?
+        .context("\x1ekein Verzeichnis\x1fno directory\x1d")?
         .to_path_buf();
     let leftover = directory.join(LEFTOVER);
 
@@ -270,7 +270,7 @@ pub fn install(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
 
     std::fs::rename(&running, &leftover).with_context(|| {
         format!(
-            "{} beiseite legen / moving aside: schreibgeschützt? / read-only?",
+            "{} \x1ebeiseite legen\x1fmoving aside\x1d: schreibgeschützt? / read-only?",
             running.display()
         )
     })?;
@@ -279,7 +279,10 @@ pub fn install(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
     // gone from the path it was started from.
     if let Err(error) = std::fs::write(&running, new_bytes) {
         let _ = std::fs::rename(&leftover, &running);
-        bail!("{} schreiben / writing: {error}", running.display());
+        bail!(
+            "{} \x1eschreiben\x1fwriting\x1d: {error}",
+            running.display()
+        );
     }
 
     Ok(running)

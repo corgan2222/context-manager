@@ -153,8 +153,9 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
     unsafe { WinHttpAddRequestHeaders(request_handle.0, &wide_headers, WINHTTP_ADDREQ_FLAG_ADD) }
         .context("WinHttpAddRequestHeaders")?;
 
-    let length = u32::try_from(request.body.len())
-        .context("Datei zu groß für eine einzelne Anfrage / file too large for one request")?;
+    let length = u32::try_from(request.body.len()).context(
+        "\x1eDatei zu groß für eine einzelne Anfrage\x1ffile too large for one request\x1d",
+    )?;
 
     unsafe {
         WinHttpSendRequest(
@@ -183,7 +184,7 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
         let hint = String::from_utf8_lossy(&answer.body);
         let hint = hint.trim();
         bail!(
-            "Der Dienst antwortete mit {} / the service answered {}{}",
+            "\x1eDer Dienst antwortete mit {}\x1fthe service answered {}\x1d{}",
             answer.status,
             answer.status,
             if hint.is_empty() {
@@ -253,7 +254,7 @@ pub fn download(url: &str) -> Result<Vec<u8>> {
 
     let status = status_of(&request)?;
     if !(200..300).contains(&status) {
-        bail!("Abruf antwortete mit {status} / the download answered {status}");
+        bail!("\x1eAbruf antwortete mit {status}\x1fthe download answered {status}\x1d");
     }
 
     body_of(&request)
@@ -347,7 +348,7 @@ fn body_of(request: &Handle) -> Result<Vec<u8>> {
         // A service that answers with a gigabyte is not one we are talking to
         // on purpose.
         if body.len() > 256 * 1024 * 1024 {
-            bail!("Antwort zu groß / answer too large");
+            bail!("\x1eAntwort zu groß\x1fanswer too large\x1d");
         }
     }
 
@@ -382,8 +383,9 @@ impl Url {
             ..Default::default()
         };
 
-        unsafe { WinHttpCrackUrl(&wide, 0, &mut parts) }
-            .with_context(|| format!("Adresse nicht lesbar / cannot read address: {url}"))?;
+        unsafe { WinHttpCrackUrl(&wide, 0, &mut parts) }.with_context(|| {
+            format!("\x1eAdresse nicht lesbar\x1fcannot read address\x1d: {url}")
+        })?;
 
         // Safe because `wide` outlives every read here: WinHTTP filled in
         // pointers into that very buffer.
@@ -399,7 +401,7 @@ impl Url {
 
         let host = piece(parts.lpszHostName, parts.dwHostNameLength);
         if host.is_empty() {
-            bail!("Adresse ohne Rechnernamen / address without a host: {url}");
+            bail!("\x1eAdresse ohne Rechnernamen\x1faddress without a host\x1d: {url}");
         }
 
         let path = piece(parts.lpszUrlPath, parts.dwUrlPathLength);

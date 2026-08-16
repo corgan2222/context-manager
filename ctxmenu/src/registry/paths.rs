@@ -274,9 +274,9 @@ impl TryFrom<UncheckedTarget> for RegTarget {
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum TargetError {
-    #[error("kein bekannter Classes-Pfad / not a known classes path: {0}")]
+    #[error("\x1ekein bekannter Classes-Pfad\x1fnot a known classes path\x1d: {0}")]
     NotAClassesPath(String),
-    #[error("Sammelschlüssel, kein einzelner Eintrag / container key, not an entry: {0}")]
+    #[error("Sammelschlüssel, \x1ekein einzelner Eintrag\x1fcontainer key\x1d, not an entry: {0}")]
     ContainerKey(String),
 }
 

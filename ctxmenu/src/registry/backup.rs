@@ -98,7 +98,8 @@ pub struct BackupManifest {
 
 /// `%LOCALAPPDATA%\ctxmenu\backups`
 pub fn root_dir() -> Result<PathBuf> {
-    let base = dirs::data_local_dir().context("kein LOCALAPPDATA / no local data directory")?;
+    let base =
+        dirs::data_local_dir().context("\x1ekein LOCALAPPDATA\x1fno local data directory\x1d")?;
     Ok(base.join("ctxmenu").join("backups"))
 }
 
@@ -120,7 +121,7 @@ pub fn export_targets(action: &str, targets: &[RegTarget]) -> Result<BackupToken
 /// still refuse anything the token does not name.
 pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
     if paths.is_empty() {
-        bail!("Backup ohne Ziele / backup with no targets");
+        bail!("\x1eBackup ohne Ziele\x1fbackup with no targets\x1d");
     }
 
     // Colons are legal in ISO 8601 and illegal in Windows file names, hence
@@ -149,6 +150,11 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
             }
             Some(reason) => {
                 missing.push(full.clone());
+                // Cut here, not on display: a manifest outlives the run that
+                // wrote it and is meant to be readable on its own, with an
+                // editor or with `Get-Content`. Markers in a stored file are
+                // invisible control characters in somebody else's tool.
+                let reason = crate::bilingual::pick(&reason, crate::bilingual::language());
                 notes.push(format!("{full}: {reason}"));
             }
         }
@@ -171,7 +177,9 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
         // Leave no empty directory behind: a backup listing full of husks
         // makes the one backup that matters harder to find.
         let _ = std::fs::remove_dir_all(&directory);
-        bail!("Kein einziger Schlüssel konnte exportiert werden / nothing could be exported");
+        bail!(
+            "\x1eKein einziger Schlüssel konnte exportiert werden\x1fnothing could be exported\x1d"
+        );
     }
 
     Ok(BackupToken { directory, covered })
@@ -208,13 +216,13 @@ fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
             }
             Err(error) => {
                 return Err(anyhow::Error::from(error).context(format!(
-                    "Backup-Verzeichnis / backup directory {candidate:?}"
+                    "\x1eBackup-Verzeichnis\x1fbackup directory\x1d {candidate:?}"
                 )));
             }
         }
     }
 
-    bail!("Kein freier Backup-Verzeichnisname / no free backup directory name")
+    bail!("\x1eKein freier Backup-Verzeichnisname\x1fno free backup directory name\x1d")
 }
 
 /// Exports one key, trying again when the *file* could not be written.
@@ -235,7 +243,7 @@ fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
 fn export_one(full: &str, file: &Path) -> Result<Option<String>> {
     if key_is_absent(full) {
         return Ok(Some(
-            "Schlüssel existiert nicht / key does not exist".to_string(),
+            "\x1eSchlüssel existiert nicht\x1fkey does not exist\x1d".to_string(),
         ));
     }
 
@@ -317,7 +325,7 @@ fn create_root(root: &Path) -> Result<()> {
     }
 
     Err(anyhow::Error::from(last.expect("at least one attempt"))
-        .context(format!("Backup-Wurzel / backup root {root:?}")))
+        .context(format!("\x1eBackup-Wurzel\x1fbackup root\x1d {root:?}")))
 }
 
 /// Hive prefix of a full path, for the manifest.
@@ -345,11 +353,13 @@ pub fn restore(directory: &Path) -> Result<usize> {
     for entry in &manifest.entries {
         let file = directory.join(&entry.file);
         if !file.exists() {
-            bail!("Backup unvollständig / backup incomplete: {file:?}");
+            bail!("\x1eBackup unvollständig\x1fbackup incomplete\x1d: {file:?}");
         }
         match run_reg(&["import", &file.to_string_lossy()])? {
             None => restored += 1,
-            Some(reason) => bail!("reg import fehlgeschlagen / failed for {file:?}: {reason}"),
+            Some(reason) => {
+                bail!("\x1ereg import fehlgeschlagen\x1ffailed for\x1d {file:?}: {reason}")
+            }
         }
     }
 
@@ -393,9 +403,9 @@ fn run_reg(args: &[&str]) -> Result<Option<String>> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let output = command
-        .output()
-        .with_context(|| format!("{exe:?} konnte nicht gestartet werden / could not be started"))?;
+    let output = command.output().with_context(|| {
+        format!("{exe:?} \x1ekonnte nicht gestartet werden\x1fcould not be started\x1d")
+    })?;
 
     if output.status.success() {
         return Ok(None);

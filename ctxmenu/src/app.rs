@@ -1105,6 +1105,7 @@ impl App {
             style.interaction.selectable_labels = false;
         });
 
+        crate::bilingual::set_language(settings.language);
         let tr = strings_for(settings.language);
         let hwnd = theme::window_handle(cc);
 
@@ -2523,6 +2524,7 @@ impl App {
             // Language switching is a single assignment; it takes effect on
             // the next frame with no restart (ToDo 8).
             self.tr = strings_for(self.settings.language);
+            crate::bilingual::set_language(self.settings.language);
             ctx.set_theme(self.settings.theme.to_preference());
             // Force the title bar to be re-evaluated on the next frame.
             self.titlebar_dark = None;
@@ -2685,7 +2687,8 @@ impl App {
         ui.separator();
 
         if let Some(error) = &self.favourite_error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
+            let error = crate::bilingual::pick(error, self.settings.language);
+            ui.colored_label(ui.visuals().error_fg_color, error.as_ref());
             ui.separator();
         }
 
@@ -3025,7 +3028,8 @@ impl App {
         ui.add_space(4.0);
 
         if let Some(error) = &self.service_error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
+            let error = crate::bilingual::pick(error, self.settings.language);
+            ui.colored_label(ui.visuals().error_fg_color, error.as_ref());
             ui.separator();
             // Nothing else to say. "This service has no tool that takes a file"
             // underneath a message about the description not being readable
@@ -3998,6 +4002,10 @@ impl App {
                                             ui.small(format!("✓  {}", result.display_name));
                                         }
                                         Some(error) => {
+                                            let error = crate::bilingual::pick(
+                                                error,
+                                                self.settings.language,
+                                            );
                                             ui.colored_label(
                                                 ui.visuals().error_fg_color,
                                                 format!("✗  {}  —  {error}", result.display_name),
@@ -4216,6 +4224,11 @@ impl App {
             }
 
             Dialog::Error(message) => {
+                // One language, decided here rather than at each of the
+                // eighteen places that raise an error -- and decided every
+                // frame, so switching the language redraws a dialog that is
+                // already open. The stored `message` keeps both.
+                let shown = crate::bilingual::pick(&message, self.settings.language).into_owned();
                 // Logged here rather than at each of the seventeen places that
                 // raise one: this is the one point every error passes through,
                 // and it is where "the user was actually shown this" becomes
@@ -4223,7 +4236,7 @@ impl App {
                 // frame -- without the guard the log would fill at sixty lines
                 // a second while the window stands open.
                 if self.logged_error.as_deref() != Some(message.as_str()) {
-                    crate::log::write(crate::log::Kind::Error, &message);
+                    crate::log::write(crate::log::Kind::Error, &shown);
                     self.logged_error = Some(message.clone());
                 }
 
@@ -4240,7 +4253,7 @@ impl App {
                         // and a message cut off at the edge cannot be acted on.
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(&message).color(ui.visuals().error_fg_color),
+                                egui::RichText::new(&shown).color(ui.visuals().error_fg_color),
                             )
                             .wrap(),
                         );
@@ -4248,7 +4261,7 @@ impl App {
                         // What the message means, in the cases where the
                         // wording alone leaves the user guessing. The text
                         // above says what went wrong; this says what to do.
-                        if let Some(advice) = advice_for(&message, self.tr) {
+                        if let Some(advice) = advice_for(&shown, self.tr) {
                             ui.add_space(6.0);
                             ui.add(egui::Label::new(advice).wrap());
                         }
@@ -4272,7 +4285,7 @@ impl App {
                         });
                     });
                 if copy {
-                    ui.ctx().copy_text(message.clone());
+                    ui.ctx().copy_text(shown.clone());
                 }
                 if !close {
                     self.dialog = Some(Dialog::Error(message));
@@ -5984,7 +5997,8 @@ impl App {
         ui.separator();
 
         if let Some(error) = &self.backup_error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
+            let error = crate::bilingual::pick(error, self.settings.language);
+            ui.colored_label(ui.visuals().error_fg_color, error.as_ref());
             return;
         }
 
@@ -6129,9 +6143,16 @@ impl App {
                             ui.add_space(8.0);
                             ui.label(egui::RichText::new(self.tr.backup_notes).strong());
                             for note in &manifest.notes {
+                                // Cut here as well, for manifests written
+                                // before the markers were stripped on the way
+                                // in. An old backup is exactly the thing that
+                                // still has to read correctly.
+                                let note = crate::bilingual::pick(note, self.settings.language);
                                 ui.add(
-                                    egui::Label::new(egui::RichText::new(note).small().weak())
-                                        .wrap(),
+                                    egui::Label::new(
+                                        egui::RichText::new(note.as_ref()).small().weak(),
+                                    )
+                                    .wrap(),
                                 );
                             }
                         }
@@ -8096,7 +8117,7 @@ mod tests {
             ("Die Beschreibung antwortete mit 404", tr.why_not_found),
             ("WinHttpSendRequest: timed out", tr.why_unreachable),
             (
-                "Kennung schon vergeben / id already taken: x",
+                "\x1eKennung schon vergeben\x1fid already taken\x1d: x",
                 tr.why_id_taken,
             ),
         ] {
@@ -8720,16 +8741,32 @@ mod tests {
             }
         }
 
-        // And the other direction, because the console depends on it: there,
-        // both halves have to be present.
+        // And the other direction, because the console depends on it: there
+        // the wording carries both halves, marked, and comes out in whichever
+        // language is asked for.
         for fault in &fav {
-            assert!(
-                fault.bilingual().contains(" / "),
+            let marked = fault.marked();
+            for language in [Language::German, Language::English] {
+                let text = crate::bilingual::pick(&marked, language);
+                assert!(!text.is_empty(), "{fault:?} has no wording");
+                assert!(
+                    !text.contains(crate::bilingual::is_marker),
+                    "{fault:?} still carries a marker: {text}"
+                );
+            }
+            assert_ne!(
+                crate::bilingual::pick(&marked, Language::German),
+                crate::bilingual::pick(&marked, Language::English),
                 "{fault:?} lost a language the console needs"
             );
         }
         for fault in &entry {
-            assert!(fault.bilingual().contains(" / "), "{fault:?}");
+            let marked = fault.marked();
+            assert_ne!(
+                crate::bilingual::pick(&marked, Language::German),
+                crate::bilingual::pick(&marked, Language::English),
+                "{fault:?} lost a language the console needs"
+            );
         }
     }
 

@@ -162,49 +162,51 @@ pub enum Fault {
 }
 
 impl Fault {
-    /// Both languages at once, for the console and the log.
-    pub fn bilingual(&self) -> String {
+    /// Both languages, marked, so the reader is shown the one
+    /// they read. See [`crate::bilingual`].
+    pub fn marked(&self) -> String {
         match self {
-            Fault::MissingKeyName => "Schlüsselname fehlt / key name is missing".into(),
+            Fault::MissingKeyName => "\x1eSchlüsselname fehlt\x1fkey name is missing\x1d".into(),
             Fault::BackslashInKeyName => {
-                "Schlüsselname darf keinen Backslash enthalten / no backslash in a key name".into()
+                "\x1eSchlüsselname darf keinen Backslash enthalten\x1fno backslash in a key name\x1d".into()
             }
-            Fault::MissingDisplayName => "Anzeigename fehlt / display name is missing".into(),
-            Fault::MissingCommand => "Befehl fehlt / command is missing".into(),
+            Fault::MissingDisplayName => "\x1eAnzeigename fehlt\x1fdisplay name is missing\x1d".into(),
+            Fault::MissingCommand => "\x1eBefehl fehlt\x1fcommand is missing\x1d".into(),
             Fault::PercentOneInBackground => {
-                "In einer Hintergrund-Kategorie bleibt %1 leer — hier gehört %V hin. / \
-                 %1 stays empty in a background category; %V belongs here."
+                "\x1eIn einer Hintergrund-Kategorie bleibt %1 leer — hier gehört %V hin.\
+                 \x1f%1 stays empty in a background category; %V belongs here.\x1d"
                     .into()
             }
             Fault::AmpersandInDisplayName => {
-                "Ein & erzeugt im Menü einen Zugriffsbuchstaben; für ein echtes \
-                 Und-Zeichen && schreiben. / An & becomes an accelerator in the menu; \
-                 write && for a literal ampersand."
+                "\x1eEin & erzeugt im Menü einen Zugriffsbuchstaben; für ein echtes \
+                 Und-Zeichen && schreiben.\x1fAn & becomes an accelerator in the menu; \
+                 write && for a literal ampersand.\x1d"
                     .into()
             }
             Fault::UnusualPosition(value) => format!(
-                "Position {value:?} ist ungewöhnlich; belegt sind Top und Bottom. / \
-                 unusual Position; only Top and Bottom are verified."
+                "\x1ePosition {value:?} ist ungewöhnlich; belegt sind Top und Bottom.\
+                 \x1fPosition {value:?} is unusual; only Top and Bottom are verified.\x1d"
             ),
             Fault::CommandBesideSubmenu => {
-                "Ein Untermenü führt selbst nichts aus; der Befehl wird nicht geschrieben. / \
-                 a submenu runs nothing itself; the command will not be written."
+                "\x1eEin Untermenü führt selbst nichts aus; der Befehl wird nicht geschrieben.\
+                 \x1fa submenu runs nothing itself; the command will not be written.\x1d"
                     .into()
             }
-            Fault::CategoryNotCreatable => "Hier kann kein eigener Eintrag angelegt werden. / \
-                 no entry of one's own can be created here."
+            Fault::CategoryNotCreatable => "\x1eHier kann kein eigener Eintrag angelegt werden.\
+                 \x1fno entry of one's own can be created here.\x1d"
                 .into(),
-            Fault::UnusableKeyName => "Dieser Schlüsselname ist hier nicht erlaubt. / \
-                 that key name is not allowed here."
+            Fault::UnusableKeyName => "\x1eDieser Schlüsselname ist hier nicht erlaubt.\
+                 \x1fthat key name is not allowed here.\x1d"
                 .into(),
             Fault::ChildMissingDisplayName(n) => {
-                format!("Untereintrag {n} hat keinen Anzeigenamen / submenu entry {n} has no name")
+                format!("\x1eUntereintrag {n} hat keinen Anzeigenamen\x1fsubmenu entry {n} has no name\x1d")
             }
             Fault::ChildMissingCommand(n) => {
-                format!("Untereintrag {n} hat keinen Befehl / submenu entry {n} has no command")
+                format!("\x1eUntereintrag {n} hat keinen Befehl\x1fsubmenu entry {n} has no command\x1d")
             }
             Fault::DuplicateChildKeyName(name) => format!(
-                "Zwei Untereinträge heißen {name:?} / two submenu entries are called {name:?}"
+                "\x1eZwei Untereinträge heißen {name:?}\
+                 \x1ftwo submenu entries are called {name:?}\x1d"
             ),
         }
     }
@@ -232,7 +234,7 @@ impl Problem {
 
     /// Both languages, for anywhere without a language setting.
     pub fn message(&self) -> String {
-        self.fault().bilingual()
+        self.fault().marked()
     }
 }
 
@@ -445,13 +447,13 @@ fn category_relative(category: &Category) -> Result<String> {
         Category::PerceivedType(kind) => {
             let kind = kind.trim().to_lowercase();
             if kind.is_empty() || kind.contains('\\') || kind.contains('/') {
-                bail!("Ungültiger wahrgenommener Typ / invalid perceived type: {kind:?}");
+                bail!("\x1eUngültiger wahrgenommener Typ\x1finvalid perceived type\x1d: {kind:?}");
             }
             format!(r"SystemFileAssociations\{kind}\shell")
         }
 
         other => bail!(
-            "Für diese Kategorie können keine Einträge angelegt werden / cannot create entries for {other:?}"
+            "\x1eFür diese Kategorie können keine Einträge angelegt werden\x1fcannot create entries for\x1d {other:?}"
         ),
     })
 }
@@ -466,7 +468,7 @@ fn check_ext(ext: &str) -> Result<String> {
     };
 
     if with_dot.len() < 2 || with_dot[1..].contains('.') || with_dot.contains(['\\', '/', ' ']) {
-        bail!("Keine gültige Dateiendung / not a valid extension: {ext:?}");
+        bail!("\x1eKeine gültige Dateiendung\x1fnot a valid extension\x1d: {ext:?}");
     }
     Ok(with_dot)
 }
@@ -484,7 +486,7 @@ pub fn create(entry: &NewEntry) -> Result<RegTarget> {
     let target = entry.target()?;
     if super::write::exists(&target) {
         bail!(
-            "Schlüssel existiert bereits / key already exists: {}",
+            "\x1eSchlüssel existiert bereits\x1fkey already exists\x1d: {}",
             target.full_path()
         );
     }
@@ -511,7 +513,7 @@ pub fn create(entry: &NewEntry) -> Result<RegTarget> {
 fn write_tree(entry: &NewEntry, target: &RegTarget) -> Result<()> {
     let key = CURRENT_USER.create(target.key_path()).with_context(|| {
         format!(
-            "Anlegen fehlgeschlagen / could not create {}",
+            "\x1eAnlegen fehlgeschlagen\x1fcould not create\x1d {}",
             target.full_path()
         )
     })?;
@@ -551,7 +553,7 @@ fn write_tree(entry: &NewEntry, target: &RegTarget) -> Result<()> {
         CURRENT_USER
             .create(format!(r"{}\command", target.key_path()))
             .and_then(|command| command.set_string("", entry.command.trim()))
-            .context("command-Unterschlüssel / command subkey")?;
+            .context("\x1ecommand-Unterschlüssel\x1fcommand subkey\x1d")?;
     }
 
     Ok(())
@@ -563,7 +565,7 @@ fn write_child(parent: &RegTarget, child: &NewChild) -> Result<()> {
 
     let key = CURRENT_USER.create(&path).with_context(|| {
         format!(
-            "Untereintrag anlegen fehlgeschlagen / could not create submenu entry: {}",
+            "\x1eUntereintrag anlegen fehlgeschlagen\x1fcould not create submenu entry\x1d: {}",
             child.display_name.trim()
         )
     })?;
@@ -580,14 +582,15 @@ fn write_child(parent: &RegTarget, child: &NewChild) -> Result<()> {
     CURRENT_USER
         .create(format!(r"{path}\command"))
         .and_then(|command| command.set_string("", child.command.trim()))
-        .with_context(|| format!("command-Unterschlüssel / command subkey: {path}"))?;
+        .with_context(|| format!("\x1ecommand-Unterschlüssel\x1fcommand subkey\x1d: {path}"))?;
 
     Ok(())
 }
 
 /// `%LOCALAPPDATA%\ctxmenu\entries.json`
 pub fn entries_path() -> Result<PathBuf> {
-    let base = dirs::data_local_dir().context("kein LOCALAPPDATA / no local data directory")?;
+    let base =
+        dirs::data_local_dir().context("\x1ekein LOCALAPPDATA\x1fno local data directory\x1d")?;
     Ok(base.join("ctxmenu").join("entries.json"))
 }
 
