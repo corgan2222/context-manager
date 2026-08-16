@@ -4,6 +4,8 @@
 
 # Laufzeitdaten des Werkzeugs
 /backups
+/todo
+/tmp
 
 # Enthält gültige API-Schlüssel (Kimi, DeepSeek, xAI) im Klartext.
 # Darf niemals committet werden, auch nicht in einem privaten Repo.
