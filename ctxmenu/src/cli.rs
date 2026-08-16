@@ -872,12 +872,18 @@ pub fn run_create(entry: &crate::registry::create::NewEntry) -> Result<()> {
         }
     }
 
-    let target = create::create(entry)?;
+    let made = create::create(entry)?;
     // Without this the key is there and the running Explorer still shows the
     // old menu -- which looks exactly like a failed write.
     crate::elevation::notify_shell();
 
-    crate::outln!("\x1eAngelegt\x1fcreated\x1d: {}", target.full_path());
+    // Beside the success, not instead of it: the key is written, and what
+    // failed is the record in entries.json.
+    if let Some(note) = &made.note {
+        crate::errln!("\x1eWarnung\x1fwarning\x1d: {note}");
+    }
+
+    crate::outln!("\x1eAngelegt\x1fcreated\x1d: {}", made.target.full_path());
     if entry.is_submenu() {
         crate::outln!("  {} \u{25b8}", entry.display_name);
         for child in &entry.children {
@@ -1144,9 +1150,12 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
                 crate::errln!("\x1eHinweis\x1fnote\x1d: {}", problem.message());
             }
 
-            let target = crate::registry::create::create(&entry)?;
+            let made = crate::registry::create::create(&entry)?;
             crate::elevation::notify_shell();
-            crate::outln!("\x1eAngelegt\x1fcreated\x1d: {}", target.full_path());
+            if let Some(note) = &made.note {
+                crate::errln!("\x1eWarnung\x1fwarning\x1d: {note}");
+            }
+            crate::outln!("\x1eAngelegt\x1fcreated\x1d: {}", made.target.full_path());
             crate::outln!("  {}", entry.command);
             Ok(())
         }

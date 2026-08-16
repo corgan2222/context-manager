@@ -145,8 +145,16 @@ enum Dialog {
     /// The form for one favourite.
     Favourite {
         draft: Box<Favourite>,
-        /// Adding rather than editing; decides between insert and replace.
-        fresh: bool,
+        /// What the form was filled in from, or `None` when it is a new one —
+        /// which is also how insert and replace are told apart.
+        ///
+        /// Kept beside the draft because a *second* process writes this file
+        /// while the form stands open: the one a right-click on a web tool
+        /// starts, which records the user's agreement to sending files. The
+        /// two copies together say which fields this form actually changed,
+        /// and only those are the form's to write. See
+        /// [`crate::favourites::update`].
+        before: Option<Box<Favourite>>,
     },
     /// The form for one service — an address, a key, and how it answers.
     Service {
@@ -187,7 +195,14 @@ enum Dialog {
     /// Explorer loaded long ago and only a restart unloads it. Which of the two
     /// this was is not something the person at the screen can tell, so the
     /// offer is made every time and taken up when it is wanted.
-    Created(String),
+    Created {
+        path: String,
+        /// What went wrong beside the entry — today only a record in
+        /// `entries.json` that could not be written. Marked bilingual and cut
+        /// where it is drawn, like `Error`, so switching the language while
+        /// the window stands open redraws it.
+        note: Option<String>,
+    },
 }
 
 /// Which column the table is ordered by.
@@ -1672,8 +1687,8 @@ impl App {
         match action {
             FavouriteAction::Edit(_) => {
                 self.dialog = Some(Dialog::Favourite {
+                    before: Some(Box::new(favourite.clone())),
                     draft: Box::new(favourite),
-                    fresh: false,
                 });
             }
             FavouriteAction::Place(_) => {
@@ -2651,7 +2666,10 @@ impl App {
                     // The handler is loaded when the shell starts, so nothing
                     // changes until it does. Offered rather than done: a
                     // restart closes every Explorer window the user has open.
-                    self.dialog = Some(Dialog::Created(String::new()));
+                    self.dialog = Some(Dialog::Created {
+                        path: String::new(),
+                        note: None,
+                    });
                 }
                 Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
             }
@@ -2870,7 +2888,7 @@ impl App {
                 {
                     self.dialog = Some(Dialog::Favourite {
                         draft: Box::new(blank_favourite()),
-                        fresh: true,
+                        before: None,
                     });
                 }
             });
@@ -3793,9 +3811,15 @@ impl App {
     }
 
     /// The dialog that edits one favourite.
-    fn favourite_dialog(&mut self, ui: &mut Ui, mut draft: Box<Favourite>, fresh: bool) {
+    fn favourite_dialog(
+        &mut self,
+        ui: &mut Ui,
+        mut draft: Box<Favourite>,
+        before: Option<Box<Favourite>>,
+    ) {
         let mut save = false;
         let mut close = false;
+        let fresh = before.is_none();
 
         egui::Window::new(if fresh {
             self.tr.fav_new
@@ -3879,14 +3903,13 @@ impl App {
         });
 
         if save {
-            let outcome = if fresh {
-                favourites::add(*draft.clone()).map(|_| ())
-            } else {
-                favourites::update(*draft.clone())
+            let outcome = match &before {
+                None => favourites::add(*draft.clone()).map(|_| ()),
+                Some(before) => favourites::update(*draft.clone(), before),
             };
             self.after_favourite_change(outcome);
         } else if !close {
-            self.dialog = Some(Dialog::Favourite { draft, fresh });
+            self.dialog = Some(Dialog::Favourite { draft, before });
         }
     }
 
@@ -3995,7 +4018,7 @@ impl App {
             let exe = std::env::current_exe().unwrap_or_default();
             let entry = favourite.entry(category.clone(), &exe);
             match crate::registry::create::create(&entry) {
-                Ok(target) => {
+                Ok(made) => {
                     elevation::notify_shell();
                     self.start_scan(ctx);
                     // `Created`, not `Error`. Announcing a finished entry in a
@@ -4003,7 +4026,10 @@ impl App {
                     // Cancel, tells the user the opposite of what happened --
                     // and this one also carries the question that always
                     // follows, which is whether to restart Explorer.
-                    self.dialog = Some(Dialog::Created(target.full_path()));
+                    self.dialog = Some(Dialog::Created {
+                        path: made.target.full_path(),
+                        note: made.note,
+                    });
                 }
                 Err(error) => {
                     self.dialog = Some(Dialog::Error(format!("{error:#}")));
@@ -4293,7 +4319,7 @@ impl App {
                 keep = false;
             }
 
-            Dialog::Created(path) => {
+            Dialog::Created { path, note } => {
                 let mut close = false;
                 let mut restart = false;
                 egui::Window::new(self.tr.title_note)
@@ -4312,6 +4338,23 @@ impl App {
                             })
                             .wrap(),
                         );
+                        // The entry is there either way -- this says what went
+                        // wrong beside it, in the warning colour rather than
+                        // the error one, because nothing about the entry
+                        // failed.
+                        if let Some(note) = &note {
+                            ui.add_space(6.0);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        crate::bilingual::pick(note, self.settings.language)
+                                            .into_owned(),
+                                    )
+                                    .color(ui.visuals().warn_fg_color),
+                                )
+                                .wrap(),
+                            );
+                        }
                         ui.add_space(6.0);
                         ui.add(egui::Label::new(self.tr.msg_ask_restart).wrap());
                         ui.add_space(8.0);
@@ -4339,7 +4382,7 @@ impl App {
                     }
                 }
                 if !close && keep {
-                    self.dialog = Some(Dialog::Created(path));
+                    self.dialog = Some(Dialog::Created { path, note });
                 }
                 keep = false;
             }
@@ -4471,16 +4514,31 @@ impl App {
                     let outcome = match present {
                         true => create::self_entry(category, "x")
                             .and_then(|entry| entry.target())
-                            .and_then(|target| create::remove_self(&target)),
+                            .and_then(|target| create::remove_self(&target))
+                            .map(|()| None),
                         false => create::self_entry(category, self.tr.self_entry_name)
-                            .and_then(|entry| create::create(&entry).map(|_| ())),
+                            .and_then(|entry| create::create(&entry))
+                            .map(|made| made.note),
                     };
-                    if let Err(error) = outcome {
-                        self.dialog = Some(Dialog::Error(format!("{error:#}")));
-                        close = true;
-                    } else {
-                        elevation::notify_shell();
-                        self.start_scan(ctx);
+                    match outcome {
+                        Err(error) => {
+                            self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                            close = true;
+                        }
+                        Ok(note) => {
+                            elevation::notify_shell();
+                            self.start_scan(ctx);
+                            // The entry is in the menu; only the record of it
+                            // failed. A note, therefore, and not the red box
+                            // that used to stand here for a working entry.
+                            if let Some(note) = note {
+                                self.dialog = Some(Dialog::Note(
+                                    crate::bilingual::pick(&note, self.settings.language)
+                                        .into_owned(),
+                                ));
+                                close = true;
+                            }
+                        }
                     }
                 }
                 if !close {
@@ -4559,8 +4617,8 @@ impl App {
                 keep = false;
             }
 
-            Dialog::Favourite { draft, fresh } => {
-                self.favourite_dialog(ui, draft, fresh);
+            Dialog::Favourite { draft, before } => {
+                self.favourite_dialog(ui, draft, before);
                 keep = false;
             }
 
@@ -5065,7 +5123,7 @@ impl App {
                         self.dialog = Some(Dialog::Error(errors.join("\n")));
                     } else {
                         match create::create(&entry) {
-                            Ok(target) => {
+                            Ok(made) => {
                                 // Without this the entry exists but the running
                                 // Explorer keeps showing yesterday's menu.
                                 elevation::notify_shell();
@@ -5075,7 +5133,10 @@ impl App {
                                 // tell which case they are in from the outside.
                                 // So the question gets asked rather than the
                                 // answer assumed.
-                                self.dialog = Some(Dialog::Created(target.full_path()));
+                                self.dialog = Some(Dialog::Created {
+                                    path: made.target.full_path(),
+                                    note: made.note,
+                                });
                             }
                             Err(error) => {
                                 self.dialog = Some(Dialog::Error(format!("{error:#}")));
@@ -5554,7 +5615,7 @@ impl App {
                         };
                         self.dialog = Some(Dialog::Favourite {
                             draft: Box::new(draft),
-                            fresh: true,
+                            before: None,
                         });
                     }
                 });

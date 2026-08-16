@@ -13,6 +13,28 @@
 //!   read a local file — no browser lets a page do that — so the file has to
 //!   be *sent*. The entry therefore calls this application back
 //!   (`ctxmenu --favourite <id> "%1"`), and [`crate::webtool`] does the work.
+//!
+//! # Two processes, one file
+//!
+//! That callback is a second process, and it writes here too: it records the
+//! user's agreement to a tool sending files away. So the window is not alone
+//! with this file, and "load, change, save" from both sides means the later
+//! save wins whole — a rename made in the window would undo the agreement, or
+//! the other way round.
+//!
+//! There is no lock, on purpose. The value that gets lost is not lost between
+//! the load and the save; it is lost between the moment a form was filled in
+//! and the moment it is saved, which is however long the person at the screen
+//! takes. A lock that covered that would be held by a human, for an unbounded
+//! time, in a process that can be closed with the window still open — and a
+//! lock left lying about is worse than the loss it prevents.
+//!
+//! What is done instead is to give each writer the field it owns. The callback
+//! writes nothing but `confirmed`, on a list it read a moment earlier
+//! ([`remember_consent`]); the window writes everything *but* `confirmed`
+//! ([`update`], which decides that one flag rather than copying it). Two
+//! writers, no shared field, nothing to lose. [`save`] already writes beside
+//! the file and renames, so nobody ever reads half of one.
 
 use std::path::{Path, PathBuf};
 
@@ -376,8 +398,13 @@ pub fn path() -> Result<PathBuf> {
 /// yet. A *damaged* file is an error, because silently starting over would
 /// throw away the list the user built.
 pub fn load() -> Result<Vec<Favourite>> {
-    let file = path()?;
-    match std::fs::read_to_string(&file) {
+    load_from(&path()?)
+}
+
+/// The same, from a named file, so the two-process cases below can be played
+/// through without touching the tool box the user actually built.
+fn load_from(file: &Path) -> Result<Vec<Favourite>> {
+    match std::fs::read_to_string(file) {
         Ok(raw) if raw.trim().is_empty() => Ok(Vec::new()),
         Ok(raw) => serde_json::from_str(&raw).with_context(|| format!("{file:?}")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -391,7 +418,10 @@ pub fn load() -> Result<Vec<Favourite>> {
 /// a web tool. A half-written file caught by a click is a favourite that has
 /// stopped existing.
 pub fn save(list: &[Favourite]) -> Result<()> {
-    let file = path()?;
+    save_to(&path()?, list)
+}
+
+fn save_to(file: &Path, list: &[Favourite]) -> Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -399,7 +429,7 @@ pub fn save(list: &[Favourite]) -> Result<()> {
     let temporary = file.with_extension("json.neu");
     std::fs::write(&temporary, serde_json::to_string_pretty(list)?)
         .with_context(|| format!("{temporary:?}"))?;
-    std::fs::rename(&temporary, &file).with_context(|| format!("{file:?}"))?;
+    std::fs::rename(&temporary, file).with_context(|| format!("{file:?}"))?;
     Ok(())
 }
 
@@ -459,8 +489,24 @@ pub fn add_many(batch: Vec<Favourite>) -> Result<usize> {
 }
 
 /// Replaces one by id, keeping its position.
-pub fn update(favourite: Favourite) -> Result<()> {
-    let mut list = load()?;
+///
+/// `filled_in_from` is the copy the form was built out of, and it is here
+/// because two processes write this file. A right-click on a web tool that has
+/// not been agreed to yet starts a second one — `ctxmenu --favourite <id>
+/// "%1"` — which records the answer while this window stands open with a form
+/// filled in long before the question was even asked. Writing the form's copy
+/// of that flag back would put the question straight back, and the user would
+/// be asked again on the next click.
+///
+/// So the flag is decided rather than copied — see `keep_consent` below.
+/// Everything else in a favourite is written by this window alone, and is
+/// taken from the form as it always was.
+pub fn update(favourite: Favourite, filled_in_from: &Favourite) -> Result<()> {
+    update_in(&path()?, favourite, filled_in_from)
+}
+
+fn update_in(file: &Path, mut favourite: Favourite, filled_in_from: &Favourite) -> Result<()> {
+    let mut list = load_from(file)?;
     let slot = list
         .iter_mut()
         .find(|f| f.id == favourite.id)
@@ -470,8 +516,67 @@ pub fn update(favourite: Favourite) -> Result<()> {
                 id = favourite.id
             )
         })?;
+    keep_consent(slot, filled_in_from, &mut favourite);
     *slot = favourite;
-    save(&list)
+    save_to(file, &list)
+}
+
+/// Decides which of the two consent flags survives a save.
+///
+/// Three copies meet here: the one in the file (`stored`, which a second
+/// process may have written a moment ago), the one the form started from
+/// (`before`), and the one about to be written (`saving`).
+///
+/// If the form did not change the flag, it has no opinion about it and
+/// whatever stands in the file wins — that is the value this window may never
+/// have seen. If the form did change it, that is the "Zustimmung vergessen"
+/// button and a decision, so it wins.
+///
+/// Nothing is ever invented: a favourite that is not a web tool on all three
+/// sides has no flag to argue about and is left exactly as it came in.
+fn keep_consent(stored: &Favourite, before: &Favourite, saving: &mut Favourite) {
+    let (Tool::Web(stored), Tool::Web(before)) = (&stored.tool, &before.tool) else {
+        return;
+    };
+    let Tool::Web(saving) = &mut saving.tool else {
+        return;
+    };
+
+    if saving.confirmed == before.confirmed {
+        saving.confirmed = stored.confirmed;
+    }
+}
+
+/// Records that the user agreed to this tool sending files away.
+///
+/// One field, on a list read a moment earlier and written straight back. That
+/// is the whole point of it having its own function: this runs in the *second*
+/// process, the one a right-click starts, while the window may be open and
+/// holding a copy of the list from minutes ago. Writing the whole favourite
+/// from here — which is what it used to do — took the rename the user had just
+/// made in that window with it.
+pub fn remember_consent(id: &str) -> Result<()> {
+    remember_consent_in(&path()?, id)
+}
+
+fn remember_consent_in(file: &Path, id: &str) -> Result<()> {
+    let mut list = load_from(file)?;
+    let favourite = list.iter_mut().find(|f| f.id == id).with_context(|| {
+        format!("\x1eKein Favorit mit der Kennung {id}\x1fno favourite with id {id}\x1d")
+    })?;
+
+    let Tool::Web(web) = &mut favourite.tool else {
+        // A program favourite sends nothing and has nothing to agree to. It
+        // cannot reach this from the menu — the entry would run the program
+        // itself — but a favourite can be changed from a web tool into one.
+        return Ok(());
+    };
+    if web.confirmed {
+        return Ok(());
+    }
+
+    web.confirmed = true;
+    save_to(file, &list)
 }
 
 pub fn remove(id: &str) -> Result<()> {
@@ -795,6 +900,205 @@ mod tests {
         let json = serde_json::to_string_pretty(&favourites).expect("serialises");
         let back: Vec<Favourite> = serde_json::from_str(&json).expect("reads back");
         assert_eq!(back, favourites);
+    }
+
+    /// A file of one's own for the two-process tests.
+    ///
+    /// `%LOCALAPPDATA%\ctxmenu\favourites.json` is the user's tool box, with
+    /// real tools in it. `Drop` rather than a line at the end of the body: a
+    /// failing assertion unwinds, and the directory would stay behind.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str, list: &[Favourite]) -> Self {
+            let dir = std::env::temp_dir().join(format!("ctxmenu-fav-test-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a temporary directory");
+            let scratch = Self(dir);
+            save_to(&scratch.file(), list).expect("writes");
+            scratch
+        }
+
+        fn file(&self) -> PathBuf {
+            self.0.join("favourites.json")
+        }
+
+        fn list(&self) -> Vec<Favourite> {
+            load_from(&self.file()).expect("readable")
+        }
+
+        fn consent(&self) -> bool {
+            match &self.list()[0].tool {
+                Tool::Web(web) => web.confirmed,
+                Tool::Program { .. } => panic!("expected a web tool"),
+            }
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_rename_in_the_window_keeps_the_consent_recorded_beside_it() {
+        // The window has the list from before the right-click; the second
+        // process has just written the answer to "send the file?". Saving the
+        // form used to put the form's stale `false` back, and the next click
+        // asked all over again.
+        let scratch = Scratch::new(
+            "rename-keeps-consent",
+            &[web(WebMode::Upload(Upload {
+                endpoint: "https://tool.example/upload".into(),
+                method: default_method(),
+                body: UploadBody::Raw,
+                headers: Vec::new(),
+                fields: Vec::new(),
+                result: ResultAction::Report,
+            }))],
+        );
+
+        // What the form was filled in from, read before anything happened.
+        let before = scratch.list().remove(0);
+
+        // The other process, while the form stands open.
+        remember_consent_in(&scratch.file(), &before.id).expect("records the answer");
+
+        // And now the form is saved, with a new name and a stale flag.
+        let mut draft = before.clone();
+        draft.name = "Neu benannt".into();
+        update_in(&scratch.file(), draft, &before).expect("saves");
+
+        assert_eq!(scratch.list()[0].name, "Neu benannt", "the rename is lost");
+        assert!(scratch.consent(), "the consent is lost");
+    }
+
+    #[test]
+    fn a_consent_recorded_beside_the_window_keeps_the_rename() {
+        // The same collision the other way round. The second process holds a
+        // copy of the favourite from before the rename; writing that copy back
+        // whole -- which is what it used to do -- undid the rename.
+        let scratch = Scratch::new(
+            "consent-keeps-rename",
+            &[web(WebMode::Upload(Upload {
+                endpoint: "https://tool.example/upload".into(),
+                method: default_method(),
+                body: UploadBody::Raw,
+                headers: Vec::new(),
+                fields: Vec::new(),
+                result: ResultAction::Report,
+            }))],
+        );
+
+        let before = scratch.list().remove(0);
+        // What the second process read when it started.
+        let read_by_the_other_process = before.clone();
+
+        let mut draft = before.clone();
+        draft.name = "Neu benannt".into();
+        update_in(&scratch.file(), draft, &before).expect("saves");
+
+        remember_consent_in(&scratch.file(), &read_by_the_other_process.id).expect("records");
+
+        assert_eq!(scratch.list()[0].name, "Neu benannt", "the rename is lost");
+        assert!(scratch.consent());
+    }
+
+    #[test]
+    fn withdrawing_the_consent_in_the_form_is_a_decision_and_stands() {
+        // "Zustimmung vergessen" is the one case where the form does have an
+        // opinion about that flag, and it has to win -- otherwise the button
+        // does nothing at all.
+        let mut agreed = web(WebMode::Clipboard {
+            url: "https://squoosh.app".into(),
+        });
+        if let Tool::Web(w) = &mut agreed.tool {
+            w.confirmed = true;
+        }
+        let scratch = Scratch::new("withdraw", std::slice::from_ref(&agreed));
+
+        let before = scratch.list().remove(0);
+        let mut draft = before.clone();
+        if let Tool::Web(w) = &mut draft.tool {
+            w.confirmed = false;
+        }
+        update_in(&scratch.file(), draft, &before).expect("saves");
+
+        assert!(!scratch.consent(), "the button has to work");
+    }
+
+    #[test]
+    fn a_favourite_that_is_not_a_web_tool_has_no_consent_to_argue_about() {
+        // Switching the kind in the form makes a fresh, unconfirmed web tool,
+        // and nothing may carry an old agreement into it: the address it was
+        // given for is gone.
+        let scratch = Scratch::new("kinds", &[program("Editor", "")]);
+        let before = scratch.list().remove(0);
+
+        let mut draft = before.clone();
+        draft.tool = Tool::Web(WebTool {
+            mode: WebMode::Clipboard {
+                url: "https://squoosh.app".into(),
+            },
+            allow_insecure: false,
+            confirmed: false,
+        });
+        update_in(&scratch.file(), draft, &before).expect("saves");
+        assert!(!scratch.consent());
+
+        // And a program favourite is left alone by the second process, which
+        // can only reach it if the favourite changed kind under it.
+        let program_only = Scratch::new("kinds-program", &[program("Editor", "")]);
+        remember_consent_in(&program_only.file(), "test").expect("nothing to record");
+        assert_eq!(program_only.list(), vec![program("Editor", "")]);
+    }
+
+    #[test]
+    fn recording_a_consent_touches_one_field_and_nothing_else() {
+        let scratch = Scratch::new(
+            "one-field",
+            &[
+                web(WebMode::Clipboard {
+                    url: "https://squoosh.app".into(),
+                }),
+                program("Editor", "-n"),
+            ],
+        );
+        let before = scratch.list();
+
+        remember_consent_in(&scratch.file(), "web").expect("records");
+
+        let after = scratch.list();
+        assert_eq!(after.len(), before.len(), "the order and the count stay");
+        assert_eq!(after[1], before[1], "the other tools are not rewritten");
+        assert!(scratch.consent());
+
+        // A name nobody holds is worth saying rather than swallowing: the
+        // entry that sent us here came out of this very file.
+        assert!(remember_consent_in(&scratch.file(), "gibtsnicht").is_err());
+    }
+
+    #[test]
+    fn the_file_this_writes_is_the_file_the_old_version_reads() {
+        // The one promise that outranks every fix in this module: a favourites
+        // file written today still has to be a favourites file.
+        let scratch = Scratch::new(
+            "format",
+            &[web(WebMode::Clipboard {
+                url: "https://squoosh.app".into(),
+            })],
+        );
+        remember_consent_in(&scratch.file(), "web").expect("records");
+
+        let raw = std::fs::read_to_string(scratch.file()).expect("readable");
+        assert!(raw.starts_with('['), "a list, as it always was: {raw}");
+        assert!(
+            raw.contains("\"kind\": \"web\"") && raw.contains("\"mode\": \"clipboard\""),
+            "the flattened, hand-readable shape: {raw}"
+        );
+        // And the temporary file is never what is left behind.
+        assert!(!scratch.file().with_extension("json.neu").exists());
     }
 
     #[test]

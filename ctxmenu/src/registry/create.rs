@@ -10,7 +10,7 @@
 //! DLL has to be built and signed exactly once, and the interface keeps
 //! writing nothing but JSON.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -341,7 +341,12 @@ pub fn self_entry_present() -> Vec<(Category, bool)> {
 pub fn remove_self(target: &super::paths::RegTarget) -> Result<()> {
     let token = super::backup::export("ctxmenu-Eintrag", &[target.full_path()])?;
     super::write::delete_tree(target, &token)?;
-    forget_target(target)
+    // Best effort, in the same words as the plan path and `ctxmenu delete`:
+    // the key is gone, and failing to tidy the bookkeeping afterwards is not a
+    // failed removal. It became worth saying once `recorded` started reporting
+    // a damaged file instead of reading it as an empty list.
+    let _ = forget_target(target);
+    Ok(())
 }
 
 /// Checks an entry before anything is written.
@@ -532,11 +537,40 @@ fn check_ext(ext: &str) -> Result<String> {
     Ok(with_dot)
 }
 
+/// What [`create`] left behind.
+///
+/// Its own type rather than a bare [`RegTarget`], because writing the entry
+/// and recording it are two steps and only the first decides whether the entry
+/// exists. The registry tree is complete before `entries.json` is opened at
+/// all, so a failure there is not a failed create: the item is in the menu and
+/// it works. It costs the Windows 11 handler of ToDo 14 its knowledge of this
+/// entry, which is worth a sentence beside the success — and is not worth
+/// throwing the success away for, which is what returning `Err` used to do.
+/// The user then saw a red box, the list was not refreshed, and the second
+/// attempt failed with "key already exists".
+#[derive(Debug, Clone)]
+pub struct Created {
+    /// Where the key landed.
+    pub target: RegTarget,
+    /// What went wrong beside the entry, marked bilingual and ready to show;
+    /// `None` when nothing did.
+    pub note: Option<String>,
+}
+
 /// Writes the entry into HKCU and records it in `entries.json`.
 ///
 /// Refuses on any [`Problem::Error`]; warnings are the caller's to show and
 /// the user's to overrule.
-pub fn create(entry: &NewEntry) -> Result<RegTarget> {
+pub fn create(entry: &NewEntry) -> Result<Created> {
+    // Where the record lives is settled before the registry is touched. The
+    // alternative is a written entry and no way to say where its record should
+    // have gone, and on Windows a missing `%LOCALAPPDATA%` does not happen.
+    create_in(&entries_path()?, entry)
+}
+
+/// The same, recording into a named file, so that "the entry is written even
+/// when the record cannot be" can be tested without a full disk.
+fn create_in(file: &Path, entry: &NewEntry) -> Result<Created> {
     let problems = check(entry);
     if let Some(error) = problems.iter().find(|p| p.is_error()) {
         bail!("{}", error.message());
@@ -559,13 +593,19 @@ pub fn create(entry: &NewEntry) -> Result<RegTarget> {
         return Err(error);
     }
 
-    // Best effort: a failure here costs the Windows 11 handler its knowledge
-    // of this entry, but the entry itself is already in place and working.
-    if let Err(error) = record(entry) {
-        return Err(error.context("entries.json"));
-    }
+    // Best effort, and now the code says so too: a failure here costs the
+    // Windows 11 handler its knowledge of this entry, but the entry itself is
+    // already in place and working. The note travels with the success instead
+    // of replacing it.
+    let note = match record_in(file, entry) {
+        Ok(note) => note,
+        Err(error) => Some(format!(
+            "\x1eDer Eintrag steht, aber entries.json ließ sich nicht schreiben\
+             \x1fthe entry is in place, but entries.json could not be written\x1d: {error:#}"
+        )),
+    };
 
-    Ok(target)
+    Ok(Created { target, note })
 }
 
 /// Writes the key, its values and whatever hangs below it.
@@ -654,29 +694,89 @@ pub fn entries_path() -> Result<PathBuf> {
 }
 
 /// Everything this tool created, in the order it was created.
+///
+/// No file at all is an empty list: nothing has been created yet. A file that
+/// does not parse is an **error**, and used to be an empty list as well — with
+/// `record_in` then writing that empty list straight back plus the one new
+/// entry, so a single damaged byte cost the record of everything this tool had
+/// made. The registry keys survive that; the knowledge of which of them are
+/// ours does not, and that is what the Windows 11 handler of ToDo 14 reads.
 pub fn recorded() -> Result<Vec<NewEntry>> {
-    let path = entries_path()?;
-    match std::fs::read_to_string(&path) {
-        Ok(raw) => Ok(serde_json::from_str(&raw).unwrap_or_default()),
-        // No file yet is not an error; nothing has been created.
-        Err(_) => Ok(Vec::new()),
+    recorded_in(&entries_path()?)
+}
+
+/// The same, from a named file, so the case above can be tested without
+/// touching the record the user's own entries are in.
+fn recorded_in(file: &Path) -> Result<Vec<NewEntry>> {
+    match std::fs::read_to_string(file) {
+        // Nothing but whitespace is what an interrupted write leaves behind
+        // and says exactly as much as no file at all.
+        Ok(raw) if raw.trim().is_empty() => Ok(Vec::new()),
+        Ok(raw) => serde_json::from_str(&raw).with_context(|| format!("{file:?}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(anyhow::Error::from(error).context(format!("{file:?}"))),
     }
 }
 
-fn record(entry: &NewEntry) -> Result<()> {
-    let path = entries_path()?;
-    if let Some(parent) = path.parent() {
+/// Notes the entry, replacing an earlier line for the same key in the same
+/// category.
+///
+/// Hands back what the user should be told about the file itself, or `None`
+/// when there is nothing to tell.
+fn record_in(file: &Path, entry: &NewEntry) -> Result<Option<String>> {
+    if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut all = recorded()?;
+    // A damaged file is carried out of the way rather than written over. What
+    // stands in it is the only record of what this tool created, and a copy
+    // the user can still repair by hand is worth more than a tidy directory.
+    let (mut all, note) = match recorded_in(file) {
+        Ok(all) => (all, None),
+        Err(_) => {
+            let aside = set_aside(file)?;
+            let note = format!(
+                "\x1eentries.json war beschädigt und liegt jetzt daneben als\
+                 \x1fentries.json was damaged and has been put aside as\x1d: {}",
+                aside.display()
+            );
+            (Vec::new(), Some(note))
+        }
+    };
+
     all.retain(|existing| {
         existing.key_name != entry.key_name || existing.category != entry.category
     });
     all.push(entry.clone());
 
-    std::fs::write(&path, serde_json::to_string_pretty(&all)?)
-        .with_context(|| format!("{path:?}"))?;
+    store(file, &all)?;
+    Ok(note)
+}
+
+/// Moves a file that no longer parses beside itself, and says where to.
+///
+/// One rescue copy, replaced by the next one: a growing pile of
+/// `entries.json.beschaedigt-3` in the user's directory would be a mess of its
+/// own, and the copy worth having is the one that just failed.
+fn set_aside(file: &Path) -> Result<PathBuf> {
+    let aside = file.with_extension("json.beschaedigt");
+    std::fs::rename(file, &aside).with_context(|| format!("{aside:?}"))?;
+    Ok(aside)
+}
+
+/// Writes the whole record, through a temporary file.
+///
+/// The same road as [`crate::favourites::save`] and for the same reason: a
+/// plain `fs::write` truncates the file first, and the release profile builds
+/// with `panic = "abort"`, so an interruption in the middle of it leaves half
+/// a JSON document behind — the very damage the paragraph above has to cope
+/// with. Writing beside the file and renaming means a reader sees either the
+/// old record or the new one.
+fn store(file: &Path, all: &[NewEntry]) -> Result<()> {
+    let temporary = file.with_extension("json.neu");
+    std::fs::write(&temporary, serde_json::to_string_pretty(all)?)
+        .with_context(|| format!("{temporary:?}"))?;
+    std::fs::rename(&temporary, file).with_context(|| format!("{file:?}"))?;
     Ok(())
 }
 
@@ -687,8 +787,12 @@ fn record(entry: &NewEntry) -> Result<()> {
 /// handler of ToDo 14, so a stale line there would eventually put the deleted
 /// item back in the menu.
 pub fn forget_target(target: &RegTarget) -> Result<()> {
+    forget_target_in(&entries_path()?, target)
+}
+
+fn forget_target_in(file: &Path, target: &RegTarget) -> Result<()> {
     let wanted = target.full_path().to_lowercase();
-    let mut list = recorded()?;
+    let mut list = recorded_in(file)?;
     let before = list.len();
 
     list.retain(|entry| {
@@ -699,7 +803,7 @@ pub fn forget_target(target: &RegTarget) -> Result<()> {
     });
 
     if list.len() != before {
-        std::fs::write(entries_path()?, serde_json::to_string_pretty(&list)?)?;
+        store(file, &list)?;
     }
     Ok(())
 }
@@ -707,13 +811,16 @@ pub fn forget_target(target: &RegTarget) -> Result<()> {
 /// Forgets an entry in `entries.json`. The registry key is removed elsewhere,
 /// through the ordinary plan path with its backup.
 pub fn forget(category: &Category, key_name: &str) -> Result<()> {
-    let path = entries_path()?;
-    let mut all = recorded()?;
+    forget_in(&entries_path()?, category, key_name)
+}
+
+fn forget_in(file: &Path, category: &Category, key_name: &str) -> Result<()> {
+    let mut all = recorded_in(file)?;
     let before = all.len();
     all.retain(|entry| entry.key_name != key_name || &entry.category != category);
 
     if all.len() != before {
-        std::fs::write(&path, serde_json::to_string_pretty(&all)?)?;
+        store(file, &all)?;
     }
     Ok(())
 }
@@ -956,39 +1063,186 @@ mod tests {
         assert!(e.target().is_err());
     }
 
+    /// A directory of one's own for the tests that write a record.
+    ///
+    /// `%LOCALAPPDATA%\ctxmenu\entries.json` belongs to the user and holds
+    /// what they created; a test that writes there is a test that can lose it.
+    /// `Drop` rather than a line at the end of the body, for the same reason
+    /// as [`Branch`]: a failing assertion unwinds.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ctxmenu-create-test-{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a temporary directory");
+            Self(dir)
+        }
+
+        /// The record file inside it, which need not exist yet.
+        fn entries(&self) -> PathBuf {
+            self.0.join("entries.json")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn deleting_a_key_forgets_what_was_recorded_for_it() {
         // The record and the key have to disappear together: entries.json is
         // the input for the Windows 11 handler, so a line that outlives its
         // key would put a deleted item back into the menu.
+        let scratch = Scratch::new("forget");
+        let file = scratch.entries();
+
         let mut e = entry(Category::Directory, r#""C:\t.exe" "%1""#);
         e.key_name = "ctxmenu_forget_selftest".into();
         let target = e.target().expect("creatable");
 
+        let mut other = entry(Category::Drive, r#""C:\t.exe" "%1""#);
+        other.key_name = "ctxmenu_bleibt".into();
+
         // Recorded without touching the registry: this is about the file.
-        let mut list = recorded().expect("readable");
-        let before = list.len();
-        list.push(e.clone());
-        std::fs::write(
-            entries_path().expect("path"),
-            serde_json::to_string_pretty(&list).expect("json"),
-        )
-        .expect("write");
+        record_in(&file, &other).expect("records");
+        record_in(&file, &e).expect("records");
+        assert_eq!(recorded_in(&file).expect("readable").len(), 2);
 
-        forget_target(&target).expect("forgets");
+        forget_target_in(&file, &target).expect("forgets");
 
-        // Checked on the entry itself, not on the total: this file belongs to
-        // the machine and holds whatever the user created. A count assertion
-        // would fail for reasons that have nothing to do with forgetting.
-        let after = recorded().expect("readable");
+        let after = recorded_in(&file).expect("readable");
         assert!(
             !after.iter().any(|f| f.key_name == e.key_name),
             "the deleted entry is still listed"
         );
-        assert!(
-            after.len() < before + 1,
+        assert_eq!(
+            after.len(),
+            1,
             "forgetting must remove exactly the one entry"
         );
+
+        // And by category as well, which is the road the editor takes.
+        forget_in(&file, &other.category, &other.key_name).expect("forgets");
+        assert!(recorded_in(&file).expect("readable").is_empty());
+    }
+
+    #[test]
+    fn a_record_that_does_not_parse_is_reported_rather_than_read_as_empty() {
+        // It used to come back as `Ok(vec![])`, and the next `record_in` wrote
+        // that empty list back with one entry appended — every earlier line
+        // gone, and nothing in the `Result` to say so.
+        let scratch = Scratch::new("damaged-read");
+        let file = scratch.entries();
+
+        std::fs::write(&file, "[{\"key_name\": \"halb").expect("write");
+        assert!(recorded_in(&file).is_err(), "damage has to be reported");
+
+        // A file that is not there, and one that holds nothing but the
+        // remains of an interrupted write, still mean "nothing created yet".
+        let missing = scratch.0.join("nie-angelegt.json");
+        assert!(recorded_in(&missing).expect("readable").is_empty());
+        std::fs::write(&file, "   \r\n").expect("write");
+        assert!(recorded_in(&file).expect("readable").is_empty());
+    }
+
+    #[test]
+    fn a_damaged_record_is_carried_aside_instead_of_written_over() {
+        // The user's own bookkeeping. Overwriting it costs the list of what
+        // this tool created; moving it aside costs a file name.
+        let scratch = Scratch::new("damaged-write");
+        let file = scratch.entries();
+        let damaged = "[{\"category\": \"Directory\", \"key_name\": \"ctxmenu_alt\"";
+        std::fs::write(&file, damaged).expect("write");
+
+        let mut e = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        e.key_name = "ctxmenu_neu".into();
+
+        let note = record_in(&file, &e).expect("a damaged file must not stop a create");
+        assert!(note.is_some(), "the user has to be told the file was moved");
+
+        let aside = file.with_extension("json.beschaedigt");
+        assert_eq!(
+            std::fs::read_to_string(&aside).expect("the rescue copy is there"),
+            damaged,
+            "byte for byte, or there was nothing to rescue"
+        );
+
+        let after = recorded_in(&file).expect("the new file parses");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].key_name, "ctxmenu_neu");
+    }
+
+    #[test]
+    fn the_record_is_written_beside_itself_and_renamed_into_place() {
+        // `fs::write` truncates first, and the release profile aborts on
+        // panic: an interruption in the middle of it is exactly the damage
+        // above. Every writer here goes through `store`, so no reader ever
+        // sees half a document -- and none of them leaves the working file
+        // behind either.
+        let scratch = Scratch::new("atomic");
+        let file = scratch.entries();
+        let mut e = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        e.key_name = "ctxmenu_atomar".into();
+
+        record_in(&file, &e).expect("records");
+        assert!(!file.with_extension("json.neu").exists());
+
+        forget_in(&file, &e.category, &e.key_name).expect("forgets");
+        assert!(!file.with_extension("json.neu").exists());
+        assert!(recorded_in(&file).expect("readable").is_empty());
+    }
+
+    #[test]
+    fn a_record_written_twice_keeps_one_line_per_key() {
+        let scratch = Scratch::new("replace");
+        let file = scratch.entries();
+
+        let mut first = entry(Category::Directory, r#""C:\a.exe" "%1""#);
+        first.key_name = "ctxmenu_doppelt".into();
+        record_in(&file, &first).expect("records");
+
+        let mut again = first.clone();
+        again.command = r#""C:\b.exe" "%1""#.into();
+        record_in(&file, &again).expect("records");
+
+        let after = recorded_in(&file).expect("readable");
+        assert_eq!(after.len(), 1, "the same key must not be listed twice");
+        assert_eq!(after[0].command, r#""C:\b.exe" "%1""#);
+    }
+
+    #[test]
+    fn an_entry_whose_record_cannot_be_written_is_still_created() {
+        // The finding this fixes: the registry tree is complete before
+        // entries.json is even opened, and the create used to come back as a
+        // failure anyway. The user then saw a red box, the list was not
+        // refreshed, and the second attempt failed with "key already exists"
+        // for an entry they were told had not been made.
+        const EXT: &str = ".ctxmenu_selftest_record";
+        let _branch = Branch(EXT);
+        let scratch = Scratch::new("unwritable");
+
+        // A record whose parent directory is a file: creating it fails the way
+        // a full disk or a locked file would, and does so on every machine.
+        let blocker = scratch.0.join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write");
+        let file = blocker.join("entries.json");
+
+        let mut e = entry(Category::ExtAssoc(EXT.into()), "cmd /c echo ok");
+        e.key_name = "ctxmenu_record_selftest".into();
+
+        let made = create_in(&file, &e).expect("the entry itself is what counts");
+        assert!(
+            crate::registry::write::exists(&made.target),
+            "the key has to be in the registry"
+        );
+        assert!(
+            made.note.is_some(),
+            "and the user has to be told the bookkeeping failed"
+        );
+        assert!(!file.exists());
     }
 
     #[test]
@@ -1349,6 +1603,7 @@ mod tests {
         // box — and nobody asked for one.
         const EXT: &str = ".ctxmenu_selftest_rollback";
         let _branch = Branch(EXT);
+        let scratch = Scratch::new("rollback");
 
         let mut e = entry(Category::ExtAssoc(EXT.into()), "");
         e.key_name = "ctxmenu_rollback".into();
@@ -1366,7 +1621,7 @@ mod tests {
 
         let target = e.target().expect("creatable");
         assert!(
-            create(&e).is_err(),
+            create_in(&scratch.entries(), &e).is_err(),
             "a 600 character key name cannot be written"
         );
         assert!(
@@ -1374,10 +1629,9 @@ mod tests {
             "the half-written submenu must be gone, parent included"
         );
         assert!(
-            !recorded()
+            recorded_in(&scratch.entries())
                 .expect("readable")
-                .iter()
-                .any(|r| r.key_name == e.key_name),
+                .is_empty(),
             "a failed write must not be recorded as created"
         );
     }

@@ -216,7 +216,13 @@ fn a_submenu_written_by_the_editor_comes_back_as_a_cascading_entry() {
         children: children.clone(),
     };
 
-    let target = create::create(&entry).expect("HKCU takes an entry without elevation");
+    let made = create::create(&entry).expect("HKCU takes an entry without elevation");
+    assert!(
+        made.note.is_none(),
+        "nothing should have gone wrong beside the entry: {:?}",
+        made.note
+    );
+    let target = made.target;
     // Same reason as `Fixture`: an assertion below unwinds, and a stray
     // submenu in the user's real folder menu is a rude way to fail.
     struct Cleanup(RegTarget);
