@@ -326,6 +326,20 @@ ohne dieses Werkzeug per Doppelklick zurückspielen. Eine Grenze hat das —
 Löschen stellt es exakt den alten Zustand her; über einen inzwischen
 veränderten Schlüssel gespielt, bleiben dessen neue Werte stehen.
 
+Das Programm selbst geht einen Schritt weiter. Schlüssel, die es beim Sichern
+noch gar nicht gab, stehen im `manifest.json` unter `absent` und werden beim
+Zurückspielen wieder **entfernt** — anders ließe sich ein Blockieren nicht
+rückgängig machen, denn die Blocked-Liste liefert Windows nicht mit, sie
+entsteht erst mit dem ersten blockierten Handler. Für die Gesamtsicherung gilt
+das ausdrücklich nicht: sie umfasst ganze Zweige wie `Directory\shell`, in die
+auch jedes andere Programm schreibt, und nimmt beim Zurückspielen nichts weg.
+
+Ein Zurückspielen bricht nicht mehr beim ersten fehlenden Schlüssel ab: jeder
+Eintrag wird versucht, und am Ende steht, wie viele zurück sind und welche
+nicht. Eine geteilte Aktion — ein Teil hier, ein Teil mit Administratorrechten —
+legt zwei Sicherungen an; das Ergebnisfenster nennt beide und der Knopf
+*Wiederherstellen* spielt beide ein.
+
 ---
 
 ## Selbst bauen

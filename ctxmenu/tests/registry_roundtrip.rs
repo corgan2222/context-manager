@@ -155,7 +155,8 @@ fn a_deleted_key_comes_back_from_its_backup() {
 
     // 3. Restore.
     let restored = backup::restore(&directory).expect("reg import");
-    assert_eq!(restored, 1);
+    assert_eq!(restored.restored, 1, "{:?}", restored.failures);
+    assert_eq!(restored.removed, 0, "the key existed when it was backed up");
     assert!(write::exists(&target), "the key must be back");
 
     // 4. Everything must be identical, values and all -- a restore that
@@ -347,7 +348,7 @@ fn an_unknown_name_in_a_subcommands_list_is_left_out_rather_than_faked() {
 }
 
 #[test]
-fn exporting_a_missing_key_is_reported_rather_than_silently_succeeding() {
+fn exporting_a_missing_key_records_an_empty_state_without_licensing_a_delete() {
     // Counts backup directories, so it must not run while another test is
     // creating and removing one.
     let _guard = serialized();
@@ -358,13 +359,31 @@ fn exporting_a_missing_key_is_reported_rather_than_silently_succeeding() {
     )
     .expect("a fixture path names an entry");
 
-    // Nothing exportable at all must fail loudly: a token handed out here
-    // would authorise a delete with no way back.
+    // A key that is not there is an empty starting state, not a failed
+    // export. Until this changed, a plan of nothing but `Block` steps could
+    // not run at all on a machine where nothing had ever been blocked: Windows
+    // ships no blocked list, so its backup had nothing to write.
     let before = backup::list().expect("listable").len();
-    assert!(backup::export_targets("selftest_missing", std::slice::from_ref(&target)).is_err());
+    let token = backup::export_targets("selftest_missing", std::slice::from_ref(&target))
+        .expect("an empty starting state is a state");
+
+    let manifest = backup::read_manifest(token.directory()).expect("manifest.json");
+    assert!(manifest.entries.is_empty(), "there was nothing to export");
+    assert_eq!(manifest.absent, vec![target.full_path()]);
+
+    // And the promise the old failure was protecting stands where it always
+    // stood: a delete needs the contents of the key on disk, and "there was
+    // nothing here" is not that.
+    assert!(!token.covers(&target));
+    assert!(
+        write::delete_tree(&target, &token).is_err(),
+        "an absence must not authorise a delete"
+    );
+
+    let _ = std::fs::remove_dir_all(token.directory());
     assert_eq!(
         backup::list().expect("listable").len(),
         before,
-        "a failed export must not leave an empty backup behind"
+        "the test cleans up after itself"
     );
 }

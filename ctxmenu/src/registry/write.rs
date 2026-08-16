@@ -254,8 +254,21 @@ fn require_backup(target: &RegTarget, token: &BackupToken) -> Result<()> {
     )
 }
 
+/// The blocked list, backed up either way it can be.
+///
+/// Windows ships no blocked list: on a machine where nothing was ever blocked
+/// the key does not exist, and a backup of it can only record that. Demanding
+/// an exported file here made every `Block` impossible in exactly the state
+/// every Windows starts out in — the export had nothing to write, so the token
+/// could never name the path.
+///
+/// Both answers are a backup. The absence is written into the manifest and
+/// [`super::backup::restore`] undoes it by removing the key again, which is
+/// what taking a CLSID off the list means. A token that says nothing at all
+/// about the list is still refused.
 fn require_blocked_backup(token: &BackupToken) -> Result<()> {
-    if token.covers_path(paths::blocked_list_display_path()) {
+    let path = paths::blocked_list_display_path();
+    if token.covers_path(&path) || token.records_absence(&path) {
         return Ok(());
     }
     bail!(
@@ -333,5 +346,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(token.directory());
         let _ =
             paths::root_key(Scope::User).remove_tree("SOFTWARE\\Classes\\ctxmenu_selftest_write");
+    }
+
+    #[test]
+    fn a_backup_of_the_blocked_list_authorises_a_block_however_the_list_stands() {
+        // The gate used to demand an exported file, and Windows ships no
+        // blocked list -- so on an untouched machine no `Block` step could
+        // ever run: a plan of nothing but blocks failed to produce a backup at
+        // all, and in a mixed plan every block step was refused.
+        //
+        // Read-only against whatever this machine happens to have. Both
+        // outcomes are a backup and both must open the gate; only a token that
+        // never asked about the list is turned away.
+        let path = paths::blocked_list_display_path();
+        let token = backup::export("selftest_blocked", std::slice::from_ref(&path))
+            .expect("the list is either there or provably absent");
+        assert!(
+            token.covers_path(&path) || token.records_absence(&path),
+            "the backup must say something about the list"
+        );
+        require_blocked_backup(&token).expect("a backup of the list is a backup of the list");
+
+        let _ = std::fs::remove_dir_all(token.directory());
+    }
+
+    #[test]
+    fn a_backup_of_something_else_does_not_authorise_a_block() {
+        // The other side of the same gate: recording an absence must not
+        // become a licence to write anywhere, only where it was recorded.
+        let elsewhere = r"HKCU\SOFTWARE\Classes\ctxmenu_selftest_not_the_blocked_list".to_string();
+        let token = backup::export("selftest_elsewhere", std::slice::from_ref(&elsewhere))
+            .expect("an empty starting state is a state");
+
+        // The gate itself, not `block_clsid`: this test must be safe to run in
+        // an elevated session too, and calling the writer would put the very
+        // key into HKLM that the gate is there to protect.
+        assert!(require_blocked_backup(&token).is_err());
+
+        let _ = std::fs::remove_dir_all(token.directory());
     }
 }

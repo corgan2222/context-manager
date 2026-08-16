@@ -272,6 +272,8 @@ pub struct Strings {
     pub act_unblock: &'static str,
     pub act_delete: &'static str,
     pub elevated_part: &'static str,
+    /// The other half of a split action, for the row that says it failed.
+    pub direct_part: &'static str,
     pub title_error: &'static str,
     pub badge_missing: &'static str,
     pub badge_uninstalled: &'static str,
@@ -352,6 +354,10 @@ pub struct Strings {
     pub fmt_fault_child_command: &'static str,
     pub fmt_fault_child_duplicate: &'static str,
     pub fmt_restored: &'static str,
+    /// The same, when not every key came back.
+    pub fmt_restored_partly: &'static str,
+    /// Keys the backup found empty and the restore therefore took away again.
+    pub fmt_restore_removed: &'static str,
 
     // Die Aktionsleiste: was eine Gruppe von Schaltern steuert, wie ihre
     // Segmente heißen und warum sie gerade nicht kann. Ohne Symbol — das ist
@@ -661,6 +667,7 @@ pub static DE: Strings = Strings {
     act_unblock: "Freigeben",
     act_delete: "Löschen",
     elevated_part: "Erhöhter Teil",
+    direct_part: "Teil ohne Rechteerhöhung",
     title_error: "Fehler",
     badge_missing: "fehlte",
     badge_uninstalled: "Programm nicht mehr vorhanden",
@@ -688,7 +695,7 @@ pub static DE: Strings = Strings {
     btn_sort_hint: "Spalte anklicken zum Sortieren",
     tip_rescan: "Registry noch einmal einlesen. Ändert nichts.",
     tip_delete: "Entfernt den Schlüssel samt Unterschlüsseln. Vorher wird gesichert, zurückholen geht über den Reiter Sicherungen.",
-    tip_restore: "Spielt diese Sicherung zurück. Vorhandene Werte werden überschrieben, seither hinzugekommene bleiben stehen.",
+    tip_restore: "Spielt diese Sicherung zurück. Vorhandene Werte werden überschrieben, seither hinzugekommene bleiben stehen. Schlüssel, die es beim Sichern noch nicht gab, werden wieder entfernt.",
     tip_restart_explorer: "Beendet den Explorer und startet ihn neu. Alle offenen Explorer-Fenster werden dabei geschlossen; Desktop und Taskleiste kommen von selbst zurück.",
     tip_select_all: "Wählt alle sichtbaren Zeilen aus. Untermenü-Kinder bleiben außen vor.",
     tip_select_none: "Hebt die Auswahl auf.",
@@ -741,6 +748,8 @@ pub static DE: Strings = Strings {
     fmt_fault_child_command: "Untereintrag {} hat keinen Befehl.",
     fmt_fault_child_duplicate: "Zwei Untereinträge landen im selben Schlüssel „{}“.",
     fmt_restored: "{} Schlüssel zurückgespielt.",
+    fmt_restored_partly: "{} Schlüssel zurückgespielt, {} fehlgeschlagen.",
+    fmt_restore_removed: "{} Schlüssel entfernt, die es bei der Sicherung noch nicht gab.",
 
     group_selection: "Auswahl",
     group_visibility: "Im Menü",
@@ -1045,6 +1054,7 @@ pub static EN: Strings = Strings {
     act_unblock: "Unblock",
     act_delete: "Delete",
     elevated_part: "Elevated part",
+    direct_part: "Part without elevation",
     title_error: "Error",
     badge_missing: "missing",
     badge_uninstalled: "program is no longer there",
@@ -1072,7 +1082,7 @@ pub static EN: Strings = Strings {
     btn_sort_hint: "Click a column to sort",
     tip_rescan: "Read the registry again. Changes nothing.",
     tip_delete: "Removes the key and everything under it. A backup is taken first; the Backups tab brings it back.",
-    tip_restore: "Restores this backup. Existing values are overwritten; values added since then remain.",
+    tip_restore: "Restores this backup. Existing values are overwritten; values added since then remain. Keys that did not exist when the backup was taken are removed again.",
     tip_restart_explorer: "Ends Explorer and starts it again. Every open Explorer window closes; the desktop and the taskbar come back by themselves.",
     tip_select_all: "Selects every visible row. Submenu children are left out.",
     tip_select_none: "Clears the selection.",
@@ -1125,6 +1135,8 @@ pub static EN: Strings = Strings {
     fmt_fault_child_command: "Submenu entry {} has no command.",
     fmt_fault_child_duplicate: "Two submenu entries land in the same key \"{}\".",
     fmt_restored: "{} keys restored.",
+    fmt_restored_partly: "{} keys restored, {} failed.",
+    fmt_restore_removed: "{} keys removed that did not exist when the backup was taken.",
 
     group_selection: "Selection",
     group_visibility: "In the menu",
@@ -1428,6 +1440,7 @@ pub(crate) fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         act_unblock,
         act_delete,
         elevated_part,
+        direct_part,
         title_error,
         badge_missing,
         badge_uninstalled,
@@ -1508,6 +1521,8 @@ pub(crate) fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
         fmt_fault_child_command,
         fmt_fault_child_duplicate,
         fmt_restored,
+        fmt_restored_partly,
+        fmt_restore_removed,
         group_selection,
         group_visibility,
         group_shift,
