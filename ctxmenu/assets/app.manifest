@@ -7,7 +7,7 @@
       processorArchitecture="amd64" />
 
   <!-- Kein Admin beim Start. Elevation passiert erst gezielt fuer HKLM-Jobs
-       ueber einen zweiten Prozess, siehe ToDo Abschnitt 13.2. -->
+       ueber einen zweiten Prozess. -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

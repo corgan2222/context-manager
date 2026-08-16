@@ -4,7 +4,7 @@
 //! the release functions are `#[must_use]`, so the compiler will not remind
 //! anyone. A process is capped at 10.000 GDI objects; a full scan touches
 //! hundreds of icons, so a single forgotten `DeleteObject` on an error path
-//! ends with an unusable application after a few rescans (ToDo 7.3).
+//! ends with an unusable application after a few rescans.
 //!
 //! Hence: every handle gets an RAII guard, and no early return can skip one.
 
@@ -238,7 +238,7 @@ fn to_rgba(icon: HICON) -> Option<Rgba> {
 
         // Old 4-bpp and 8-bpp icons carry no alpha at all, so every alpha byte
         // is zero and the icon would render fully transparent. Rebuild alpha
-        // from the AND mask: a set mask bit means transparent (ToDo 7.3).
+        // from the AND mask: a set mask bit means transparent.
         if pixels.chunks_exact(4).all(|pixel| pixel[3] == 0) {
             std::ptr::write_bytes(bits as *mut u8, 0, len);
             DrawIconEx(memory.0, 0, 0, icon, width, height, 0, None, DI_MASK).ok()?;
@@ -296,7 +296,7 @@ mod tests {
         assert!(load(&reference(r"%SystemRoot%\system32\shell32.dll,-999999")).is_none());
     }
 
-    /// The GDI leak test from ToDo 7.3, made automatic.
+    /// The GDI leak test for the handle guards, made automatic.
     ///
     /// A missing `DeleteObject` costs at least two objects per icon, so 300
     /// extractions would add 600 handles. The threshold is generous because

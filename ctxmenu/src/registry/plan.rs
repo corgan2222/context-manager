@@ -1,7 +1,7 @@
 //! Group actions as a plan that is drawn up, backed up, and then executed.
 //!
 //! One action on a program group touches up to thirty keys across two or three
-//! hives (ToDo 11.4). Doing that as a loop of direct writes leaves no way to
+//! hives. Doing that as a loop of direct writes leaves no way to
 //! say what happened when the tenth one fails, and no way to hand the elevated
 //! half to another process.
 //!
@@ -21,9 +21,9 @@ use crate::model::Scope;
 
 /// What to do with one entry.
 ///
-/// Ordered from gentle to harsh, the same order ToDo 11.3 wants the interface
-/// to offer them in — the delete button is deliberately not the first thing a
-/// user reaches for.
+/// Ordered from gentle to harsh, the same order the interface offers them
+/// in — the delete button is deliberately not the first thing a user reaches
+/// for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     /// `LegacyDisable=""` — hidden from the menu, trivially reversible.

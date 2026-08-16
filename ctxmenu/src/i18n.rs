@@ -2,7 +2,7 @@
 //!
 //! A plain struct of `&'static str`, not a framework: switching language is
 //! then a single assignment that takes effect on the next frame — no setter,
-//! no bindings, no restart (ToDo 8).
+//! no bindings, no restart.
 //!
 //! Not translated, deliberately: registry paths, verb names, command lines,
 //! and display names resolved through `SHLoadIndirectString`. Those already

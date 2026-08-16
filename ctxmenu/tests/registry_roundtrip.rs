@@ -2,12 +2,12 @@
 //!
 //! Everything happens under `HKCU\SOFTWARE\Classes\Directory\shell\` with key
 //! names that are unmistakably this tool's own. HKCU needs no elevation and
-//! the fixtures remove themselves, so no VM is required — that requirement
-//! from ToDo 2.8 applies to HKLM tests, which none of these are.
+//! the fixtures remove themselves, so no VM is required — the rule that
+//! registry tests belong in a VM covers HKLM tests, which none of these are.
 //!
-//! The fixture names carry the awkward cases from ToDo 16 on purpose: spaces,
-//! umlauts and an `&`, which becomes a menu accelerator and is a classic
-//! quoting trap on the way through `reg.exe`.
+//! The fixture names carry the awkward cases on purpose: spaces, umlauts and
+//! an `&`, which becomes a menu accelerator and is a classic quoting trap on
+//! the way through `reg.exe`.
 
 use std::path::{Path, PathBuf};
 
@@ -337,7 +337,7 @@ fn a_submenu_written_by_the_editor_comes_back_as_a_cascading_entry() {
 }
 
 /// The second kind of cascading menu: `SubCommands` names verbs that live in
-/// the CommandStore instead of below the entry itself (ToDo 5.5).
+/// the CommandStore instead of below the entry itself.
 ///
 /// Built here rather than found: measured on this machine, 15 entries carry a
 /// `SubCommands` value and every one of them is empty — the marker form, which

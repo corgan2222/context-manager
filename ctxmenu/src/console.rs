@@ -1,7 +1,7 @@
 //! Making the command line usable from a GUI-subsystem binary.
 //!
 //! Release builds are linked as `windows_subsystem = "windows"` so that
-//! double-clicking the app does not flash a console (ToDo 13.3). The side
+//! double-clicking the app does not flash a console. The side
 //! effect is that the process starts with no standard handles at all, and the
 //! first `println!` then fails — which in Rust means a panic, not a silent
 //! drop. Measured on this machine before the fix:

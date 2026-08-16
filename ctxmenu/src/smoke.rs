@@ -1,4 +1,4 @@
-//! Minimal eframe window used as the setup smoke test from ToDo 2.11.
+//! Minimal eframe window used as the setup smoke test.
 //!
 //! It exists to prove the toolchain end to end — linker, `rc.exe`, icon,
 //! manifest, OpenGL context, system theme — before any registry code is
@@ -12,10 +12,10 @@ struct SmokeApp {
 impl eframe::App for SmokeApp {
     // eframe 0.36 replaced `update(&mut self, ctx, frame)` with `ui(&mut self,
     // ui, frame)`, and panels now take a `&mut Ui` instead of a `&Context`.
-    // The ToDo was written against 0.31 and still shows the old shape.
+    // Examples written against 0.31 still show the old shape.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Reported once to stderr as well, so point 4 of the ToDo 2.11 check
-        // list can be verified from a script instead of by squinting at the
+        // Reported once to stderr as well, so the theme part of the setup
+        // check can be verified from a script instead of by squinting at the
         // window. Release builds have no console, hence stderr and not stdout.
         if !self.reported {
             self.reported = true;
@@ -68,7 +68,7 @@ pub fn run() -> eframe::Result<()> {
         "ctxmenu — Smoke-Test",
         options,
         Box::new(|cc| {
-            // Explicit: the three-way choice from ToDo 9.1. Whether `System`
+            // Explicit: the three-way theme choice. Whether `System`
             // actually follows a live theme switch on this Windows build is
             // what the smoke test is meant to reveal.
             cc.egui_ctx.set_theme(egui::ThemePreference::System);

@@ -10,7 +10,7 @@
 //! ```
 //!
 //! into one identity each — including the last one, which has a space in its
-//! path and no quotes to mark where the program name ends (ToDo 11.1).
+//! path and no quotes to mark where the program name ends.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -118,8 +118,8 @@ pub fn program_key(command: &str) -> Option<String> {
 ///
 /// The unquoted case is the awkward one: `C:\Program Files\Tool\t.exe %1` has
 /// no marker for where the program name ends, and splitting at the first space
-/// yields `C:\Program`. The fix from ToDo 16 is to extend the candidate word
-/// by word and ask the file system which prefix exists.
+/// yields `C:\Program`. The fix is to extend the candidate word by word and
+/// ask the file system which prefix exists.
 fn split_argv0(command: &str) -> (String, &str) {
     let trimmed = command.trim_start();
 
@@ -200,13 +200,12 @@ fn target_behind_interpreter(stem: &str, rest: &str) -> Option<String> {
 ///
 /// An unquoted path with spaces was split into several tokens by [`tokens`],
 /// with no quotes left to say where it ends. This recombines them the same
-/// way `split_argv0` recombines argv[0] (ToDo 16): extend one word at a time
-/// and remember the longest prefix that is confirmed to exist as a FILE,
-/// never a directory — `Path::exists()` cannot tell those apart, which is
-/// ToDo 15. When nothing on disk confirms anything (a registry entry can
-/// point at a program that was since uninstalled), the longest prefix that
-/// merely *looks* like a path, by its extension, is used instead of trusting
-/// a bare fragment.
+/// way `split_argv0` recombines argv[0]: extend one word at a time and
+/// remember the longest prefix that is confirmed to exist as a FILE, never a
+/// directory — `Path::exists()` cannot tell those apart. When nothing on disk
+/// confirms anything (a registry entry can point at a program that was since
+/// uninstalled), the longest prefix that merely *looks* like a path, by its
+/// extension, is used instead of trusting a bare fragment.
 fn target_from_the_start(rest: &str) -> Option<String> {
     let toks = tokens(rest);
     let mut i = 0;
@@ -242,9 +241,9 @@ fn target_from_the_start(rest: &str) -> Option<String> {
 
 /// Searches from the back for the DLL argument of `regsvr32`, which always
 /// comes last, after its switches. Applies the same word-by-word
-/// recombination as [`target_from_the_start`] (ToDo 16 covers this branch
-/// too — the same reversed search over the same tokens loses the same
-/// spaces), just walking towards the front instead of away from it.
+/// recombination as [`target_from_the_start`], just walking towards the front
+/// instead of away from it: the same reversed search over the same tokens
+/// would otherwise lose the same spaces.
 fn target_from_the_end(rest: &str) -> Option<String> {
     let toks = tokens(rest);
     let mut i = toks.len();
@@ -613,8 +612,8 @@ mod tests {
 
     #[test]
     fn a_directory_behind_cmd_does_not_win_over_the_real_target() {
-        // ToDo 15: `cmd /c cd /d "install dir" && "install dir\run.exe"` is a
-        // common shape, and the general branch used Path::exists() — which
+        // `cmd /c cd /d "install dir" && "install dir\run.exe"` is a common
+        // shape, and the general branch used Path::exists() — which
         // answers "true" for the directory the `cd` changes into just as
         // readily as for a real program.
         let dir = r"C:\Program Files\Windows Defender";
@@ -630,7 +629,7 @@ mod tests {
 
     #[test]
     fn cmd_recombines_an_unquoted_target_with_spaces() {
-        // ToDo 16: `tokens()` splits an unquoted path at every space with no
+        // `tokens()` splits an unquoted path at every space with no
         // quotes left to mark where it ends, so `"Files\Windows Defender\
         // MpCmdRun.exe"` — a fragment — used to win purely because it ends
         // in ".exe".

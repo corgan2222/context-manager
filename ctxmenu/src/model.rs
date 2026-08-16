@@ -111,7 +111,7 @@ pub enum Category {
     ///
     /// Not a place a menu is built from: an entry here appears only where
     /// something else names it in a `SubCommands` list. Shown so that a name
-    /// found in such a list can be looked up (ToDo 5.5).
+    /// found in such a list can be looked up.
     CommandStore,
 }
 
@@ -248,7 +248,7 @@ pub struct ScanStats {
 ///
 /// Levels 1 and 2 of the chain apply to every file and are held once in
 /// `ScanResult::entries` under their base categories; `entry_indices` covers
-/// only levels 3 to 7, which are specific to this extension (ToDo 10.4).
+/// only levels 3 to 7, which are specific to this extension.
 #[derive(Debug, Clone, Serialize)]
 pub struct FileTypeInfo {
     pub group: crate::registry::filetypes::TypeGroup,

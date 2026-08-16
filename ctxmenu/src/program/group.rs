@@ -1,7 +1,7 @@
 //! Collecting the entries of one program into a single row.
 //!
 //! A program like 7-Zip registers under ten to twenty classes. Removing that
-//! by hand is exactly the work this tool exists to take over (ToDo 11).
+//! by hand is exactly the work this tool exists to take over.
 
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -30,7 +30,7 @@ pub struct ProgramGroup {
     pub is_system: bool,
     /// True when every entry of this group is read-only.
     pub read_only: bool,
-    /// Whether the program is still on disk (ToDo: reported 2026-08-15).
+    /// Whether the program is still on disk.
     ///
     /// Looked up once per group while the view is built, never per frame: this
     /// touches the file system, and `display_name` right above it already
@@ -136,7 +136,7 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
 /// caption, so path is appended — but only where it is needed, since most
 /// names are fine as they are.
 ///
-/// The file name alone is not always enough (ToDo 24): two installs of the
+/// The file name alone is not always enough: two installs of the
 /// same program under `...\Program Files\Tool\tool.exe` and `...\Program
 /// Files (x86)\Tool\tool.exe`, as many installers create, share both the
 /// file name and its immediate parent folder name. `shortest_distinguishing_suffixes`
@@ -270,8 +270,8 @@ mod tests {
 
     #[test]
     fn colliding_names_get_as_much_path_as_needed_to_tell_them_apart() {
-        // ToDo 24: two installs of the same program under "Program Files"
-        // and "Program Files (x86)", as many installers create, share both
+        // Two installs of the same program under "Program Files" and
+        // "Program Files (x86)", as many installers create, share both
         // the file name and the immediate parent folder name "tool" — the
         // file name alone was not enough to tell them apart.
         let mut scan = synthetic::scan_result(2);

@@ -1,6 +1,6 @@
 //! Parsing icon references out of the registry.
 //!
-//! Three shapes occur in the wild (ToDo 7.1):
+//! Three shapes occur in the wild:
 //!
 //! ```text
 //! C:\pfad\datei.exe,3

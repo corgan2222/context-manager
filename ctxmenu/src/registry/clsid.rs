@@ -39,7 +39,7 @@ impl ClsidResolver {
     ///
     /// One value there disables a handler everywhere at once, which is why the
     /// program view prefers blocking over deleting the same handler under
-    /// twenty classes (ToDo 5.4).
+    /// twenty classes.
     pub fn new() -> Self {
         let mut blocked = FxHashSet::default();
 

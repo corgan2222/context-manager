@@ -1,6 +1,6 @@
 # Legt eine Test-VM an, in der die HKLM-Schreibtests laufen.
 #
-# ToDo 2.8 verlangt eine VM mit Checkpoint vor der ersten Schreiboperation:
+# Vor der ersten Schreiboperation braucht es eine VM mit Checkpoint:
 # ein Fehler in HKLM\SOFTWARE\Classes macht den Explorer unbenutzbar, und das
 # faellt erst beim naechsten Rechtsklick auf.
 #

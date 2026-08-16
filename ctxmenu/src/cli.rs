@@ -1,8 +1,8 @@
 //! Command line front end.
 //!
 //! Hand-rolled rather than `clap`: the argument surface is tiny, `main` has to
-//! inspect `argv` before starting the GUI anyway (the elevated job mode from
-//! ToDo 13.2), and the release binary has a 15 MB budget to keep.
+//! inspect `argv` before starting the GUI anyway (the elevated job mode), and
+//! the release binary has a 15 MB budget to keep.
 //!
 //! This is a diagnostic tool for development. The shipping user interface is
 //! the GUI, which gets its bilingual strings in milestone 5.
@@ -472,7 +472,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             // Every extension the machine has, not the curated selection.
             // Its own flag rather than a wider `--all-types`, because the
             // difference is 98 against about 1900 and that is a decision, not
-            // a detail (ToDo 10.3).
+            // a detail.
             "--every-type" => {
                 options.file_types = crate::registry::filetypes::installed();
             }
@@ -723,7 +723,7 @@ pub fn run_file_type(raw_ext: &str) -> Result<()> {
 
     // Levels 1 and 2 are shared by every file type; showing them separately
     // is the honest presentation, because deleting one of those hits every
-    // other file type too (ToDo 10.4).
+    // other file type too.
     let inherited: Vec<&ContextEntry> = result
         .entries
         .iter()
@@ -1326,7 +1326,7 @@ pub fn run_delete(path: &str, confirmed: bool) -> Result<()> {
     // The key is gone, so the record of having created it has to go too. The
     // plan path has done this all along (`plan.rs`); this one had not, so a
     // key deleted from the command line stayed listed in `entries.json` — and
-    // that file is what the Windows 11 handler of ToDo 14 is meant to read.
+    // that file is what the planned Windows 11 handler is meant to read.
     // Best effort, like there: the deletion succeeded, and failing to tidy the
     // bookkeeping is not a failed deletion.
     let _ = crate::registry::create::forget_target(&target);
@@ -1577,7 +1577,7 @@ mod tests {
 
     #[test]
     fn a_bench_of_zero_frames_is_refused() {
-        // Regression for todo 22: a run over zero frames never measures
+        // Regression: a run over zero frames never measures
         // anything, and used to hang the window forever instead of saying
         // so -- `bench.remaining -= 1` had nothing to reach zero from.
         let Err(error) = parse_args(&["--synthetic", "50", "--bench", "0"]) else {
@@ -1596,7 +1596,7 @@ mod tests {
 
     #[test]
     fn a_typo_in_favourite_mode_is_refused_not_swallowed() {
-        // Regression for todo 23: any unrecognised --mode silently became
+        // Regression: any unrecognised --mode silently became
         // WebMode::Clipboard, so "oepn" opened nothing and copied the URL to
         // the clipboard instead, without a word about the typo.
         let Err(error) =

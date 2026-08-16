@@ -1,8 +1,8 @@
 # Fuehrt einen Befehl in der Test-VM aus, ueber PowerShell Direct.
 #
 # Warum ueberhaupt: die Abnahmen, die HKLM schreiben oder ein echtes
-# Rechtsklickmenue zeigen sollen, duerfen laut ToDo 2.8 nicht auf dem Wirt
-# laufen. PowerShell Direct braucht kein Netzwerk in der VM, nur den
+# Rechtsklickmenue zeigen sollen, duerfen nicht auf dem Wirt laufen.
+# PowerShell Direct braucht kein Netzwerk in der VM, nur den
 # Gastdienst.
 #
 # Das Kennwort steht in der Antwortdatei der unbeaufsichtigten Installation

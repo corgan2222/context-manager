@@ -1,8 +1,8 @@
 //! Turning a program path into a name a person recognises.
 //!
-//! "7-Zip Shell Extension" instead of `c:\program files\7-zip\7-zip.dll`
-//! (ToDo 11.1). The name lives in the binary's version resource, which is a
-//! nested block of counted structures reached through three separate calls.
+//! "7-Zip Shell Extension" instead of `c:\program files\7-zip\7-zip.dll`.
+//! The name lives in the binary's version resource, which is a nested block
+//! of counted structures reached through three separate calls.
 //!
 //! Reading it costs a synchronous disk hit — measured at roughly 0.33 ms per
 //! file warm — so it happens once after a scan, in the worker, never in the
@@ -286,7 +286,7 @@ pub fn presence(program_key: &str) -> Presence {
 /// Does this program live inside the Windows directory?
 ///
 /// The program view marks those as system components and warns before acting
-/// on them (ToDo 11.1).
+/// on them.
 pub fn is_system_component(path: &str) -> bool {
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     absolute_path(path)

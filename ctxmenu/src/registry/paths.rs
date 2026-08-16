@@ -86,19 +86,19 @@ impl Location {
     ///
     /// `false` for the CommandStore, whatever the key's own permissions say:
     /// those verbs belong to Windows, and a machine where they happen to be
-    /// writable is not a reason to offer it (ToDo 5.5).
+    /// writable is not a reason to offer it.
     pub fn writable_at_all(&self) -> bool {
         matches!(self.anchor, Anchor::Classes)
     }
 }
 
-/// The base categories from ToDo section 5.1.
+/// The base categories, the ones that need no file-type resolution.
 ///
-/// Deviation from that table, deliberately: it lists only `shell` for
-/// `AllFilesystemObjects`, `Folder` and `Drive`, but all three carry
-/// `shellex\ContextMenuHandlers` subkeys in practice — 7-Zip registers under
-/// `Folder\shellex` on this machine. Scanning a superset costs one failed
-/// key open when a location is absent.
+/// Wider than the usual description, deliberately: that one names only
+/// `shell` for `AllFilesystemObjects`, `Folder` and `Drive`, but all three
+/// carry `shellex\ContextMenuHandlers` subkeys in practice — 7-Zip registers
+/// under `Folder\shellex` on this machine. Scanning a superset costs one
+/// failed key open when a location is absent.
 pub fn base_sources() -> Vec<CategorySource> {
     use Category::*;
     use SourceKind::*;

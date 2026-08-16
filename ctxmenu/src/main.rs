@@ -1,5 +1,5 @@
 // Release builds start without a console window; debug builds keep it so the
-// CLI and `println!` stay usable during development (ToDo 13.3).
+// CLI and `println!` stay usable during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::process::ExitCode;
@@ -17,7 +17,7 @@ fn main() -> ExitCode {
     log::catch_panics();
 
     // The elevated job mode is intercepted before anything else: an elevated
-    // instance must not open a second window (ToDo 13.2).
+    // instance must not open a second window.
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.first().map(String::as_str) == Some(elevation::JOB_ARG) {
         return match raw.get(1) {

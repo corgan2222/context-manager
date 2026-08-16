@@ -55,7 +55,7 @@ impl Language {
     /// Only the primary language matters: German is `0x07`, so `de-DE`
     /// (0x0407), `de-AT` (0x0C07) and `de-CH` (0x0807) all count. Everything
     /// else falls back to English, which is the safer default for a language
-    /// nobody translated (ToDo 8).
+    /// nobody translated.
     pub fn from_ui_language(lang_id: u16) -> Language {
         const LANG_GERMAN: u16 = 0x07;
         if lang_id & 0x3FF == LANG_GERMAN {
@@ -66,7 +66,7 @@ impl Language {
     }
 }
 
-/// The three-way theme choice from ToDo 9.
+/// The three-way theme choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ThemeChoice {
     #[default]
@@ -98,9 +98,9 @@ impl ThemeChoice {
 pub struct Settings {
     pub language: Language,
     pub theme: ThemeChoice,
-    /// File extensions the user added by hand, on top of the curated list
-    /// (ToDo 10.3). Unused until milestone 7, persisted from now on so an
-    /// older settings file never loses them.
+    /// File extensions the user added by hand, on top of the curated list.
+    /// Unused until milestone 7, persisted from now on so an older settings
+    /// file never loses them.
     pub custom_extensions: Vec<String>,
     /// Hide file types that have no entries of their own.
     pub hide_empty_types: bool,

@@ -16,8 +16,8 @@ use crate::model::Scope;
 ///
 /// Requires a [`BackupToken`] that covers exactly this target. The token can
 /// only come from [`super::backup::export`], so a delete without a preceding,
-/// successful backup of this very key cannot be written down — which is what
-/// ToDo 13.1 asks for, enforced rather than documented.
+/// successful backup of this very key cannot be written down. The rule is
+/// enforced rather than documented.
 pub fn delete_tree(target: &RegTarget, token: &BackupToken) -> Result<()> {
     if !token.covers(target) {
         bail!(
@@ -94,7 +94,7 @@ pub fn is_writable(target: &RegTarget) -> bool {
 ///
 /// `LegacyDisable` hides an entry, `Extended` makes it appear only while Shift
 /// is held. Both are reversible with a single value deletion, which is why
-/// ToDo 11.3 offers them before ever suggesting a delete.
+/// the interface offers them before ever suggesting a delete.
 pub fn set_flag(target: &RegTarget, name: &str, token: &BackupToken) -> Result<()> {
     require_backup(target, token)?;
 
@@ -174,7 +174,7 @@ pub fn set_position(target: &RegTarget, value: Option<&str>, token: &BackupToken
 ///
 /// One value here disables a handler everywhere at once. That beats deleting
 /// the same handler under twenty classes, survives the program updating
-/// itself, and comes back with a single deletion (ToDo 5.4).
+/// itself, and comes back with a single deletion.
 pub fn block_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
     require_blocked_backup(token)?;
 

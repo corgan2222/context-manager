@@ -1,9 +1,9 @@
 //! The application window.
 //!
-//! Immediate mode means this whole file runs many times per second, so the
-//! rule from ToDo 4.3 governs everything here: no registry access, no icon
-//! extraction, no version resource lookup in the frame path. Anything costly
-//! is precomputed and kept in the state, and anything slow runs on a thread.
+//! Immediate mode means this whole file runs many times per second, so one
+//! rule governs everything here: no registry access, no icon extraction, no
+//! version resource lookup in the frame path. Anything costly is precomputed
+//! and kept in the state, and anything slow runs on a thread.
 
 use std::sync::mpsc::{Receiver, channel};
 
@@ -175,7 +175,7 @@ enum Dialog {
     Editor {
         entry: Box<NewEntry>,
         /// Read when the dialog opens, not per frame: this is a file on disk,
-        /// and the frame path has no business touching one (ToDo 4.3).
+        /// and the frame path has no business touching one.
         recorded: Vec<NewEntry>,
         /// Set when an entry that already exists is being *looked at*: the
         /// registry path it came from.
@@ -340,7 +340,7 @@ const UPLOAD_EXAMPLE_PATH: &str = "downloadUrl";
 /// The Feather glyphs this window draws, looked up once at startup.
 ///
 /// `try_icon` searches a generated table of some three hundred names. Doing that
-/// per button per frame is exactly the work ToDo 4.3 keeps out of the frame
+/// per button per frame is exactly the work that has no place in the frame
 /// path, and resolving here has a second benefit: a name a later version of the
 /// pack drops turns into a visible blank the moment the window opens, rather
 /// than staying unnoticed until somebody looks at that one button.
@@ -981,7 +981,7 @@ pub struct App {
     /// Indices into `scan.entries` that the table should draw.
     ///
     /// The single most important field for performance: filter, search and
-    /// sorting are evaluated here once, not per frame (ToDo 4.3).
+    /// sorting are evaluated here once, not per frame.
     visible_rows: Vec<Row>,
     filter_dirty: bool,
     /// Column and direction the list is ordered by. Applied when the rows are
@@ -1431,7 +1431,7 @@ impl App {
             // where the window reopens after using it — showed an empty tool
             // box and the sentence about there being nothing saved yet, with a
             // full favourites.json on disk. Once, in the constructor: a file
-            // has no business in the frame path (ToDo 4.3), and this one is
+            // has no business in the frame path, and this one is
             // read again after every change anyway.
             favourites: favourites::load().unwrap_or_default(),
             favourite_error: None,
@@ -1510,7 +1510,7 @@ impl App {
         let ctx = ctx.clone();
         // Decided here, built in the worker: enumerating every registered
         // extension means reading two large keys, and the frame path has no
-        // business doing that (ToDo 4.3).
+        // business doing that.
         let every_type = self.scan_every_type;
         let custom = self.settings.custom_extensions.clone();
 
@@ -1663,10 +1663,10 @@ impl App {
                         .unwrap_or_default();
 
                     // Levels 1 and 2 apply to every file, so they are part of
-                    // what a right-click on this type really offers (ToDo
-                    // 10.4) — but they are also identical for every type, and
-                    // for `.jpg` they are 39 rows against 19. Off by default
-                    // since 2026-08-15, and one checkbox away.
+                    // what a right-click on this type really offers — but they
+                    // are also identical for every type, and for `.jpg` they
+                    // are 39 rows against 19. Off by default since 2026-08-15,
+                    // and one checkbox away.
                     if self.settings.include_generic_entries {
                         rows.extend(scan.entries.iter().enumerate().filter_map(|(i, e)| {
                             matches!(
@@ -2194,8 +2194,7 @@ impl App {
                         (true, true) => "ThemePreference::System follows a runtime switch",
                         (true, false) =>
                             "system theme arrived but the visuals did not change — check the preference",
-                        _ =>
-                            "no reaction: the RegNotifyChangeKeyValue fallback from ToDo 9.1 is due",
+                        _ => "no reaction: the RegNotifyChangeKeyValue fallback is due",
                     }
                 );
                 crate::console::flush();
@@ -2250,8 +2249,8 @@ impl App {
 
             let clsid = clsid_of(entry).map(str::to_string);
             // Blocking is a COM-handler mechanism; a static verb has no CLSID
-            // and no equivalent, which is why ToDo 11.3 offers LegacyDisable
-            // there instead.
+            // and no equivalent, which is why LegacyDisable is offered there
+            // instead.
             if matches!(action, Action::Block | Action::Unblock) && clsid.is_none() {
                 continue;
             }
@@ -2299,7 +2298,7 @@ impl App {
     /// chain. That is the case worth a sentence: the file type tab shows the
     /// entries of `.zip` next to the ones every file gets, they look alike in
     /// the table, and deleting one of the latter while thinking about `.zip`
-    /// takes it away from all 98 types at once (ToDo 10.4).
+    /// takes it away from all 98 types at once.
     ///
     /// Read from the plan rather than from the selection, because the plan is
     /// what will actually run — an entry that was selected but dropped on the
@@ -2841,7 +2840,7 @@ impl App {
                     )
                     .on_hover_text(self.tr.tip_search);
                 // Rebuilding on `changed()` instead of every frame is what
-                // keeps typing responsive at a few thousand rows (ToDo 11.5).
+                // keeps typing responsive at a few thousand rows.
                 if search.changed() {
                     self.filter_dirty = true;
                 }
@@ -2961,7 +2960,7 @@ impl App {
 
         if changed {
             // Language switching is a single assignment; it takes effect on
-            // the next frame with no restart (ToDo 8).
+            // the next frame with no restart.
             self.tr = strings_for(self.settings.language);
             crate::bilingual::set_language(self.settings.language);
             ctx.set_theme(self.settings.theme.to_preference());
@@ -2971,7 +2970,7 @@ impl App {
         }
     }
 
-    /// The actions, offered from gentle to harsh (ToDo 11.3).
+    /// The actions, offered from gentle to harsh.
     ///
     /// Delete sits at the far end behind a separator, and never as the first
     /// thing under the cursor.
@@ -3291,7 +3290,7 @@ impl App {
     ///
     /// On a thread because it is six requests in the worst case over a network
     /// this program knows nothing about, and the frame path may not wait for
-    /// that (ToDo 4.3). Measured against SnapOtter on 2026-08-15: 351 paths,
+    /// that. Measured against SnapOtter on 2026-08-15: 351 paths,
     /// several megabytes of JSON.
     fn start_service_fetch(&mut self, index: usize, ctx: &egui::Context) {
         let Some(service) = self.services.get(index).cloned() else {
@@ -6117,7 +6116,7 @@ impl App {
             .body(|body| {
                 // The virtualized variant: only visible rows are built. At a
                 // few thousand entries this is the difference between a
-                // scrolling list and a slideshow (ToDo 4.5).
+                // scrolling list and a slideshow.
                 body.rows(26.0, visible_rows.len(), |mut row| {
                     let reference = visible_rows[row.index()].clone();
                     let Some(entry) = resolve(scan, &reference) else {
@@ -7443,7 +7442,7 @@ fn type_group_label(
 ///
 /// A ProgID's own `from_ext` is a poor guide to that, though: the scanner
 /// reads its shared `shell` key once and hands the resulting entry to every
-/// extension that lists it (ToDo 10), so `from_ext` only records whichever
+/// extension that lists it, so `from_ext` only records whichever
 /// extension the scan happened to reach it through first — not necessarily
 /// the one on screen. The file type tab always knows which extension is
 /// selected, and that is the one a click on a shared entry means; it wins
@@ -8269,7 +8268,7 @@ fn group_tip(name: &str, explanation: &str) -> String {
 
 fn badges(ui: &mut Ui, entry: &ContextEntry, tr: &'static Strings) {
     // Colours come out of the current visuals rather than being fixed: the
-    // same RGB is not equally readable in both themes (ToDo 9.2).
+    // same RGB is not equally readable in both themes.
     let warn = ui.visuals().warn_fg_color;
     let weak = ui.visuals().weak_text_color();
 
@@ -8341,8 +8340,7 @@ fn explained_flags(
 /// Segoe UI for the text, Segoe UI Symbol for everything that is not a letter.
 ///
 /// egui ships its own font, which is immediately recognisable and wrong for a
-/// system tool. A failed read leaves the default font rather than panicking
-/// (ToDo 9.3).
+/// system tool. A failed read leaves the default font rather than panicking.
 ///
 /// The second file is not decoration. Measured on 2026-08-15 against every
 /// font this application loads — Segoe UI plus the three egui never removes —
@@ -8608,7 +8606,7 @@ mod tests {
         }
     }
 
-    /// Regression for todo 22: `bench.remaining -= 1` ran unconditionally,
+    /// Regression: `bench.remaining -= 1` ran unconditionally,
     /// so a frame arriving once the counter already reached zero wrapped it
     /// to `usize::MAX` in release, where overflow checks are off. That is
     /// what made `--bench 0` hang forever instead of closing immediately.
@@ -9502,9 +9500,9 @@ mod tests {
     }
 
     /// A shared ProgID's `from_ext` names whichever extension the scan
-    /// reached it through first, which is not necessarily the one on screen
-    /// (ToDo 10). Regression guard: `.jpg` scanned first must not steal a
-    /// `.png` entry when the user is looking at `.png`.
+    /// reached it through first, which is not necessarily the one on screen.
+    /// Regression guard: `.jpg` scanned first must not steal a `.png` entry
+    /// when the user is looking at `.png`.
     #[test]
     fn a_shared_progid_uses_the_extension_on_screen_not_the_stale_one() {
         let mut entries = synthetic::scan_result(1).entries;

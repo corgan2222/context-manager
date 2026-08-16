@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::paths::RegTarget;
 
-/// Keeps `reg.exe` from flashing a console window (ToDo 13.1).
+/// Keeps `reg.exe` from flashing a console window.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How often an operation that lost a race with a file handle is retried.
@@ -208,7 +208,7 @@ fn export_with(action: &str, paths: &[String], absence: Absence) -> Result<Backu
     }
 
     // Colons are legal in ISO 8601 and illegal in Windows file names, hence
-    // the compact form rather than the one the ToDo sketches. Milliseconds
+    // the compact form rather than the fully punctuated one. Milliseconds
     // because two actions a second apart is entirely normal.
     let stamp = chrono::Local::now().format("%Y%m%dT%H%M%S%3f");
     let directory = unique_directory(&root_dir()?, &format!("{stamp}_{}", sanitize(action)))?;

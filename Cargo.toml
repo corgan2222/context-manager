@@ -25,8 +25,8 @@ rust-version = "1.95"
 # nothing here forced the decision either way — see docs/THIRD-PARTY-NOTICES.md.
 license = "MIT"
 
-# Zentral gepflegt, damit die spätere IExplorerCommand-DLL (ToDo Abschnitt 14)
-# ohne Versionsdrift danebengesetzt werden kann.
+# Zentral gepflegt, damit die spätere IExplorerCommand-DLL ohne Versionsdrift
+# danebengesetzt werden kann.
 [workspace.dependencies]
 # Both renderers, chosen at run time. `glow` is the small, fast one and stays
 # the first choice; `wgpu` is the one that works where there is no OpenGL —
@@ -40,8 +40,8 @@ eframe = { version = "0.36.1", default-features = false, features = [
     "wgpu",
 ] }
 egui = "0.36.1"
-# Ohne das "image"-Feature: die Icon-Extraktion aus ToDo 7 baut ihr ColorImage
-# selbst und lädt es über ctx.load_texture, ein image-Crate braucht es nicht.
+# Ohne das "image"-Feature: die Icon-Extraktion baut ihr ColorImage selbst und
+# lädt es über ctx.load_texture, ein image-Crate braucht es nicht.
 egui_extras = { version = "0.36.1", default-features = false }
 raw-window-handle = "0.6"
 windows-registry = "0.6.1"

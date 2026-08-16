@@ -60,8 +60,8 @@ fn load_indirect_string(raw: &str) -> Option<String> {
     let source = HSTRING::from(raw);
     let mut buffer = vec![0u16; MUI_BUFFER];
 
-    // windows 0.62 returns `Result<()>` here. The ToDo still shows the older
-    // shape that needed a trailing `.ok()?` on an HRESULT.
+    // windows 0.62 returns `Result<()>` here, not the bare HRESULT that older
+    // versions of the crate did.
     unsafe { SHLoadIndirectString(&source, &mut buffer, None) }.ok()?;
 
     let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());

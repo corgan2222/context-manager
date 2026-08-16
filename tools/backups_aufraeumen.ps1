@@ -6,8 +6,8 @@
     Measured on 2026-08-16: %LOCALAPPDATA%\ctxmenu\backups held 1289
     directories, of which 1274 came from test runs and 15 were real. The tests
     have since learned to clean up after themselves even when an assertion
-    fails (see todo\fixed\33-*), but everything from before that is still there,
-    and it sits between the user's own backups in the Backups tab.
+    fails, but everything from before that is still there, and it sits between
+    the user's own backups in the Backups tab.
 
     This is deliberately a separate script that has to be started by hand, and
     deliberately shows what it would do before doing it. That directory belongs

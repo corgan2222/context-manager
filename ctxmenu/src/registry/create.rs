@@ -2,10 +2,10 @@
 //!
 //! Written to `HKCU\SOFTWARE\Classes` and nowhere else: no elevation needed,
 //! nothing system-wide broken if it goes wrong, and removable by the same user
-//! who added it (ToDo 5.2).
+//! who added it.
 //!
 //! Every entry is *also* recorded in `entries.json`. That is not a cache — it
-//! is preparation for ToDo 14, where a Windows 11 `IExplorerCommand` handler
+//! is preparation for a planned Windows 11 `IExplorerCommand` handler, which
 //! reads this file and builds its entries from it. Writing it now means the
 //! DLL has to be built and signed exactly once, and the interface keeps
 //! writing nothing but JSON.
@@ -140,7 +140,7 @@ pub enum Fault {
     MissingDisplayName,
     MissingCommand,
     /// `%1` in a background category, where it stays empty. The single most
-    /// common mistake in hand-written entries (ToDo 5.3).
+    /// common mistake in hand-written entries.
     PercentOneInBackground,
     /// An `&` becomes an accelerator in the menu.
     AmpersandInDisplayName,
@@ -242,7 +242,7 @@ impl Problem {
 /// selected item.
 ///
 /// `%1` stays empty there and the entry silently does nothing — the single
-/// most common mistake in hand-written entries (ToDo 5.3).
+/// most common mistake in hand-written entries.
 pub fn is_background(category: &Category) -> bool {
     matches!(
         category,
@@ -485,8 +485,8 @@ impl NewEntry {
 ///
 /// The file type cases are how an entry is limited to one kind of file. Not
 /// `AppliesTo`: that value takes a structured query, and of the 27 instances
-/// on this machine not one uses the `System.ItemType:.txt` shape the ToDo
-/// sketches — they filter by BitLocker state and storage provider. Placing the
+/// on this machine not one uses the textbook `System.ItemType:.txt` shape —
+/// they filter by BitLocker state and storage provider. Placing the
 /// key under `SystemFileAssociations` is the documented mechanism, is what
 /// every image tool on this machine actually does, and has the side benefit
 /// that the entry then appears in this program's own file type view.
@@ -543,7 +543,7 @@ fn check_ext(ext: &str) -> Result<String> {
 /// and recording it are two steps and only the first decides whether the entry
 /// exists. The registry tree is complete before `entries.json` is opened at
 /// all, so a failure there is not a failed create: the item is in the menu and
-/// it works. It costs the Windows 11 handler of ToDo 14 its knowledge of this
+/// it works. It costs the planned Windows 11 handler its knowledge of this
 /// entry, which is worth a sentence beside the success — and is not worth
 /// throwing the success away for, which is what returning `Err` used to do.
 /// The user then saw a red box, the list was not refreshed, and the second
@@ -700,7 +700,7 @@ pub fn entries_path() -> Result<PathBuf> {
 /// `record_in` then writing that empty list straight back plus the one new
 /// entry, so a single damaged byte cost the record of everything this tool had
 /// made. The registry keys survive that; the knowledge of which of them are
-/// ours does not, and that is what the Windows 11 handler of ToDo 14 reads.
+/// ours does not, and that is what the planned Windows 11 handler reads.
 pub fn recorded() -> Result<Vec<NewEntry>> {
     recorded_in(&entries_path()?)
 }
@@ -783,8 +783,8 @@ fn store(file: &Path, all: &[NewEntry]) -> Result<()> {
 /// Forgets whatever was recorded for this registry key.
 ///
 /// Called after a successful delete. Without it `entries.json` keeps naming an
-/// entry the user has removed — and that file is the input for the Windows 11
-/// handler of ToDo 14, so a stale line there would eventually put the deleted
+/// entry the user has removed — and that file is the input for the planned
+/// Windows 11 handler, so a stale line there would eventually put the deleted
 /// item back in the menu.
 pub fn forget_target(target: &RegTarget) -> Result<()> {
     forget_target_in(&entries_path()?, target)

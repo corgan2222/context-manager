@@ -1,7 +1,7 @@
 //! Lazy icon loading for the table.
 //!
 //! `ui()` runs many times per second, so nothing expensive may happen in the
-//! frame path (ToDo 4.3). A visible row asks the cache for its icon; the cache
+//! frame path. A visible row asks the cache for its icon; the cache
 //! either has a texture or hands back a placeholder and queues the reference
 //! for a worker thread. Nothing blocks, and the list stays scrollable while
 //! icons trickle in.

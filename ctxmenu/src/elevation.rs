@@ -3,7 +3,7 @@
 //! The manifest says `asInvoker`, so the window itself never asks for
 //! elevation. Only when a plan turns out to touch keys this process cannot
 //! write does it hand that half to a second instance of itself, started with
-//! `runas` (ToDo 13.2).
+//! `runas`.
 //!
 //! The child gets a job file, writes a result file next to it and exits. The
 //! parent waits for it and reads the result back, so a partial failure is
@@ -47,7 +47,7 @@ pub const JOB_ARG: &str = "--apply-job";
 pub enum Outcome {
     /// The child ran and exited with this code.
     Finished(u32),
-    /// The user declined the UAC prompt. A decision, not an error (ToDo 13.2).
+    /// The user declined the UAC prompt. A decision, not an error.
     Cancelled,
     Failed(String),
 }
@@ -149,7 +149,7 @@ pub fn run_elevated_job(job: &Path) -> Outcome {
 /// the elevated child reaches the elevated session, not the Explorer the user
 /// is looking at. It also cannot report failure — the function returns
 /// nothing — so nobody should treat it as proof the menu updated. Changes to
-/// COM handlers need an Explorer restart regardless (ToDo 13.4).
+/// COM handlers need an Explorer restart regardless.
 pub fn notify_shell() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
@@ -196,7 +196,7 @@ pub fn show_in_explorer(path: &Path) -> Result<()> {
 /// COM handler is a DLL that Explorer loaded into its own process long ago;
 /// no notification unloads it, which is why every tool in this corner ends up
 /// reaching for the same blunt instrument. Until now this one only *said* so
-/// and left the doing to the user (ToDo 13.4).
+/// and left the doing to the user.
 ///
 /// Closes every open Explorer window. The button that calls this says so.
 pub fn restart_explorer() -> Result<()> {
@@ -297,7 +297,7 @@ struct Job {
     /// [`crate::bilingual::set_language`] itself; without this, its call to
     /// `backup::export` fell back to re-reading `settings.json` from disk,
     /// which can name a language the user already changed away from — the
-    /// manifest note then permanently disagrees with the screen (todo 25).
+    /// manifest note then permanently disagrees with the screen.
     #[serde(default)]
     language: Language,
 }
@@ -325,8 +325,8 @@ pub fn write_job(plan: &Plan) -> Result<PathBuf> {
 /// `run_elevated` used to remove both only at its very end, one statement
 /// after the `?` and the `bail!` in its `Outcome::Finished` arm — both of
 /// which return past that point, leaving the job file (the full plan: every
-/// registry path and action) behind in `%TEMP%` on every such failure
-/// (todo 19). A guard covers every return path, including ones added later.
+/// registry path and action) behind in `%TEMP%` on every such failure.
+/// A guard covers every return path, including ones added later.
 struct JobFiles {
     job: PathBuf,
     result: PathBuf,
@@ -453,7 +453,7 @@ mod tests {
         );
     }
 
-    /// Regression for todo 19: a partial return out of `run_elevated` --
+    /// Regression: a partial return out of `run_elevated` --
     /// the `bail!` and the `?` in its `Outcome::Finished` arm both did this
     /// -- used to skip the cleanup at the bottom of the function and leave
     /// both files behind in `%TEMP%` forever.
@@ -520,7 +520,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Regression for todo 25: the elevated child never calls
+    /// Regression: the elevated child never calls
     /// `bilingual::set_language`, so it needs the language handed to it
     /// through the job file instead of guessing from `settings.json`.
     #[test]

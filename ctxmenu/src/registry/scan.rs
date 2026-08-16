@@ -29,12 +29,12 @@ pub struct ScanOptions {
     pub scopes: Vec<Scope>,
     /// `None` means every base category.
     pub categories: Option<Vec<Category>>,
-    /// Extensions to walk the file type chain for (ToDo 10.1).
+    /// Extensions to walk the file type chain for.
     ///
     /// Empty by default: the chain costs a few hundred extra key opens, and
     /// the command line has no use for it unless asked.
     pub file_types: Vec<String>,
-    /// Read Windows' own verb stock as well (ToDo 5.5).
+    /// Read Windows' own verb stock as well.
     ///
     /// On by default: it is one key open for 229 entries on this machine, and
     /// they are the only place a name from a `SubCommands` list can be looked
@@ -101,7 +101,7 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
 
     // Levels 3 to 7 of the file type chain, one set of locations per
     // extension. Levels 1 and 2 are the base categories above and are
-    // deliberately scanned once and reused (ToDo 10.4).
+    // deliberately scanned once and reused.
     let mut file_types: Vec<FileTypeInfo> = Vec::new();
     let mut file_type_sources = Vec::new();
     let mut seen_locations: rustc_hash::FxHashSet<(String, SourceKind)> = Default::default();
@@ -304,8 +304,8 @@ fn resolve_entries(
                 if let Some(name) = &info.friendly_name {
                     entry.display_name = name.clone();
                 }
-                // The server DLL is the grouping key for the program view
-                // (ToDo 5.4), so it is filled here rather than in milestone 8.
+                // The server DLL is the grouping key for the program view, so
+                // it is filled here rather than in milestone 8.
                 entry.program_key = info.program_key.clone();
                 // A COM handler never has an `Icon` value at all — the menu
                 // text and picture are produced at run time. Its DLL is the
@@ -446,7 +446,7 @@ fn read_verb(
     // marker that says "this is a submenu, the children are in my own `shell`
     // subkey", which the branch above already read. Measured on this machine:
     // 15 entries carry `SubCommands` and every single one of them is empty, so
-    // this path is exercised by tests rather than by hardware (ToDo 5.5).
+    // this path is exercised by tests rather than by hardware.
     if sub_commands.is_empty()
         && depth < MAX_SUBMENU_DEPTH
         && let Some(list) = non_empty(key.get_string("SubCommands").ok())
@@ -538,7 +538,7 @@ fn read_sub_commands(
 ///
 /// Only the registration is visible here. The text the user actually sees is
 /// generated at runtime by `IContextMenu::QueryContextMenu` and is not stored
-/// anywhere in the registry, so it cannot be shown or edited (ToDo 5.4).
+/// anywhere in the registry, so it cannot be shown or edited.
 fn read_shellex(
     parent: &Key,
     name: &str,

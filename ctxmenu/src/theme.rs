@@ -2,7 +2,7 @@
 //!
 //! eframe lets Windows draw the window frame, so the title bar stays light
 //! until DWM is told otherwise — a dark app with a white title bar is the
-//! giveaway that a tool was not built for Windows (ToDo 9.4).
+//! giveaway that a tool was not built for Windows.
 
 use std::ffi::c_void;
 
@@ -28,7 +28,7 @@ use crate::settings::{Language, ThemeChoice};
 /// build 18985. Builds 1809 and 1903 use 19 instead, and `windows` 0.62 has no
 /// named constant for the old spelling — its `DWMWA_*` block skips from 17 to
 /// 20 — so the newtype is built by hand. Before build 17763 neither works and
-/// the title bar simply stays light, which is acceptable (ToDo 9.4).
+/// the title bar simply stays light, which is acceptable.
 const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(19);
 
 impl ThemeChoice {

@@ -1,7 +1,7 @@
 //! File types and the chain Windows walks to build their context menu.
 //!
 //! Right-clicking a `.jpg` shows entries drawn from at least seven different
-//! registry branches (ToDo 10.1). Two of them — the perceived type and the
+//! registry branches. Two of them — the perceived type and the
 //! extension-specific `SystemFileAssociations` key — are where image viewers,
 //! converters and photo tools register, and they are exactly the two most
 //! tools overlook.
@@ -49,7 +49,7 @@ pub struct FileTypeDef {
     pub group: TypeGroup,
 }
 
-/// The starting point, not the limit (ToDo 10.3).
+/// The starting point, not the limit.
 ///
 /// A machine typically carries 400 to 900 registered extensions; showing all
 /// of them would bury the interesting ones. The user can add extensions by
@@ -190,13 +190,13 @@ pub fn normalize_ext(raw: &str) -> Option<String> {
 /// Every file extension registered anywhere on this machine.
 ///
 /// The subkeys with a leading dot below the three classes roots, normalised
-/// and deduplicated — the "scan all installed types" half of ToDo 10.3.
+/// and deduplicated — the full scan, the counterpart to the curated list.
 ///
 /// Asked for rather than done at startup, and the numbers say why: measured on
 /// this machine, 1304 such keys sit under `HKLM\SOFTWARE\Classes` and 624
 /// under HKCU. That is more than thirteen times the curated list, and each one
 /// costs a full resolution chain, so the window offers it as a button instead
-/// of paying for it on every start (ToDo 10.3).
+/// of paying for it on every start.
 pub fn installed() -> Vec<String> {
     let mut all = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -370,7 +370,7 @@ pub fn resolve(ext: &str) -> Resolution {
 ///
 /// Levels 1 and 2 of the chain — `*` and `AllFilesystemObjects` — are the same
 /// for every file type and are deliberately **not** included: they are scanned
-/// once as base categories and reused (ToDo 10.4). What comes back here is
+/// once as base categories and reused. What comes back here is
 /// levels 3 to 7.
 pub fn sources_for(resolution: &Resolution) -> Vec<CategorySource> {
     let mut sources = Vec::new();
@@ -461,9 +461,9 @@ mod tests {
 
     #[test]
     fn every_installed_extension_is_found_and_normalised() {
-        // Against the real registry: this is the "scan everything" half of
-        // ToDo 10.3, and what makes it worth having is that it finds far more
-        // than the curated selection.
+        // Against the real registry: this is the "scan everything" path, and
+        // what makes it worth having is that it finds far more than the
+        // curated selection.
         let all = installed();
 
         assert!(
@@ -718,12 +718,12 @@ mod tests {
     }
 
     /// The list is a starting point, but a shrunken one would silently drop
-    /// coverage. This pins the size the ToDo asks for.
+    /// coverage. This pins the breadth the list is meant to have.
     #[test]
     fn the_list_covers_the_documented_breadth() {
         assert!(
             CURATED.len() >= 95,
-            "only {} curated types, the plan lists about 100",
+            "only {} curated types, the list should cover about 100",
             CURATED.len()
         );
     }
