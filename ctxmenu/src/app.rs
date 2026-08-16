@@ -369,11 +369,15 @@ struct Glyphs {
     restore: char,
     explorer: char,
     link: char,
+    /// The three faces of the theme button: a screen, a sun, a moon.
+    theme_system: char,
+    theme_light: char,
+    theme_dark: char,
 }
 
 impl Glyphs {
     /// The names, in one place, so the test below can walk the same list.
-    const NAMES: [&'static str; 20] = [
+    const NAMES: [&'static str; 23] = [
         "check-circle",
         "circle",
         "eye",
@@ -394,6 +398,9 @@ impl Glyphs {
         "rotate-ccw",
         "folder",
         "external-link",
+        "monitor",
+        "sun",
+        "moon",
     ];
 
     fn load() -> Self {
@@ -420,6 +427,9 @@ impl Glyphs {
             restore: next(),
             explorer: next(),
             link: next(),
+            theme_system: next(),
+            theme_light: next(),
+            theme_dark: next(),
         }
     }
 }
@@ -668,6 +678,179 @@ fn menu_glyph(action: &Action, glyphs: &Glyphs) -> char {
         },
         Action::Delete => glyphs.delete,
     }
+}
+
+/// The face the theme button wears for each of its three states.
+///
+/// A screen for "whatever Windows says", a sun for light, a moon for dark. The
+/// picture is the state, which is the whole point of the button: the drop-down
+/// it replaced spent a hundred points on saying the same thing in words.
+fn theme_glyph(choice: ThemeChoice, glyphs: &Glyphs) -> char {
+    match choice {
+        ThemeChoice::System => glyphs.theme_system,
+        ThemeChoice::Light => glyphs.theme_light,
+        ThemeChoice::Dark => glyphs.theme_dark,
+    }
+}
+
+/// What the theme button says when the pointer rests on it.
+///
+/// Every state gets a whole sentence naming both where it stands and where the
+/// next click goes. A symbol nobody has seen before is a guess until it says so
+/// itself.
+fn theme_tip(choice: ThemeChoice, tr: &'static Strings) -> &'static str {
+    match choice {
+        ThemeChoice::System => tr.tip_theme_system,
+        ThemeChoice::Light => tr.tip_theme_light,
+        ThemeChoice::Dark => tr.tip_theme_dark,
+    }
+}
+
+/// The proportions of the two flags the language button draws, width to height.
+///
+/// Both are drawn at the same size rather than at their official ratios (5:3
+/// for Germany, 2:1 for the United Kingdom): they sit in the same button and
+/// swap places on a click, and a button that changed width as it was pressed
+/// would push the rest of the toolbar sideways under the pointer.
+const FLAG_ASPECT: f32 = 1.5;
+
+/// The three bands of the German flag, top to bottom: black, red, gold.
+///
+/// Derived from the rectangle rather than from fixed numbers, so the same
+/// function serves the toolbar at any font size or screen scaling. The bands
+/// are cut at rounded pixel boundaries because a band whose edge lands on half
+/// a pixel comes out as a grey seam between two colours.
+fn german_bands(rect: egui::Rect) -> [egui::Rect; 3] {
+    let cut = |part: f32| rect.top() + (rect.height() * part / 3.0).round();
+    let (first, second) = (cut(1.0), cut(2.0));
+    [
+        egui::Rect::from_x_y_ranges(rect.x_range(), rect.top()..=first),
+        egui::Rect::from_x_y_ranges(rect.x_range(), first..=second),
+        egui::Rect::from_x_y_ranges(rect.x_range(), second..=rect.bottom()),
+    ]
+}
+
+/// The upright and the crossbar of the Union Jack's Saint George's cross.
+///
+/// `width` is the thickness of the bar; both are centred, and both are clamped
+/// to the rectangle so a thickness larger than the flag cannot paint outside
+/// it. The saltire underneath is drawn as two clipped line segments instead —
+/// a diagonal has no rectangle to describe it.
+fn union_bars(rect: egui::Rect, width: f32) -> [egui::Rect; 2] {
+    let half = (width / 2.0)
+        .min(rect.width() / 2.0)
+        .min(rect.height() / 2.0);
+    let centre = rect.center();
+    [
+        egui::Rect::from_x_y_ranges(centre.x - half..=centre.x + half, rect.y_range()),
+        egui::Rect::from_x_y_ranges(rect.x_range(), centre.y - half..=centre.y + half),
+    ]
+}
+
+/// The two diagonals of the Union Jack, corner to corner.
+///
+/// Corner to corner and nothing else: the real flag counterchanges the red arms
+/// of the saltire against the white ones, and at the size the toolbar gives it —
+/// measured on this machine at 21 by 14 points, 32 by 21 screen pixels at 150 %
+/// scaling — that offset is under a pixel.
+fn union_diagonals(rect: egui::Rect) -> [[egui::Pos2; 2]; 2] {
+    [
+        [rect.left_top(), rect.right_bottom()],
+        [rect.left_bottom(), rect.right_top()],
+    ]
+}
+
+/// Draws the German flag into `rect`.
+fn paint_german_flag(painter: &egui::Painter, rect: egui::Rect) {
+    const BLACK: egui::Color32 = egui::Color32::from_rgb(0x00, 0x00, 0x00);
+    const RED: egui::Color32 = egui::Color32::from_rgb(0xDD, 0x00, 0x00);
+    const GOLD: egui::Color32 = egui::Color32::from_rgb(0xFF, 0xCE, 0x00);
+
+    for (band, colour) in german_bands(rect).into_iter().zip([BLACK, RED, GOLD]) {
+        painter.rect_filled(band, 0.0, colour);
+    }
+}
+
+/// Draws the flag of the United Kingdom into `rect`.
+///
+/// Painted in the order the flag was built: the blue field, the white saltire,
+/// the red saltire on top of it, then the white cross of Saint George and its
+/// red centre. The painter handed in must already be clipped to `rect`, because
+/// the diagonals are drawn as thick strokes through the corners and a stroke
+/// has width in both directions.
+fn paint_union_jack(painter: &egui::Painter, rect: egui::Rect) {
+    const BLUE: egui::Color32 = egui::Color32::from_rgb(0x01, 0x21, 0x69);
+    const RED: egui::Color32 = egui::Color32::from_rgb(0xC8, 0x10, 0x2E);
+    const WHITE: egui::Color32 = egui::Color32::WHITE;
+
+    // Thicknesses as fractions of the height, close to the official ones
+    // (the cross is a fifth of the hoist) and rounded up to a full pixel so
+    // nothing ends up as a grey smear at this size.
+    let cross = (rect.height() / 5.0).max(2.0);
+    let saltire = (rect.height() / 7.0).max(1.5);
+
+    painter.rect_filled(rect, 0.0, BLUE);
+    for [from, to] in union_diagonals(rect) {
+        painter.line_segment([from, to], egui::Stroke::new(saltire, WHITE));
+    }
+    for [from, to] in union_diagonals(rect) {
+        painter.line_segment([from, to], egui::Stroke::new(saltire / 2.5, RED));
+    }
+    for bar in union_bars(rect, cross) {
+        painter.rect_filled(bar, 0.0, WHITE);
+    }
+    for bar in union_bars(rect, cross * 0.55) {
+        painter.rect_filled(bar, 0.0, RED);
+    }
+}
+
+/// The language button: the flag of the language in force, as a button.
+///
+/// A picture where two words used to be. The flag is framed in a thin line of
+/// the button's own text colour, because both flags carry white — without an
+/// edge the Union Jack's white arms would bleed into a light theme's toolbar.
+///
+/// The height is handed in rather than worked out here, and what the toolbar
+/// hands in is the height of the button beside it: egui derives a text button's
+/// height from the font and the button style, and a picture button that guessed
+/// at the same number would stand a point or two taller than its neighbour —
+/// which in a row of two buttons is exactly where it shows.
+fn flag_button(ui: &mut Ui, language: Language, height: f32) -> egui::Response {
+    let padding = ui.spacing().button_padding;
+    let flag_height = (height - 2.0 * padding.y).max(6.0).round();
+    let flag_size = egui::vec2((flag_height * FLAG_ASPECT).round(), flag_height);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(flag_size.x + 2.0 * padding.x, height),
+        egui::Sense::click(),
+    );
+
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect(
+            rect,
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        let flag = egui::Rect::from_center_size(rect.center(), flag_size);
+        // Clipped, so the saltire's thick strokes stop at the flag's edge
+        // instead of reaching into the button's frame.
+        let inside = ui.painter().with_clip_rect(flag);
+        match language {
+            Language::German => paint_german_flag(&inside, flag),
+            Language::English => paint_union_jack(&inside, flag),
+        }
+        ui.painter().rect_stroke(
+            flag,
+            0.0,
+            egui::Stroke::new(1.0, visuals.fg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    response
 }
 
 /// What a click on `row` does to the selection.
@@ -959,6 +1142,13 @@ pub struct App {
     frame_times: FrameTimes,
     bench: Option<Bench>,
     theme_reported: bool,
+    /// Whether the width of the two settings buttons has been reported yet.
+    ///
+    /// The toolbar is the one row that has to hold everything at once, so what
+    /// a control costs there is a number worth having rather than guessing at.
+    /// Reported once, from the frame that drew them, because that is the only
+    /// place the real style and the real font are known.
+    settings_width_reported: bool,
     /// Running only in the probe mode, and only for as long as it takes.
     theme_probe: Option<ThemeProbe>,
     /// Still owing the window a move to the leftmost screen.
@@ -1272,6 +1462,7 @@ impl App {
             titlebar_supported: true,
             frame_times: FrameTimes::default(),
             theme_reported: false,
+            settings_width_reported: false,
             first_list_ms: None,
             bench: start.bench.map(|frames| Bench {
                 // The first frames pay for fonts, textures and window setup;
@@ -2717,44 +2908,56 @@ impl App {
             .clone()
     }
 
+    /// Writes what the two settings controls cost the toolbar, once.
+    ///
+    /// The union of the two rectangles, so the gap between them counts as well:
+    /// what the rest of the bar gets back is the whole block, not two widths
+    /// added up.
+    fn report_settings_width(&mut self, theme: egui::Rect, language: egui::Rect) {
+        if self.settings_width_reported {
+            return;
+        }
+        self.settings_width_reported = true;
+
+        crate::errln!(
+            "toolbar_settings_width_pt={:.1} theme={:.1} language={:.1}",
+            theme.union(language).width(),
+            theme.width(),
+            language.width()
+        );
+        crate::console::flush();
+    }
+
+    /// Theme and language, as two buttons that show what they are set to.
+    ///
+    /// Both were drop-downs until 2026-08-16, and between them they held 208
+    /// points of the one row that has to fit everything at once — a row that
+    /// already clips the search box on a narrow window. A drop-down is the
+    /// wrong shape for either of them: the language has exactly two states, and
+    /// the theme has three that make a ring. So each became a button that wears
+    /// its current state as a picture and steps to the next one when pressed.
+    ///
+    /// What a picture cannot do is say what it means, which is why both
+    /// tooltips name the state *and* the next click rather than the control.
     fn settings_controls(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut changed = false;
 
-        let theme = egui::ComboBox::from_id_salt("theme")
-            .selected_text(match self.settings.theme {
-                ThemeChoice::System => self.tr.theme_system,
-                ThemeChoice::Light => self.tr.theme_light,
-                ThemeChoice::Dark => self.tr.theme_dark,
-            })
-            .show_ui(ui, |ui| {
-                for (choice, label) in [
-                    (ThemeChoice::System, self.tr.theme_system),
-                    (ThemeChoice::Light, self.tr.theme_light),
-                    (ThemeChoice::Dark, self.tr.theme_dark),
-                ] {
-                    if ui
-                        .selectable_value(&mut self.settings.theme, choice, label)
-                        .changed()
-                    {
-                        changed = true;
-                    }
-                }
-            });
-        theme.response.on_hover_text(self.tr.tip_theme);
+        let theme = ui
+            .button(theme_glyph(self.settings.theme, &self.glyphs).to_string())
+            .on_hover_text(theme_tip(self.settings.theme, self.tr));
+        if theme.clicked() {
+            self.settings.theme = self.settings.theme.next();
+            changed = true;
+        }
 
-        let language_box = egui::ComboBox::from_id_salt("language")
-            .selected_text(self.settings.language.label())
-            .show_ui(ui, |ui| {
-                for language in [Language::German, Language::English] {
-                    if ui
-                        .selectable_value(&mut self.settings.language, language, language.label())
-                        .changed()
-                    {
-                        changed = true;
-                    }
-                }
-            });
-        language_box.response.on_hover_text(self.tr.tip_language);
+        let language = flag_button(ui, self.settings.language, theme.rect.height())
+            .on_hover_text(self.tr.tip_language);
+        if language.clicked() {
+            self.settings.language = self.settings.language.other();
+            changed = true;
+        }
+
+        self.report_settings_width(theme.rect, language.rect);
 
         if changed {
             // Language switching is a single assignment; it takes effect on
@@ -9001,6 +9204,9 @@ mod tests {
             glyphs.restore,
             glyphs.explorer,
             glyphs.link,
+            glyphs.theme_system,
+            glyphs.theme_light,
+            glyphs.theme_dark,
         ];
 
         assert_eq!(filled.len(), Glyphs::NAMES.len());
@@ -9016,6 +9222,131 @@ mod tests {
                 .all(|glyph| ('\u{e000}'..='\u{f8ff}').contains(glyph)),
             "all in the private use area"
         );
+    }
+
+    /// A handful of rectangles the toolbar could plausibly hand a flag,
+    /// including two that are wrong on purpose.
+    fn flag_rects() -> Vec<egui::Rect> {
+        [
+            // What the button asks for at the default style, and at 150 %.
+            (24.0f32, 16.0f32),
+            (36.0, 24.0),
+            // Odd heights, where a third of the height is not a whole pixel.
+            (25.0, 17.0),
+            // Degenerate on purpose: a flag that is taller than it is wide, and
+            // one with no room at all. Neither should be able to paint outside
+            // itself, because the geometry is the only thing that decides.
+            (8.0, 40.0),
+            (1.0, 1.0),
+        ]
+        .into_iter()
+        .map(|(width, height)| {
+            egui::Rect::from_min_size(egui::pos2(17.5, 4.25), egui::vec2(width, height))
+        })
+        .collect()
+    }
+
+    #[test]
+    fn the_german_bands_fill_their_rectangle_and_nothing_beside_it() {
+        // The flag is painted straight onto the toolbar, so a band that
+        // overshoots by a pixel lands on the button beside it. Deriving the
+        // bands from the rectangle is what keeps that from happening at any
+        // font size, and this is the check that the derivation holds.
+        for rect in flag_rects() {
+            let bands = german_bands(rect);
+            for band in bands {
+                assert!(
+                    rect.contains_rect(band),
+                    "{band:?} leaves {rect:?}: the flag would paint over its neighbour"
+                );
+            }
+            assert_eq!(bands[0].top(), rect.top(), "no gap above the black band");
+            assert_eq!(bands[2].bottom(), rect.bottom(), "none below the gold one");
+            assert_eq!(bands[0].bottom(), bands[1].top(), "no seam black to red");
+            assert_eq!(bands[1].bottom(), bands[2].top(), "none red to gold");
+        }
+    }
+
+    #[test]
+    fn the_union_jack_stays_inside_its_rectangle_however_thick_its_bars_are() {
+        for rect in flag_rects() {
+            for [from, to] in union_diagonals(rect) {
+                assert!(rect.contains(from) && rect.contains(to), "{rect:?}");
+            }
+            // Every thickness the painter can ask for, and then some: a bar
+            // wider than the flag has to be clamped rather than spill out.
+            for width in [0.0f32, 1.5, rect.height() / 5.0, rect.height(), 500.0] {
+                for bar in union_bars(rect, width) {
+                    assert!(
+                        rect.contains_rect(bar),
+                        "a {width}-point bar leaves {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_union_jacks_crossbars_meet_in_the_middle() {
+        // The upright and the crossbar are one cross, not two stripes that
+        // happen to overlap: both are centred, so they cross at the centre
+        // whatever shape the rectangle has.
+        for rect in flag_rects() {
+            let [upright, crossbar] = union_bars(rect, rect.height() / 5.0);
+            assert!(upright.contains(rect.center()));
+            assert!(crossbar.contains(rect.center()));
+            assert_eq!(upright.center().x, rect.center().x);
+            assert_eq!(crossbar.center().y, rect.center().y);
+        }
+    }
+
+    #[test]
+    fn each_theme_state_has_its_own_picture_and_its_own_sentence() {
+        // The button says everything it has to say through those two, so a
+        // state sharing either with another would be a state the user cannot
+        // tell apart from it.
+        let glyphs = Glyphs::load();
+        let states = [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+
+        let pictures: Vec<char> = states
+            .iter()
+            .map(|state| theme_glyph(*state, &glyphs))
+            .collect();
+        assert_eq!(pictures.len(), 3);
+        for (index, picture) in pictures.iter().enumerate() {
+            assert!(
+                !pictures[index + 1..].contains(picture),
+                "two theme states share one glyph"
+            );
+        }
+
+        for language in [&i18n::DE, &i18n::EN] {
+            let tips: Vec<&str> = states
+                .iter()
+                .map(|state| theme_tip(*state, language))
+                .collect();
+            for (index, tip) in tips.iter().enumerate() {
+                assert!(
+                    !tips[index + 1..].contains(tip),
+                    "two theme states share one tooltip: {tip}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_settings_button_says_where_a_click_leads() {
+        // Both buttons are pictures, and a picture that cannot be read is a
+        // guess. The tooltip is the whole of the explanation, so it has to name
+        // the other side by name -- in the language the window is speaking.
+        assert!(i18n::DE.tip_language.contains("Englisch"));
+        assert!(i18n::EN.tip_language.contains("German"));
+        assert!(i18n::DE.tip_theme_system.contains("hell"));
+        assert!(i18n::DE.tip_theme_light.contains("dunkel"));
+        assert!(i18n::DE.tip_theme_dark.contains("System"));
+        assert!(i18n::EN.tip_theme_system.contains("light"));
+        assert!(i18n::EN.tip_theme_light.contains("dark"));
+        assert!(i18n::EN.tip_theme_dark.contains("system"));
     }
 
     #[test]

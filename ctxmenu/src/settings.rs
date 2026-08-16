@@ -25,6 +25,18 @@ impl Language {
         }
     }
 
+    /// The language a click on the flag button switches to.
+    ///
+    /// Two languages are a switch, not a list: a drop-down that offers exactly
+    /// one alternative spends a whole control and two clicks on a decision
+    /// with one outcome.
+    pub fn other(self) -> Language {
+        match self {
+            Language::German => Language::English,
+            Language::English => Language::German,
+        }
+    }
+
     /// Lets the start language be named on the command line.
     ///
     /// Both words for both languages, the way [`crate::app::Tab`] takes its
@@ -61,6 +73,24 @@ pub enum ThemeChoice {
     System,
     Light,
     Dark,
+}
+
+impl ThemeChoice {
+    /// Where a click on the theme button lands next.
+    ///
+    /// Three states on one button, so the order has to be the one a user can
+    /// hold in their head: the ring is closed, and three clicks from anywhere
+    /// come back to where they started. `System` stays in the ring rather than
+    /// being dropped for a plain light/dark switch — it is the default, it is
+    /// what follows Windows when the machine turns dark in the evening, and
+    /// a control that cannot return to the default takes something away.
+    pub fn next(self) -> ThemeChoice {
+        match self {
+            ThemeChoice::System => ThemeChoice::Light,
+            ThemeChoice::Light => ThemeChoice::Dark,
+            ThemeChoice::Dark => ThemeChoice::System,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -179,6 +209,42 @@ mod tests {
         // screenshot in the wrong one.
         assert_eq!(Language::from_slug("klingonisch"), None);
         assert_eq!(Language::from_slug(""), None);
+    }
+
+    #[test]
+    fn the_flag_button_swaps_the_language_and_swaps_it_back() {
+        // The button shows the language in force and hands out the other one,
+        // so two clicks have to be a round trip. Anything else would strand
+        // whoever pressed it once by accident.
+        assert_eq!(Language::German.other(), Language::English);
+        assert_eq!(Language::English.other(), Language::German);
+        for language in [Language::German, Language::English] {
+            assert_eq!(language.other().other(), language, "two clicks, back home");
+        }
+    }
+
+    #[test]
+    fn the_theme_button_walks_all_three_states_and_closes_the_ring() {
+        // System first, because it is the default: the state a user is most
+        // likely to want back must be reachable, and it is what the drop-down
+        // this button replaced offered as its first entry.
+        assert_eq!(ThemeChoice::System.next(), ThemeChoice::Light);
+        assert_eq!(ThemeChoice::Light.next(), ThemeChoice::Dark);
+        assert_eq!(ThemeChoice::Dark.next(), ThemeChoice::System);
+
+        for start in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+            assert_eq!(
+                start.next().next().next(),
+                start,
+                "three clicks from {start:?} must come back to it"
+            );
+            // Every state is reachable from every other one, which is what
+            // makes one button a fair replacement for a list of three.
+            let seen = [start, start.next(), start.next().next()];
+            assert!(seen.contains(&ThemeChoice::System));
+            assert!(seen.contains(&ThemeChoice::Light));
+            assert!(seen.contains(&ThemeChoice::Dark));
+        }
     }
 
     #[test]
