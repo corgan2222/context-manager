@@ -843,7 +843,9 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
         report.succeeded(),
         report.failed()
     );
-    if let Some(directory) = &report.backup_directory {
+    // Both of them when the plan was split: the elevated half brings its own,
+    // and that is the one the machine-wide changes hang on.
+    for directory in &report.backup_directories {
         crate::outln!("Backup: {directory}");
     }
     for result in &report.results {
@@ -1162,7 +1164,9 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
 pub fn run_backup_all() -> Result<()> {
     let paths = crate::registry::paths::full_backup_paths();
     let started = std::time::Instant::now();
-    let token = backup::export("gesamt", &paths)?;
+    // The wide kind, like the button in the window: a branch this Windows
+    // never had is noted, not removed again on a later restore.
+    let token = backup::export_wide("gesamt", &paths)?;
     let elapsed = started.elapsed();
 
     let directory = token.directory();
@@ -1236,8 +1240,24 @@ pub fn run_backups() -> Result<()> {
 
 pub fn run_restore(directory: &str) -> Result<()> {
     let path = std::path::Path::new(directory);
-    let restored = backup::restore(path)?;
-    crate::outln!("{restored} Datei(en) \x1ezurückgespielt\x1frestored from\x1d {directory}");
+    let report = backup::restore(path)?;
+    crate::outln!(
+        "{} Datei(en) \x1ezurückgespielt\x1frestored from\x1d {directory}",
+        report.restored
+    );
+    if report.removed > 0 {
+        crate::outln!(
+            "{} \x1eSchlüssel entfernt, die es bei der Sicherung noch nicht ga\
+             b\x1fkeys removed that did not exist when the backup was taken\x1d",
+            report.removed
+        );
+    }
+    // Every one of them, and after the count rather than instead of it: a
+    // restore that stopped at the first gap used to leave the keys behind it
+    // unreachable by this route.
+    for failure in &report.failures {
+        crate::outln!("  FEHL {failure}");
+    }
     crate::outln!(
         "\x1eHinweis: reg import fügt hinzu und überschreibt, entfernt aber nichts.\
          \x1fnote: reg import adds and overwrites, it never removes.\x1d"

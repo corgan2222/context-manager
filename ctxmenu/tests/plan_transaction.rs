@@ -73,7 +73,7 @@ impl Drop for Fixture {
 /// there, all of which the backup tab of the application then offered as if
 /// they were the user's.
 fn discard(report: &ctxmenu::registry::plan::Report) {
-    if let Some(directory) = &report.backup_directory {
+    for directory in &report.backup_directories {
         let _ = std::fs::remove_dir_all(directory);
     }
 }
@@ -96,7 +96,7 @@ fn failures(report: &ctxmenu::registry::plan::Report) -> String {
         ));
     }
 
-    if let Some(directory) = &report.backup_directory {
+    for directory in &report.backup_directories {
         match backup::read_manifest(std::path::Path::new(directory)) {
             Ok(manifest) => {
                 text.push_str(&format!(
@@ -133,7 +133,11 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
         failures(&report)
     );
     assert_eq!(report.failed(), 0);
-    assert!(report.backup_directory.is_some(), "a backup is mandatory");
+    assert_eq!(
+        report.backup_directories.len(),
+        1,
+        "one backup, and it is mandatory"
+    );
     discard(&report);
 
     for target in &fixture.targets {
@@ -159,8 +163,10 @@ fn one_backup_covers_the_whole_group_rather_than_one_per_entry() {
     let fixture = Fixture::create("backup", &["x", "y", "z"]);
 
     let report = execute(&fixture.plan(Action::ShiftOnly)).expect("plan runs");
-    let directory = report.backup_directory.expect("backup directory");
-    let path = std::path::Path::new(&directory);
+    let [directory] = &report.backup_directories[..] else {
+        panic!("one plan, one backup, got {:?}", report.backup_directories);
+    };
+    let path = std::path::Path::new(directory);
 
     // Checked on the backup itself rather than by counting directories in
     // LOCALAPPDATA: that count is global state which every other test running
@@ -239,8 +245,12 @@ fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
         assert!(!write::exists(target), "{} survived", target.full_path());
     }
 
-    let directory = report.backup_directory.expect("backup directory");
-    backup::restore(std::path::Path::new(&directory)).expect("reg import");
+    let [directory] = &report.backup_directories[..] else {
+        panic!("one plan, one backup, got {:?}", report.backup_directories);
+    };
+    let restored = backup::restore(std::path::Path::new(directory)).expect("reg import");
+    assert_eq!(restored.restored, 3, "{:?}", restored.failures);
+    assert_eq!(restored.removed, 0, "nothing was missing when it was taken");
 
     for target in &fixture.targets {
         assert!(
@@ -250,7 +260,7 @@ fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
         );
     }
 
-    let _ = std::fs::remove_dir_all(&directory);
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]

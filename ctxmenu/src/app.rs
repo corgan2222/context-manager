@@ -2142,7 +2142,11 @@ impl App {
             .name("full-backup".into())
             .spawn(move || {
                 let paths = crate::registry::paths::full_backup_paths();
-                let result = backup::export("gesamt", &paths)
+                // The wide kind: these are containers such as
+                // `Directory\shell`, not the keys of one action, so a branch
+                // this Windows never had stays noted rather than removed on a
+                // restore months later.
+                let result = backup::export_wide("gesamt", &paths)
                     .map(|token| token.directory().display().to_string())
                     .map_err(|error| format!("{error:#}"));
                 let _ = tx.send(result);
@@ -2200,35 +2204,16 @@ impl App {
                 // The unelevated half first: if the user then declines the
                 // UAC prompt, they still keep the changes that never needed
                 // it, and the report says exactly which those were.
-                let mut outcome =
-                    crate::registry::plan::execute(&direct).map_err(|e| format!("{e:#}"));
+                let first = crate::registry::plan::execute(&direct).map_err(|e| format!("{e:#}"));
 
-                if !elevated.is_empty() {
-                    match elevation::run_elevated(&elevated) {
-                        Ok(second) => {
-                            if let Ok(first) = &mut outcome {
-                                first.merge(second);
-                            }
-                        }
-                        Err(error) => {
-                            let message = format!("{error:#}");
-                            outcome = match outcome {
-                                // Partial success plus a declined prompt is
-                                // not a failure of the whole operation.
-                                Ok(mut report) => {
-                                    report.results.push(crate::registry::plan::OperationResult {
-                                        display_name: tr.elevated_part.to_string(),
-                                        registry_path: String::new(),
-                                        action: Action::Hide,
-                                        error: Some(message),
-                                    });
-                                    Ok(report)
-                                }
-                                Err(_) => Err(message),
-                            };
-                        }
-                    }
-                }
+                let outcome = match elevated.is_empty() {
+                    true => first,
+                    false => combine_halves(
+                        first,
+                        elevation::run_elevated(&elevated).map_err(|e| format!("{e:#}")),
+                        tr,
+                    ),
+                };
 
                 let _ = tx.send(outcome);
                 ctx.request_repaint();
@@ -2278,6 +2263,101 @@ impl App {
             .and_then(|s| s.by_category.get(category))
             .map_or(0, |v| v.len())
     }
+}
+
+/// Folds the two halves of a split action into one report.
+///
+/// A free function rather than four branches inside the worker thread, because
+/// the case that was wrong here cannot be reached by hand without a UAC prompt
+/// and two hives: the direct half failing — only a failed backup export does
+/// that — while the elevated half succeeds. Its report used to be dropped on
+/// the floor, although its changes were already on the machine and its backup
+/// already on disk, and the user saw nothing but the other half's error.
+///
+/// Whichever half ran is reported, and the half that did not becomes a failed
+/// row with its message. Only when both fail is there nothing to show, and
+/// then both reasons are said rather than one.
+fn combine_halves(
+    direct: Result<Report, String>,
+    elevated: Result<Report, String>,
+    tr: &'static Strings,
+) -> Result<Report, String> {
+    let row = |name: &str, message: String| crate::registry::plan::OperationResult {
+        display_name: name.to_string(),
+        registry_path: String::new(),
+        action: Action::Hide,
+        error: Some(message),
+    };
+
+    match (direct, elevated) {
+        (Ok(mut first), Ok(second)) => {
+            first.merge(second);
+            Ok(first)
+        }
+        // Partial success plus a declined prompt is not a failure of the whole
+        // operation.
+        (Ok(mut first), Err(message)) => {
+            first.results.push(row(tr.elevated_part, message));
+            Ok(first)
+        }
+        (Err(message), Ok(mut second)) => {
+            second.results.insert(0, row(tr.direct_part, message));
+            Ok(second)
+        }
+        (Err(first), Err(second)) => Err(format!("{first}\n{second}")),
+    }
+}
+
+/// Puts several backups back and folds their reports into one.
+///
+/// A split action leaves two directories, and "undo what I just did" means
+/// both of them or neither. A directory that cannot be read at all becomes a
+/// line in the report rather than an early return: the other one may still be
+/// there, and it may well be the half that needed elevation — the one the user
+/// is least able to redo by hand.
+fn restore_all(directories: &[String]) -> backup::RestoreReport {
+    let mut report = backup::RestoreReport::default();
+    for directory in directories {
+        match backup::restore(std::path::Path::new(directory)) {
+            Ok(one) => report.merge(one),
+            Err(error) => report.failures.push(format!("{directory}: {error:#}")),
+        }
+    }
+    report
+}
+
+/// What a restore has to say for itself, in the language on screen.
+///
+/// The counts first, then one line per key that did not come back. A restore
+/// used to stop at its first gap and raise that one file name, so "38 of 43"
+/// and "43 of 43" looked exactly alike from the outside.
+fn restore_message(
+    report: &backup::RestoreReport,
+    tr: &'static Strings,
+    language: Language,
+) -> String {
+    let mut message = match report.failed() {
+        0 => tr.fmt_restored.replace("{}", &report.restored.to_string()),
+        failed => tr
+            .fmt_restored_partly
+            .replacen("{}", &report.restored.to_string(), 1)
+            .replacen("{}", &failed.to_string(), 1),
+    };
+
+    if report.removed > 0 {
+        message.push('\n');
+        message.push_str(
+            &tr.fmt_restore_removed
+                .replace("{}", &report.removed.to_string()),
+        );
+    }
+
+    for failure in &report.failures {
+        message.push('\n');
+        message.push_str(&crate::bilingual::pick(failure, language));
+    }
+
+    message
 }
 
 impl eframe::App for App {
@@ -4064,7 +4144,7 @@ impl App {
 
             Dialog::Done(report) => {
                 let mut close = false;
-                let mut restore: Option<String> = None;
+                let mut restore: Option<Vec<String>> = None;
                 let mut restart = false;
 
                 egui::Window::new(self.tr.detail_title)
@@ -4079,9 +4159,15 @@ impl App {
                                 .replacen("{}", &report.failed().to_string(), 1),
                         );
 
-                        if let Some(directory) = &report.backup_directory {
+                        if !report.backup_directories.is_empty() {
                             ui.add_space(4.0);
-                            ui.label(self.tr.fmt_backup_created.replace("{}", directory));
+                            // Every one of them: a split action backs up twice,
+                            // and the second directory is the one the
+                            // machine-wide changes hang on. Naming only the
+                            // first left those with no way back.
+                            for directory in &report.backup_directories {
+                                ui.label(self.tr.fmt_backup_created.replace("{}", directory));
+                            }
                             // Offered right here, because a partial failure is
                             // exactly when someone wants to go back and is
                             // least inclined to go hunting for the path.
@@ -4090,7 +4176,7 @@ impl App {
                                 .on_hover_text(self.tr.tip_restore)
                                 .clicked()
                             {
-                                restore = Some(directory.clone());
+                                restore = Some(report.backup_directories.clone());
                             }
                         }
 
@@ -4137,14 +4223,23 @@ impl App {
                         });
                     });
 
-                if let Some(directory) = restore {
-                    match backup::restore(std::path::Path::new(&directory)) {
-                        Ok(_) => {
+                if let Some(directories) = restore {
+                    let restored = restore_all(&directories);
+                    match restored.failed() {
+                        0 => {
                             self.start_scan(ctx);
                             close = true;
                         }
-                        Err(error) => {
-                            self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                        // Said out loud rather than swallowed: what did not
+                        // come back is exactly what the user now has to sort
+                        // out by hand, and the counts say how much of it there
+                        // is.
+                        _ => {
+                            self.dialog = Some(Dialog::Error(restore_message(
+                                &restored,
+                                self.tr,
+                                self.settings.language,
+                            )));
                             keep = false;
                         }
                     }
@@ -6330,11 +6425,17 @@ impl App {
         // closure above is reading.
         if let Some(path) = restore {
             match backup::restore(&path) {
-                Ok(count) => {
+                Ok(report) => {
                     elevation::notify_shell();
-                    self.dialog = Some(Dialog::Note(
-                        self.tr.fmt_restored.replace("{}", &count.to_string()),
-                    ));
+                    let message = restore_message(&report, self.tr, self.settings.language);
+                    // A restore that only half worked is not a success with a
+                    // smaller number in it. It used to stop at the first gap
+                    // and raise that one file name; now every key is attempted
+                    // and the ones that failed are named.
+                    self.dialog = Some(match report.failed() {
+                        0 => Dialog::Note(message),
+                        _ => Dialog::Error(message),
+                    });
                     self.filter_dirty = true;
                 }
                 Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
@@ -8143,6 +8244,80 @@ mod tests {
 
     fn rows(indices: &[usize]) -> rustc_hash::FxHashSet<Row> {
         indices.iter().map(|index| Row::top(*index)).collect()
+    }
+
+    /// A report as the two halves of a split action hand one back.
+    fn half(directory: &str, name: &str) -> Report {
+        Report {
+            backup_directories: vec![directory.into()],
+            results: vec![crate::registry::plan::OperationResult {
+                display_name: name.into(),
+                registry_path: format!("HKCU\\{name}"),
+                action: Action::Hide,
+                error: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn a_successful_elevated_half_survives_a_failed_direct_half() {
+        // The bug: the elevated half's report was dropped whenever the direct
+        // half returned `Err` -- and by then its changes were on the machine
+        // and its backup was on disk. The user saw an error window naming the
+        // other half and nothing else.
+        let combined = combine_halves(
+            Err("Backup-Export fehlgeschlagen".into()),
+            Ok(half("erhoeht", "hklm_eintrag")),
+            &i18n::DE,
+        )
+        .expect("half of it worked, and that half must be reported");
+
+        assert_eq!(
+            combined.backup_directories,
+            vec!["erhoeht".to_string()],
+            "the restore button needs the directory the changes hang on"
+        );
+        assert_eq!(combined.succeeded(), 1);
+        assert_eq!(combined.failed(), 1, "the direct half is a failed row");
+        assert_eq!(combined.results[0].display_name, i18n::DE.direct_part);
+        assert_eq!(
+            combined.results[0].error.as_deref(),
+            Some("Backup-Export fehlgeschlagen")
+        );
+    }
+
+    #[test]
+    fn both_backup_directories_reach_the_result_dialog() {
+        let combined = combine_halves(
+            Ok(half("direkt", "hkcu_eintrag")),
+            Ok(half("erhoeht", "hklm_eintrag")),
+            &i18n::DE,
+        )
+        .expect("both halves worked");
+
+        assert_eq!(combined.backup_directories, vec!["direkt", "erhoeht"]);
+        assert_eq!(combined.succeeded(), 2);
+    }
+
+    #[test]
+    fn a_declined_prompt_still_keeps_what_was_already_done() {
+        // The direction that was always handled, kept under test now that the
+        // four cases live in one place.
+        let combined = combine_halves(
+            Ok(half("direkt", "hkcu_eintrag")),
+            Err("Vom Benutzer abgebrochen".into()),
+            &i18n::DE,
+        )
+        .expect("a declined prompt is not a failure of the whole action");
+
+        assert_eq!(combined.succeeded(), 1);
+        assert_eq!(combined.results[1].display_name, i18n::DE.elevated_part);
+
+        // Only when neither half ran is there nothing to show -- and then both
+        // reasons are given, not one.
+        let nothing = combine_halves(Err("erstens".into()), Err("zweitens".into()), &i18n::DE)
+            .expect_err("nothing happened at all");
+        assert!(nothing.contains("erstens") && nothing.contains("zweitens"));
     }
 
     fn tool(summary: &str, tag: Option<&str>) -> spec::Tool {

@@ -53,6 +53,8 @@ pub struct BackupToken {
     directory: PathBuf,
     /// Lowercased full paths that were successfully exported.
     covered: FxHashSet<String>,
+    /// Lowercased full paths Windows answered "no such key" for.
+    absent: FxHashSet<String>,
 }
 
 impl BackupToken {
@@ -68,6 +70,21 @@ impl BackupToken {
     /// `HKLM\SOFTWARE\Microsoft\…` and deliberately cannot be a `RegTarget`.
     pub fn covers_path(&self, path: impl AsRef<str>) -> bool {
         self.covered.contains(&path.as_ref().to_lowercase())
+    }
+
+    /// Did the backup find nothing at this path?
+    ///
+    /// A key that does not exist yet has a state too — the empty one — and it
+    /// is as restorable as any other, by removing the key again. Windows ships
+    /// no blocked list, so on a machine where nothing was ever blocked this is
+    /// the *only* answer a backup of it can give.
+    ///
+    /// Deliberately not folded into [`covers_path`]: a delete needs the
+    /// contents of a key on disk, and "there was nothing here" is not that.
+    /// The gate in [`super::write::delete_tree`] therefore stays exactly as
+    /// strict as it was.
+    pub fn records_absence(&self, path: impl AsRef<str>) -> bool {
+        self.absent.contains(&path.as_ref().to_lowercase())
     }
 }
 
@@ -94,6 +111,16 @@ pub struct BackupManifest {
     /// this field still load.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// The keys in `missing` that provably did not exist, and whose empty
+    /// state a restore therefore puts back by *removing* them again.
+    ///
+    /// Kept apart from `missing` because the two are undone differently: an
+    /// export that merely failed must be left alone, or a restore would delete
+    /// the very key it could not save. Only [`export`] fills this in, never
+    /// [`export_wide`] — see [`Absence`]. `serde(default)` so backups written
+    /// before this field still load, and load as "remove nothing".
+    #[serde(default)]
+    pub absent: Vec<String>,
 }
 
 /// `%LOCALAPPDATA%\ctxmenu\backups`
@@ -103,9 +130,49 @@ pub fn root_dir() -> Result<PathBuf> {
     Ok(base.join("ctxmenu").join("backups"))
 }
 
+/// What a restore should do about a key that did not exist when the backup
+/// was taken.
+///
+/// The distinction is about breadth, not about honesty: both kinds of backup
+/// write the absence down. Only the narrow kind acts on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Absence {
+    /// Put the empty state back by removing the key again.
+    ///
+    /// For a backup whose paths are exactly what is about to be changed. Those
+    /// keys are this program's own doing — `Block` creates the blocked list,
+    /// the editor creates an entry key — so undoing the change means taking
+    /// them away again.
+    Restorable,
+    /// Write it down and leave it alone.
+    ///
+    /// For the whole-machine backup, whose paths are containers such as
+    /// `Directory\shell`. Every program on the machine installs into those,
+    /// and a restore months later must not carry off what somebody else put
+    /// there in the meantime. The tooltip on the restore button promises
+    /// exactly that, and it stays true.
+    Noted,
+}
+
+impl Absence {
+    /// What the manifest says about a key that was not there.
+    ///
+    /// Two wordings rather than one, because the note is the only place a
+    /// reader of the backup can tell whether restoring it will remove the key.
+    fn reason(self) -> &'static str {
+        match self {
+            Absence::Restorable => {
+                "\x1eSchlüssel existiert nicht, der leere Ausgangszustand ist gesicher\
+                 t\x1fkey does not exist, the empty starting state was recorded\x1d"
+            }
+            Absence::Noted => "\x1eSchlüssel existiert nicht\x1fkey does not exist\x1d",
+        }
+    }
+}
+
 /// Exports every target into a new timestamped directory.
 ///
-/// Fails only if nothing at all could be exported — a partially existing
+/// Fails only if nothing at all could be captured — a partially existing
 /// selection still yields a usable backup, with the gaps written into the
 /// manifest.
 pub fn export_targets(action: &str, targets: &[RegTarget]) -> Result<BackupToken> {
@@ -119,7 +186,23 @@ pub fn export_targets(action: &str, targets: &[RegTarget]) -> Result<BackupToken
 /// outside the classes tree. The safety property is unchanged: the token
 /// still records exactly which paths were captured, and the write functions
 /// still refuse anything the token does not name.
+///
+/// For the paths of one action, so a key that is not there yet is recorded as
+/// an empty starting state and removed again on restore ([`Absence`]).
 pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
+    export_with(action, paths, Absence::Restorable)
+}
+
+/// The same, for a net cast over whole containers rather than over one action.
+///
+/// Used by the "back up everything" button. What is missing here is missing
+/// because this Windows never had it, not because this program is about to
+/// create it, so the absence is written down and nothing acts on it.
+pub fn export_wide(action: &str, paths: &[String]) -> Result<BackupToken> {
+    export_with(action, paths, Absence::Noted)
+}
+
+fn export_with(action: &str, paths: &[String], absence: Absence) -> Result<BackupToken> {
     if paths.is_empty() {
         bail!("\x1eBackup ohne Ziele\x1fbackup with no targets\x1d");
     }
@@ -133,14 +216,23 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
     let mut entries = Vec::new();
     let mut missing = Vec::new();
     let mut notes = Vec::new();
+    let mut empty = Vec::new();
     let mut covered = FxHashSet::default();
+    let mut recorded_absent = FxHashSet::default();
+
+    // Cut on the way in, not on display: a manifest outlives the run that
+    // wrote it and is meant to be readable on its own, with an editor or with
+    // `Get-Content`. Markers in a stored file are invisible control characters
+    // in somebody else's tool.
+    let readable =
+        |reason: &str| crate::bilingual::pick(reason, crate::bilingual::language()).into_owned();
 
     for (index, full) in paths.iter().enumerate() {
         let file_name = format!("{:02}_{}.reg", index + 1, sanitize(full));
         let file = directory.join(&file_name);
 
         match export_one(full, &file)? {
-            None => {
+            Captured::Exported => {
                 covered.insert(full.to_lowercase());
                 entries.push(BackupEntry {
                     registry_path: full.clone(),
@@ -148,14 +240,17 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
                     file: file_name,
                 });
             }
-            Some(reason) => {
+            Captured::Absent => {
+                recorded_absent.insert(full.to_lowercase());
                 missing.push(full.clone());
-                // Cut here, not on display: a manifest outlives the run that
-                // wrote it and is meant to be readable on its own, with an
-                // editor or with `Get-Content`. Markers in a stored file are
-                // invisible control characters in somebody else's tool.
-                let reason = crate::bilingual::pick(&reason, crate::bilingual::language());
-                notes.push(format!("{full}: {reason}"));
+                notes.push(format!("{full}: {}", readable(absence.reason())));
+                if absence == Absence::Restorable {
+                    empty.push(full.clone());
+                }
+            }
+            Captured::Failed(reason) => {
+                missing.push(full.clone());
+                notes.push(format!("{full}: {}", readable(&reason)));
             }
         }
     }
@@ -166,6 +261,7 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
         entries,
         missing,
         notes,
+        absent: empty,
     };
     std::fs::write(
         directory.join("manifest.json"),
@@ -173,16 +269,20 @@ pub fn export(action: &str, paths: &[String]) -> Result<BackupToken> {
     )
     .context("manifest.json")?;
 
-    if manifest.entries.is_empty() {
+    if manifest.entries.is_empty() && recorded_absent.is_empty() {
         // Leave no empty directory behind: a backup listing full of husks
         // makes the one backup that matters harder to find.
         let _ = std::fs::remove_dir_all(&directory);
         bail!(
-            "\x1eKein einziger Schlüssel konnte exportiert werden\x1fnothing could be exported\x1d"
+            "\x1eKein einziger Schlüssel konnte gesichert werden\x1fnothing could be backed up\x1d"
         );
     }
 
-    Ok(BackupToken { directory, covered })
+    Ok(BackupToken {
+        directory,
+        covered,
+        absent: recorded_absent,
+    })
 }
 
 /// Claims a directory nobody else holds.
@@ -240,11 +340,9 @@ fn unique_directory(root: &Path, base: &str) -> Result<PathBuf> {
 ///
 /// A key that genuinely does not exist is answered before the first attempt,
 /// so the retries do not delay the case they cannot help.
-fn export_one(full: &str, file: &Path) -> Result<Option<String>> {
-    if key_is_absent(full) {
-        return Ok(Some(
-            "\x1eSchlüssel existiert nicht\x1fkey does not exist\x1d".to_string(),
-        ));
+fn export_one(full: &str, file: &Path) -> Result<Captured> {
+    if presence(full) == Presence::Absent {
+        return Ok(Captured::Absent);
     }
 
     let mut last = None;
@@ -260,7 +358,7 @@ fn export_one(full: &str, file: &Path) -> Result<Option<String>> {
                         attempt + 1
                     );
                 }
-                return Ok(None);
+                return Ok(Captured::Exported);
             }
             Some(reason) => {
                 last = Some(reason);
@@ -272,28 +370,68 @@ fn export_one(full: &str, file: &Path) -> Result<Option<String>> {
         }
     }
 
-    Ok(last)
+    // A key that vanished between the check above and here ends up as a
+    // failure rather than as an absence, which is the safe direction: a
+    // failure is left alone on restore, an absence is removed.
+    Ok(Captured::Failed(last.expect("at least one attempt")))
 }
 
-/// Whether this path is *known* to name no key.
+/// What a backup found at one path.
 ///
-/// Deliberately conservative: an unknown hive prefix answers `false`, so the
-/// export is attempted rather than skipped. Getting this wrong in that
-/// direction costs one `reg.exe` call; the other direction would quietly drop
-/// a key from a backup.
-fn key_is_absent(full: &str) -> bool {
+/// Three answers where there used to be two. "Nothing is here" and "I could
+/// not read what is here" used to be the same `Some(reason)`, and treating
+/// them alike is what kept a `Block` from ever running on a machine where
+/// nothing had been blocked before: Windows ships no blocked list, so the
+/// backup of it could only ever fail.
+enum Captured {
+    /// The contents are in the file the caller named.
+    Exported,
+    /// Windows says there is no such key.
+    Absent,
+    /// `reg.exe` refused, with this reason.
+    Failed(String),
+}
+
+/// What is known about a path before `reg.exe` is asked.
+#[derive(Debug, PartialEq, Eq)]
+enum Presence {
+    Present,
+    /// Windows answered "no such key" — the one answer that lets a backup
+    /// record an empty starting state.
+    Absent,
+    /// An unknown hive prefix, or any other complaint. Deliberately not
+    /// "absent": a key whose ACL refuses this process is very much there, and
+    /// calling it missing would make a restore delete it.
+    Unknown,
+}
+
+/// `HRESULT` forms of the two Win32 codes that mean "it is not there".
+///
+/// `windows_registry` hands every `RegOpenKeyEx` failure back as
+/// `HRESULT_FROM_WIN32`, so these are the raw codes 2 and 3 with the facility
+/// bits in front.
+const HRESULT_FILE_NOT_FOUND: u32 = 0x8007_0002;
+const HRESULT_PATH_NOT_FOUND: u32 = 0x8007_0003;
+
+fn presence(full: &str) -> Presence {
     let Some((hive, rest)) = full.split_once('\\') else {
-        return false;
+        return Presence::Unknown;
     };
 
     let root = match hive.to_ascii_uppercase().as_str() {
         "HKCU" | "HKEY_CURRENT_USER" => windows_registry::CURRENT_USER,
         "HKLM" | "HKEY_LOCAL_MACHINE" => windows_registry::LOCAL_MACHINE,
         "HKCR" | "HKEY_CLASSES_ROOT" => windows_registry::CLASSES_ROOT,
-        _ => return false,
+        _ => return Presence::Unknown,
     };
 
-    root.open(rest).is_err()
+    match root.open(rest) {
+        Ok(_) => Presence::Present,
+        Err(error) => match error.code().0 as u32 {
+            HRESULT_FILE_NOT_FOUND | HRESULT_PATH_NOT_FOUND => Presence::Absent,
+            _ => Presence::Unknown,
+        },
+    }
 }
 
 /// Creates the backup root, tolerating a deletion Windows has not finished.
@@ -340,30 +478,101 @@ pub fn read_manifest(directory: &Path) -> Result<BackupManifest> {
     Ok(serde_json::from_str(&raw)?)
 }
 
-/// Re-imports every `.reg` file of a backup.
+/// What a restore managed to do.
+///
+/// A tally and a list of reasons rather than the first error. A backup of 43
+/// keys whose 21st file was missing used to stop right there: twenty keys
+/// back, twenty-two not, one file name in the caller's hand, and a second
+/// click that failed in the same place. Every entry is attempted now.
+#[derive(Debug, Clone, Default)]
+pub struct RestoreReport {
+    /// Keys brought back from a `.reg` file.
+    pub restored: usize,
+    /// Keys removed again because the backup records them as not existing.
+    pub removed: usize,
+    /// One line per key that did not come back, with the reason. Bilingual,
+    /// so the caller cuts it for whoever is reading.
+    pub failures: Vec<String>,
+}
+
+impl RestoreReport {
+    pub fn failed(&self) -> usize {
+        self.failures.len()
+    }
+
+    /// Folds in a second backup's outcome — a split action leaves two.
+    pub fn merge(&mut self, other: RestoreReport) {
+        self.restored += other.restored;
+        self.removed += other.removed;
+        self.failures.extend(other.failures);
+    }
+}
+
+/// Puts a backup back, key by key, and reports what became of each one.
 ///
 /// Known limitation, and the reason this is enough for the delete case but not
 /// in general: `reg import` adds and overwrites, it never removes. Restoring
 /// after a delete recreates exactly the removed keys; restoring over a key
-/// that has since gained values leaves those extra values in place.
-pub fn restore(directory: &Path) -> Result<usize> {
+/// that has since gained values leaves those extra values in place. The one
+/// exception is `manifest.absent` — keys the backup found empty, which are put
+/// back by removing them again.
+pub fn restore(directory: &Path) -> Result<RestoreReport> {
     let manifest = read_manifest(directory)?;
-    let mut restored = 0;
 
-    for entry in &manifest.entries {
+    // Every file is looked for before the first import, not during. A gap
+    // found halfway through is a half-restored registry; found here it has
+    // cost nothing, and it is reported alongside everything that did work.
+    let (present, gaps): (Vec<&BackupEntry>, Vec<&BackupEntry>) = manifest
+        .entries
+        .iter()
+        .partition(|entry| directory.join(&entry.file).exists());
+
+    // A backup that names keys and has not one of their files left is broken
+    // rather than partly usable, and saying so here costs nothing: not a
+    // single import has run yet.
+    if !manifest.entries.is_empty() && present.is_empty() {
+        bail!(
+            "\x1eBackup unvollständig, keine einzige Datei ist noch d\
+             a\x1fbackup incomplete, not one file is left\x1d: {directory:?}"
+        );
+    }
+
+    let mut report = RestoreReport::default();
+
+    for entry in gaps {
+        report.failures.push(format!(
+            "{}: \x1eDatei fehlt\x1ffile missing\x1d {}",
+            entry.registry_path, entry.file
+        ));
+    }
+
+    for entry in present {
         let file = directory.join(&entry.file);
-        if !file.exists() {
-            bail!("\x1eBackup unvollständig\x1fbackup incomplete\x1d: {file:?}");
-        }
         match run_reg(&["import", &file.to_string_lossy()])? {
-            None => restored += 1,
-            Some(reason) => {
-                bail!("\x1ereg import fehlgeschlagen\x1ffailed for\x1d {file:?}: {reason}")
-            }
+            None => report.restored += 1,
+            Some(reason) => report.failures.push(format!(
+                "{}: \x1ereg import fehlgeschlagen\x1freg import failed\x1d: {reason}",
+                entry.registry_path
+            )),
         }
     }
 
-    Ok(restored)
+    for path in &manifest.absent {
+        // Still not there: the state the backup recorded is the state the
+        // machine is in, and a restore that changes nothing is still a
+        // restore. Only a key that appeared since has to go.
+        if presence(path) == Presence::Absent {
+            continue;
+        }
+        match run_reg(&["delete", path, "/f"])? {
+            None => report.removed += 1,
+            Some(reason) => report.failures.push(format!(
+                "{path}: \x1eEntfernen fehlgeschlagen\x1fcould not remove\x1d: {reason}"
+            )),
+        }
+    }
+
+    Ok(report)
 }
 
 /// Lists backup directories, newest first.
@@ -532,21 +741,161 @@ mod tests {
 
     #[test]
     fn an_absent_key_is_recognised_without_asking_reg_exe() {
-        assert!(!key_is_absent(r"HKCU\SOFTWARE"), "this one exists");
-        assert!(key_is_absent(
-            r"HKCU\SOFTWARE\ctxmenu_gibt_es_ganz_sicher_nicht"
-        ));
+        assert_eq!(presence(r"HKCU\SOFTWARE"), Presence::Present);
+        assert_eq!(
+            presence(r"HKCU\SOFTWARE\ctxmenu_gibt_es_ganz_sicher_nicht"),
+            Presence::Absent
+        );
 
-        // Unknown prefixes must fall through to the export attempt: answering
-        // "absent" for something merely unrecognised would drop a key from a
-        // backup without anyone noticing.
-        assert!(!key_is_absent("HKXX\\irgendwas"));
-        assert!(!key_is_absent("ohne_backslash"));
+        // Unknown prefixes must fall through to the export attempt. Answering
+        // "absent" for something merely unrecognised used to drop a key from a
+        // backup; now it would also make a restore delete that key, so the
+        // conservative answer matters twice over.
+        assert_eq!(presence(r"HKXX\irgendwas"), Presence::Unknown);
+        assert_eq!(presence("ohne_backslash"), Presence::Unknown);
     }
 
     #[test]
     fn exporting_nothing_is_an_error_rather_than_an_empty_backup() {
         assert!(export("noop", &[]).is_err());
+    }
+
+    /// A throwaway key of this tool's own, in the hive that needs no
+    /// elevation. Same shape as the fixtures in the integration tests, and for
+    /// the same reason: nothing a user would recognise may be touched.
+    fn selftest_path(name: &str) -> (String, String) {
+        let relative = format!(r"SOFTWARE\Classes\ctxmenu_selftest_backup_{name}");
+        let full = format!(r"HKCU\{relative}");
+        let _ = windows_registry::CURRENT_USER.remove_tree(&relative);
+        (relative, full)
+    }
+
+    #[test]
+    fn a_key_that_does_not_exist_yet_is_a_state_and_not_a_failed_export() {
+        // The bug: `export` counted a missing key as a failure, so a backup of
+        // nothing but missing keys produced no token at all -- and the blocked
+        // list, which Windows does not ship, is exactly such a key.
+        let (_, full) = selftest_path("absent");
+
+        let token = export("selftest_absent", std::slice::from_ref(&full))
+            .expect("an empty starting state is a state");
+
+        assert!(!token.covers_path(&full), "there was nothing to export");
+        assert!(token.records_absence(&full));
+
+        let manifest = read_manifest(token.directory()).expect("manifest.json");
+        assert!(manifest.entries.is_empty());
+        assert_eq!(manifest.absent, vec![full.clone()]);
+        assert_eq!(manifest.missing, vec![full]);
+
+        // Nothing came back and nothing had to go: the machine is already in
+        // the state the backup recorded.
+        let report = restore(token.directory()).expect("a recorded absence is restorable");
+        assert_eq!((report.restored, report.removed), (0, 0));
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+
+        let _ = std::fs::remove_dir_all(token.directory());
+    }
+
+    #[test]
+    fn restoring_an_empty_starting_state_removes_the_key_that_appeared_since() {
+        // The other half of the promise. `reg import` never removes, so a
+        // `Block` on a machine with no blocked list could be applied but not
+        // undone -- the restore button would report success and change
+        // nothing.
+        let (relative, full) = selftest_path("removal");
+
+        let token = export("selftest_removal", std::slice::from_ref(&full))
+            .expect("an empty starting state is a state");
+
+        windows_registry::CURRENT_USER
+            .create(&relative)
+            .expect("HKCU is writable")
+            .set_string("Blocked", "")
+            .expect("a value to find afterwards");
+
+        let report = restore(token.directory()).expect("restore runs");
+        assert_eq!(report.removed, 1, "{:?}", report.failures);
+        assert_eq!(
+            presence(&full),
+            Presence::Absent,
+            "the key must be gone again"
+        );
+
+        let _ = std::fs::remove_dir_all(token.directory());
+        let _ = windows_registry::CURRENT_USER.remove_tree(&relative);
+    }
+
+    #[test]
+    fn a_wide_backup_writes_an_absence_down_without_acting_on_it() {
+        // `Directory\shell` in a hive that has none is missing because this
+        // Windows never had it, not because this program is about to create
+        // it. Removing such a container on restore would carry off whatever
+        // every other program installed into it since.
+        let (relative, full) = selftest_path("wide");
+
+        let token = export_wide("selftest_wide", std::slice::from_ref(&full))
+            .expect("a wide backup records the gap");
+        assert!(token.records_absence(&full), "the token still knows");
+
+        let manifest = read_manifest(token.directory()).expect("manifest.json");
+        assert!(manifest.absent.is_empty(), "nothing to remove on restore");
+        assert_eq!(manifest.missing, vec![full.clone()]);
+
+        windows_registry::CURRENT_USER
+            .create(&relative)
+            .expect("HKCU is writable");
+        let report = restore(token.directory()).expect("restore runs");
+        assert_eq!((report.restored, report.removed), (0, 0));
+        assert_eq!(presence(&full), Presence::Present, "left alone");
+
+        let _ = std::fs::remove_dir_all(token.directory());
+        let _ = windows_registry::CURRENT_USER.remove_tree(&relative);
+    }
+
+    #[test]
+    fn a_restore_reports_every_gap_instead_of_stopping_at_the_first() {
+        // Measured shape of the bug: the gap was found in the middle of the
+        // loop, so the keys before it were back, the keys after it were not,
+        // and the next attempt stopped in the same place. Here the gap is
+        // first, which under the old code meant nothing was restored at all.
+        let (relative, full) = selftest_path("gap");
+        let second_relative = format!(r"{relative}\zweiter");
+        let second_full = format!(r"{full}\zweiter");
+
+        windows_registry::CURRENT_USER
+            .create(&second_relative)
+            .expect("HKCU is writable")
+            .set_string("", "Selbsttest")
+            .expect("default value");
+
+        let token =
+            export("selftest_gap", &[full.clone(), second_full.clone()]).expect("both keys exist");
+        let manifest = read_manifest(token.directory()).expect("manifest.json");
+        assert_eq!(manifest.entries.len(), 2);
+
+        // Somebody removed a file from the backup directory -- a scanner, a
+        // cleaner, a half-finished copy.
+        std::fs::remove_file(token.directory().join(&manifest.entries[0].file))
+            .expect("the first .reg file");
+        let _ = windows_registry::CURRENT_USER.remove_tree(&relative);
+
+        let report = restore(token.directory()).expect("a gap must not stop the rest");
+        assert_eq!(report.restored, 1, "the intact half must come back");
+        assert_eq!(report.failed(), 1);
+        assert!(
+            report.failures[0].contains(&manifest.entries[0].registry_path),
+            "the report must name the key, got {:?}",
+            report.failures
+        );
+        assert_eq!(
+            presence(&second_full),
+            Presence::Present,
+            "the key behind the gap must be back"
+        );
+
+        let _ = std::fs::remove_dir_all(token.directory());
+        let _ = windows_registry::CURRENT_USER.remove_tree(&relative);
     }
 
     #[test]

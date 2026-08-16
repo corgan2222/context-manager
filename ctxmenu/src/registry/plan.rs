@@ -188,8 +188,43 @@ impl OperationResult {
 /// The outcome of a whole plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
-    pub backup_directory: Option<String>,
+    /// Every backup this action produced, in the order they were taken.
+    ///
+    /// A list, not one directory. A split plan makes two backups — one here,
+    /// one in the elevated child — and keeping only the first threw away the
+    /// one the HKLM changes hang on: the changes that need elevation, and the
+    /// only ones that apply to every account on the machine.
+    ///
+    /// Reads both shapes so a result file written by an older build still
+    /// loads; see [`one_or_many`].
+    #[serde(default, alias = "backup_directory", deserialize_with = "one_or_many")]
+    pub backup_directories: Vec<String>,
     pub results: Vec<OperationResult>,
+}
+
+/// Accepts the single value older result files carry as well as the list this
+/// version writes.
+///
+/// A report is written by one process and read by another: the elevated child
+/// leaves a result file for the parent, and a job left over from an older
+/// build must not turn into a load error where the only symptom would be "the
+/// elevated run left no report".
+fn one_or_many<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(OneOrMany::One(single)) => vec![single],
+        Some(OneOrMany::Many(list)) => list,
+    })
 }
 
 impl Report {
@@ -202,8 +237,10 @@ impl Report {
     }
 
     pub fn merge(&mut self, other: Report) {
-        if self.backup_directory.is_none() {
-            self.backup_directory = other.backup_directory;
+        for directory in other.backup_directories {
+            if !self.backup_directories.contains(&directory) {
+                self.backup_directories.push(directory);
+            }
         }
         self.results.extend(other.results);
     }
@@ -217,7 +254,7 @@ impl Report {
 pub fn execute(plan: &Plan) -> Result<Report> {
     if plan.is_empty() {
         return Ok(Report {
-            backup_directory: None,
+            backup_directories: Vec::new(),
             results: Vec::new(),
         });
     }
@@ -237,7 +274,7 @@ pub fn execute(plan: &Plan) -> Result<Report> {
     }
 
     Ok(Report {
-        backup_directory: Some(token.directory().display().to_string()),
+        backup_directories: vec![token.directory().display().to_string()],
         results,
     })
 }
@@ -318,7 +355,7 @@ mod tests {
     fn an_empty_plan_does_nothing_rather_than_making_a_backup() {
         let report = execute(&Plan::new("leer", Vec::new())).expect("empty plan is fine");
         assert!(report.results.is_empty());
-        assert_eq!(report.backup_directory, None);
+        assert!(report.backup_directories.is_empty());
     }
 
     #[test]
@@ -380,42 +417,78 @@ mod tests {
         assert_eq!(back.operations, plan.operations);
     }
 
+    fn result(name: &str, error: Option<&str>) -> OperationResult {
+        OperationResult {
+            display_name: name.into(),
+            registry_path: format!("HKCU\\{name}"),
+            action: Action::Hide,
+            error: error.map(str::to_string),
+        }
+    }
+
     #[test]
     fn a_report_counts_successes_and_failures() {
-        let mut report = Report {
-            backup_directory: Some("dir".into()),
-            results: vec![
-                OperationResult {
-                    display_name: "a".into(),
-                    registry_path: "p".into(),
-                    action: Action::Hide,
-                    error: None,
-                },
-                OperationResult {
-                    display_name: "b".into(),
-                    registry_path: "q".into(),
-                    action: Action::Delete,
-                    error: Some("kaputt".into()),
-                },
-            ],
+        let report = Report {
+            backup_directories: vec!["dir".into()],
+            results: vec![result("a", None), result("b", Some("kaputt"))],
         };
         assert_eq!(report.succeeded(), 1);
         assert_eq!(report.failed(), 1);
+    }
+
+    #[test]
+    fn merging_keeps_both_backup_directories() {
+        // It used to keep only the first, and the elevated half is the one
+        // that comes second: the HKLM changes were made, their backup was on
+        // disk, and the restore button offered the other directory -- the one
+        // that could not bring them back.
+        let mut report = Report {
+            backup_directories: vec!["direkt".into()],
+            results: vec![result("a", None)],
+        };
 
         report.merge(Report {
-            backup_directory: Some("anderes".into()),
-            results: vec![OperationResult {
-                display_name: "c".into(),
-                registry_path: "r".into(),
-                action: Action::Hide,
-                error: None,
-            }],
+            backup_directories: vec!["erhoeht".into()],
+            results: vec![result("b", None)],
         });
-        assert_eq!(report.results.len(), 3);
-        assert_eq!(
-            report.backup_directory.as_deref(),
-            Some("dir"),
-            "the first backup directory is the one that matters"
-        );
+
+        assert_eq!(report.results.len(), 2);
+        assert_eq!(report.backup_directories, vec!["direkt", "erhoeht"]);
+
+        // Merging the same directory twice must not offer it twice.
+        report.merge(Report {
+            backup_directories: vec!["erhoeht".into()],
+            results: Vec::new(),
+        });
+        assert_eq!(report.backup_directories.len(), 2);
+    }
+
+    #[test]
+    fn a_result_file_from_an_older_build_still_loads() {
+        // The child writes this file and the parent reads it. A single value
+        // is what every build before the list wrote, and a leftover job must
+        // not come back as "the elevated run left no report".
+        let single: Report = serde_json::from_str(r#"{"backup_directory":"C:\\alt","results":[]}"#)
+            .expect("the old shape must still load");
+        assert_eq!(single.backup_directories, vec!["C:\\alt".to_string()]);
+
+        // Both ways of saying "there was no backup".
+        for raw in [
+            r#"{"backup_directory":null,"results":[]}"#,
+            r#"{"results":[]}"#,
+        ] {
+            let report: Report = serde_json::from_str(raw).expect("still loads");
+            assert!(report.backup_directories.is_empty(), "{raw}");
+        }
+
+        // And the shape this version writes, round trip.
+        let written = Report {
+            backup_directories: vec!["A".into(), "B".into()],
+            results: vec![result("a", None)],
+        };
+        let json = serde_json::to_string(&written).expect("serialisable");
+        let back: Report = serde_json::from_str(&json).expect("deserialisable");
+        assert_eq!(back.backup_directories, written.backup_directories);
+        assert_eq!(back.results.len(), 1);
     }
 }
