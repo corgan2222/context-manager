@@ -480,6 +480,7 @@ mod tests {
         Tool {
             path: path.to_string(),
             base: "/".into(),
+            progress: String::new(),
             tag: tag.map(str::to_string),
             summary: summary.to_string(),
             method: "POST".into(),

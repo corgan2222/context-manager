@@ -316,7 +316,7 @@ pub fn favourite_for(
         icon: None,
         note: Some(tool.path.clone()),
         tool: Tool::Web(WebTool {
-            mode: WebMode::Upload(Upload {
+            mode: WebMode::Upload(Box::new(Upload {
                 endpoint: endpoint_for(service, tool),
                 method: tool.method.clone(),
                 body: UploadBody::Multipart {
@@ -324,6 +324,15 @@ pub fn favourite_for(
                 },
                 headers: service.auth_header.clone().into_iter().collect(),
                 fields,
+                // Only when the description says where to ask. Whether *this*
+                // endpoint queues cannot be read out of a description — the
+                // test service answers `200` and `202` to the same request by
+                // turns — so every tool of a service that offers the path
+                // carries it, and it is used on the clicks where it is needed.
+                poll: match tool.progress.trim().is_empty() {
+                    true => None,
+                    false => Some(crate::favourites::Poll::at(tool.progress.trim())),
+                },
                 result: ResultAction::Save {
                     source: match service.result_path.trim().is_empty() {
                         true => ResultSource::Body,
@@ -333,7 +342,7 @@ pub fn favourite_for(
                     },
                     suffix: suffix.to_string(),
                 },
-            }),
+            })),
             allow_insecure: service.allow_insecure,
             // The service was confirmed as a whole when it was added; asking
             // again per tool would be the same question a hundred times.
@@ -426,6 +435,7 @@ mod tests {
             path: "/api/v1/tools/image/compress".into(),
             // What the test service writes: paths hang under the origin itself.
             base: "/".into(),
+            progress: "/api/v1/jobs/{jobId}/progress".into(),
             method: "POST".into(),
             tag: Some("Tools".into()),
             summary: "Compress Image".into(),
@@ -474,6 +484,36 @@ mod tests {
                 },
                 suffix: ".klein".into()
             }
+        );
+
+        // The way back to a queued job, taken from the description. Whether
+        // this endpoint queues cannot be known here -- the same request is
+        // answered `200` and `202` by turns -- so it is written down for every
+        // tool and used on the clicks that need it.
+        let poll = upload.poll.as_ref().expect("the description offers one");
+        assert_eq!(poll.path, "/api/v1/jobs/{jobId}/progress");
+        assert_eq!(poll.job, "jobId");
+        assert!(
+            poll.result.is_empty(),
+            "the result stands where the ordinary answer names it"
+        );
+    }
+
+    #[test]
+    fn a_service_that_says_nothing_about_jobs_gets_no_way_back() {
+        let mut tool = tool();
+        tool.progress = String::new();
+
+        let favourite = favourite_for(&service(), &tool, None, ".neu");
+        let crate::favourites::Tool::Web(web) = &favourite.tool else {
+            unreachable!()
+        };
+        let crate::favourites::WebMode::Upload(upload) = &web.mode else {
+            unreachable!()
+        };
+        assert_eq!(
+            upload.poll, None,
+            "nothing to guess at, so nothing is written down"
         );
     }
 

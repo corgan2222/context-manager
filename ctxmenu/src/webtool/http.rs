@@ -299,6 +299,95 @@ pub fn fetch(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
     body_of(&request)
 }
 
+/// Reads an answer that arrives a piece at a time, for as long as it is worth
+/// waiting.
+///
+/// The progress of a queued job is a `text/event-stream`: the service keeps the
+/// connection open and writes a frame whenever there is news, then closes it
+/// after the last one. Measured on SnapOtter (2026-08-16): a job that was
+/// already finished answers in 62 ms with a single frame and closes at once,
+/// which is why the ordinary [`fetch`] would have done — for a job that is
+/// still running it would not, because reading to the end means waiting for a
+/// stream that has no reason to end soon.
+///
+/// So: the same request, but the reading stops when `patience` is up, and what
+/// arrived before that is the answer. A stream cut off mid-frame costs nothing
+/// — the caller keeps the last frame that is whole and asks again.
+pub fn stream(url: &str, headers: &[Header], patience: std::time::Duration) -> Result<Vec<u8>> {
+    let target = Url::parse(url)?;
+
+    let session = Handle::session()?;
+    // The receive timeout is what caps a silent stream: WinHTTP restarts it on
+    // every piece that arrives, so a service that sends nothing at all is given
+    // exactly this long and no longer.
+    let receive = patience.as_millis().clamp(1_000, 120_000) as i32;
+    unsafe { WinHttpSetTimeouts(session.0, 10_000, 15_000, 30_000, receive) }
+        .context("WinHttpSetTimeouts")?;
+    let connect = Handle::connect(&session, &target)?;
+    let request = Handle::request(&connect, &target, "GET")?;
+
+    if !headers.is_empty() {
+        let mut lines = String::new();
+        for header in headers {
+            lines.push_str(&format!("{}: {}\r\n", header.name, header.value));
+        }
+        let wide: Vec<u16> = lines.encode_utf16().collect();
+        unsafe { WinHttpAddRequestHeaders(request.0, &wide, WINHTTP_ADDREQ_FLAG_ADD) }
+            .context("WinHttpAddRequestHeaders")?;
+    }
+
+    unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }.context("WinHttpSendRequest")?;
+    unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }
+        .context("WinHttpReceiveResponse")?;
+
+    let status = status_of(&request)?;
+    if (300..400).contains(&status) {
+        let headers = headers_of(&request)?;
+        return Err(redirected(status, header_of(&headers, "Location")));
+    }
+    if !(200..300).contains(&status) {
+        bail!(
+            "\x1eDie Nachfrage antwortete mit {status}\x1fasking after the job answered {status}\x1d"
+        );
+    }
+
+    let until = std::time::Instant::now() + patience;
+    let mut body = Vec::new();
+    let mut chunk = vec![0u8; 16 * 1024];
+
+    loop {
+        let mut read = 0u32;
+        let taken = unsafe {
+            WinHttpReadData(
+                request.0,
+                chunk.as_mut_ptr() as *mut c_void,
+                chunk.len() as u32,
+                &mut read,
+            )
+        };
+        if let Err(error) = taken {
+            // A stream that stops speaking after it has said something is the
+            // normal end of one, not a failure: what arrived is the answer.
+            if body.is_empty() {
+                return Err(anyhow::Error::from(error).context("WinHttpReadData"));
+            }
+            break;
+        }
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read as usize]);
+
+        // Frames of a few hundred bytes each: a megabyte of them is a service
+        // talking to itself, and the last whole one is all this needs anyway.
+        if body.len() > 1024 * 1024 || std::time::Instant::now() >= until {
+            break;
+        }
+    }
+
+    Ok(body)
+}
+
 /// Fetches a result the service pointed at.
 pub fn download(url: &str) -> Result<Vec<u8>> {
     let target = Url::parse(url)?;

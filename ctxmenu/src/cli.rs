@@ -1068,7 +1068,7 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                     args: program_args,
                 },
                 (None, Some(endpoint), _) => Tool::Web(WebTool {
-                    mode: WebMode::Upload(Upload {
+                    mode: WebMode::Upload(Box::new(Upload {
                         endpoint,
                         method: "POST".into(),
                         body: if raw {
@@ -1078,12 +1078,13 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                         },
                         headers,
                         fields: Vec::new(),
+                        poll: None,
                         result: match result.as_str() {
                             "save" => ResultAction::Save { source, suffix },
                             "open" => ResultAction::Open { source },
                             _ => ResultAction::Report,
                         },
-                    }),
+                    })),
                     allow_insecure: insecure,
                     confirmed: false,
                 }),
