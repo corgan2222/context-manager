@@ -61,8 +61,39 @@ pub fn load() -> Result<Vec<Service>> {
     serde_json::from_str(&text).with_context(|| format!("{}", path.display()))
 }
 
+/// Whether text already on disk still parses as a service list.
+///
+/// Pulled out of `save` so the corrupted-file guard has a test that never
+/// touches a real `%LOCALAPPDATA%\ctxmenu\services.json` — this only looks at
+/// bytes already in memory.
+fn readable(existing: &str) -> bool {
+    serde_json::from_str::<Vec<Service>>(existing).is_ok()
+}
+
+/// Writes the list, but refuses to write over a file that does not parse.
+///
+/// `favourites::add`/`update`/`remove`/`shift` never risk overwriting a
+/// damaged file: each loads its own list fresh from disk first and gives up
+/// if that read fails. This function is handed the caller's whole list
+/// instead of one change to make, so nothing else stands between a damaged
+/// file and this call quietly replacing it with whatever the caller happens
+/// to hold in memory — which, after a failed load kept an empty list rather
+/// than erroring out, could be far short of what the user built up before.
+/// So the same check is made here: a file that exists but no longer parses
+/// stops the write instead of losing whatever it held.
 pub fn save(services: &[Service]) -> Result<()> {
     let path = path()?;
+    if let Ok(existing) = std::fs::read_to_string(&path)
+        && !readable(&existing)
+    {
+        anyhow::bail!(
+            "\x1e{path} ist beschädigt und wird nicht überschrieben. Bitte die \
+             Datei prüfen oder aus einer Sicherung wiederherstellen.\x1f{path} is \
+             damaged and will not be overwritten. Please check the file or \
+             restore it from a backup.\x1d",
+            path = path.display()
+        );
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("{}", parent.display()))?;
     }
@@ -619,5 +650,21 @@ mod tests {
             sent,
             vec![("format", "png"), ("quality", "80"), ("strip", "true")]
         );
+    }
+
+    #[test]
+    fn readable_accepts_a_service_list_and_rejects_broken_json() {
+        assert!(readable("[]"));
+        assert!(readable(
+            r#"[{"id":"snapotter","name":"SnapOtter","spec_url":"http://x/","allow_insecure":false,"result_path":""}]"#
+        ));
+        // A crash mid-write is the case `save` has to catch: neither empty
+        // nor valid JSON, just whatever made it to disk before the write cut
+        // off.
+        assert!(!readable(""));
+        assert!(!readable("{ this is not json"));
+        // The right shape of JSON but the wrong type -- an object where the
+        // list belongs -- is just as unreadable as a service list.
+        assert!(!readable(r#"{"not":"a list"}"#));
     }
 }
