@@ -1,23 +1,25 @@
-# Mitmachen
+# Contributing
 
-Danke fürs Reinschauen. Das hier ist ein kleines Projekt mit festen Meinungen;
-die Regeln unten sind das, was es klein hält.
+*[Deutsche Fassung](CONTRIBUTING_DE.md)*
 
-## Die eine Regel
+Thanks for stopping by. This is a small project with strong opinions; the
+rules below are what keep it small.
 
-**Gemessen, nicht vermutet.**
+## The one rule
 
-Windows verhält sich an mehreren Stellen anders, als seine Dokumentation sagt.
-Dieses Programm behauptet deshalb nichts, was nicht an einem echten System
-nachgeprüft wurde — und wo eine Zahl fehlt, steht auch keine Behauptung. Eine
-Änderung, die auf „müsste eigentlich" beruht, ist keine.
+**Measured, not assumed.**
 
-Alles Weitere folgt daraus.
+Windows behaves differently from its own documentation in more than one
+place. This program therefore claims nothing that hasn't been verified on a
+real system, and where a number is missing, no claim is made either. A
+change based on "should work in theory" is not one.
 
-## Einrichten
+Everything else follows from that.
 
-Rust 1.95 oder neuer, `x86_64-pc-windows-msvc`, dazu die Visual-Studio-Build-Tools
-mit C++-Werkzeugkette. Dann:
+## Setup
+
+Rust 1.95 or newer, `x86_64-pc-windows-msvc`, plus the Visual Studio Build
+Tools with the C++ toolchain. Then:
 
 ```powershell
 cargo fmt --all
@@ -26,60 +28,63 @@ cargo test
 cargo build --release
 ```
 
-Alle vier müssen grün sein. `-D warnings` ist nicht verhandelbar.
+All four must be green. `-D warnings` is not negotiable.
 
-Das Ergebnis liegt unter `target\x86_64-pc-windows-msvc\release\ctxmenu.exe`,
-nicht unter `target\release\`: `.cargo\config.toml` nennt das Ziel ausdrücklich,
-damit die statisch gebundene C-Laufzeit für die Anwendung gilt und nicht auch
-für die Makro-Bibliotheken des Übersetzers.
+The result ends up at `target\x86_64-pc-windows-msvc\release\ctxmenu.exe`,
+not `target\release\`: `.cargo\config.toml` names the target explicitly, so
+the statically linked C runtime applies to the application and not also to
+the compiler's macro libraries.
 
-## Was in einen Pull Request gehört
+## What belongs in a pull request
 
-- **Ein Test je neuer reiner Funktion.** Testnamen sind ganze Sätze, die sagen,
-  was gilt: `fn a_range_whose_ends_are_the_wrong_way_round_is_no_range_at_all`.
-  Wer den Namen nicht ausformulieren kann, hat die Regel noch nicht verstanden.
-- **Kommentare, die das *Warum* erklären.** Was der Code tut, steht im Code.
-  Wertvoll ist, was ihn erklärt: welche Alternative verworfen wurde, welche
-  Messung dahintersteht, welche Windows-Eigenheit ihn erzwingt.
-- **Englisch im Code**, auch in Kommentaren und Bezeichnern. Oberflächentexte
-  laufen über `ctxmenu/src/i18n.rs` und gibt es zweimal, deutsch und englisch.
-- **Commit-Nachrichten in ganzen Sätzen**, die sagen, was die Änderung bewirkt
-  und warum. Kein `feat:`-Präfix.
+- **One test per new pure function.** Test names are complete sentences that
+  state what holds: `fn a_range_whose_ends_are_the_wrong_way_round_is_no_range_at_all`.
+  Anyone who can't spell out the name in words hasn't understood the rule
+  yet.
+- **Comments that explain the *why*.** What the code does is in the code.
+  What's valuable is what explains it: which alternative was rejected, which
+  measurement is behind it, which Windows quirk forces it.
+- **English in the code**, including comments and identifiers. Interface
+  text runs through `ctxmenu/src/i18n.rs` and exists twice, in German and
+  English.
+- **Commit messages in complete sentences** that say what the change does
+  and why. No `feat:` prefix.
 
-## Was Änderungen an der Registry angeht
+## About changes to the registry
 
-Der heikelste Teil, also die strengsten Regeln:
+The most delicate part, so the strictest rules apply:
 
-- **Nie löschen ohne Sicherung.** Das ist keine Bitte, sondern vom Typsystem
-  geprüft: `write::delete_tree` verlangt einen `BackupToken`, und den gibt es
-  nur als Rückgabewert eines geglückten `backup::export`.
-- **Ein Ziel ist ein `RegTarget`**, keine Zeichenkette. Was sich nicht als
-  einzelner Eintrag unterhalb einer Classes-Wurzel ausdrücken lässt, soll gar
-  nicht erst konstruierbar sein.
-- **Schreibversuche nach `HKLM` gehören in eine Wegwerf-VM**, nicht auf die
-  Entwicklungsmaschine. Ein `tools\`-Skript setzt eine auf.
+- **Never delete without a backup.** This isn't a request, it's checked by
+  the type system: `write::delete_tree` requires a `BackupToken`, and the
+  only way to get one is as the return value of a successful
+  `backup::export`.
+- **A target is a `RegTarget`**, not a string. Whatever can't be expressed
+  as a single entry beneath a Classes root shouldn't be constructible at
+  all.
+- **Write attempts against `HKLM` belong in a throwaway VM**, not on the
+  development machine. A script under `tools\` sets one up.
 
-## Was eher abgelehnt wird
+## What tends to get rejected
 
-- **Neue Abhängigkeiten.** Jede muss sich rechtfertigen; die Liste ist kurz und
-  soll es bleiben.
-- **Umbauten ohne Fehler dahinter.** Refactoring, das nichts repariert und
-  nichts ermöglicht, kostet Prüfzeit und bringt Risiko.
-- **Funktionen, die Windows nicht hergibt.** Die freie Sortierung von
-  Menüeinträgen zum Beispiel: nachgemessen, das System kennt nur `Position=Top`
-  und `Position=Bottom`. Was daran scheitert, steht in der README unter „Was es
-  bewusst nicht kann".
-- **Automatisch erzeugte Übersetzungen.** Beide Sprachen sind von Hand
-  geschrieben und sollen gleich gut lesbar sein.
+- **New dependencies.** Every one has to justify itself; the list is short
+  and should stay that way.
+- **Rewrites without a bug behind them.** Refactoring that fixes nothing and
+  enables nothing costs review time and adds risk.
+- **Features Windows doesn't offer.** Free reordering of menu entries, for
+  example: measured, and the system only knows `Position=Top` and
+  `Position=Bottom`. What fails because of that is listed in the README
+  under "What it deliberately can't do."
+- **Machine-generated translations.** Both languages are written by hand and
+  are meant to read equally well.
 
-## Fehler melden
+## Reporting bugs
 
-Was eine Meldung schnell bearbeitbar macht:
+What makes a report quick to act on:
 
-- Die Fassung aus dem Über-Fenster und den Windows-Build.
-- Den kürzesten Weg zum Auslösen.
-- Den betroffenen Registry-Pfad, wenn es um einen Eintrag geht.
-- Den Auszug aus `%LOCALAPPDATA%\ctxmenu\ctxmenu.log` — **vorher durchsehen**,
-  er nennt Pfade und Dateinamen von Ihrem Rechner.
+- The version from the About window and the Windows build.
+- The shortest path to trigger it.
+- The affected registry path, if it's about an entry.
+- The excerpt from `%LOCALAPPDATA%\ctxmenu\ctxmenu.log`: **review it first**,
+  it names paths and file names from your own machine.
 
-Eine Sicherheitslücke gehört **nicht** in ein Issue: siehe `SECURITY.md`.
+A security vulnerability does **not** belong in an issue: see `SECURITY.md`.

@@ -1,96 +1,96 @@
-# Sicherheitsrichtlinie
+# Security Policy
 
-`ctxmenu` ist ein Desktop-Programm. Es läuft als der angemeldete Benutzer auf
-einem Windows-PC, liest und schreibt die Registry-Schlüssel des Kontextmenüs und
-kann Dateien an Webdienste schicken, die der Benutzer selbst eingetragen hat. Es
-ist kein Dienst, hat keine Konten und lauscht auf keinem Anschluss.
+*[Deutsche Fassung](SECURITY_DE.md)*
 
-Drei Dinge machen es trotzdem sicherheitsrelevant, und darum steht der Rahmen
-hier ausdrücklich statt zum Erraten:
+`ctxmenu` is a desktop program. It runs as the logged-in user on a Windows PC,
+reads and writes the context menu's registry keys, and can send files to web
+services the user has entered themselves. It is not a service, has no
+accounts, and does not listen on any port.
 
-- Es **schreibt in die Registry**, teils nach `HKLM`, also für alle Konten.
-- Es fordert dafür **erhöhte Rechte** an und startet sich selbst neu.
-- Es **verschickt Dateien** an Adressen und speichert die Schlüssel dazu.
+Three things make it security-relevant anyway, which is why the scope is
+spelled out here rather than left to guessing:
 
-## Unterstützte Fassungen
+- It **writes to the registry**, some of it under `HKLM`, i.e. for all
+  accounts.
+- It **requests elevated privileges** for that and restarts itself.
+- It **sends files** to addresses and stores the keys for that.
 
-Nur die jeweils neueste Veröffentlichung.
+## Supported Versions
 
-| Fassung | Korrekturen |
+Only the latest release.
+
+| Version | Fixes |
 |---|---|
-| Neueste Veröffentlichung | Ja |
-| Alles ältere | Nein — erst aktualisieren |
+| Latest release | Yes |
+| Anything older | No, update first |
 
-Das Projekt hat einen Betreuer. Es gibt keinen Zweig, auf dem eine ältere
-Fassung weiter gepflegt wird, und eine Tabelle, die etwas anderes verspricht,
-wäre ein Versprechen, das niemand halten kann.
+The project has one maintainer. There is no branch on which an older version
+continues to be maintained, and a table that promised otherwise would be a
+promise no one could keep.
 
-## Eine Schwachstelle melden
+## Reporting a Vulnerability
 
-**Bitte nicht als öffentliches Issue.** Issues sind in dem Moment öffentlich, in
-dem sie angelegt werden, und jeder Leser ist jemand, der handeln kann, bevor es
-eine Korrektur gibt.
+**Please not as a public issue.** Issues are public the moment they are
+filed, and every reader is someone who can act on it before a fix exists.
 
-Zwei private Wege, beide sind recht:
+Two private channels, both are fine:
 
-- **Private Meldung über GitHub** — im Reiter *Security* dieses Repositoriums,
-  *Report a vulnerability*. Bevorzugt: Meldung, Diskussion und Korrektur bleiben
-  an einem Ort, und Sie sehen den Patch, bevor er öffentlich wird.
-- **E-Mail an `stefan@knaak.org`** mit `ctxmenu security` im Betreff. Auf der
-  Empfangsseite liegt nichts verschlüsselt; wenn ein Detail für Klartextpost zu
-  heikel ist, bitten Sie kurz um einen anderen Weg.
+- **Private report via GitHub**: in this repository's *Security* tab,
+  *Report a vulnerability*. Preferred: report, discussion, and fix stay in
+  one place, and you see the patch before it goes public.
+- **Email to `stefan@knaak.org`** with `ctxmenu security` in the subject.
+  Nothing is encrypted on the receiving end; if a detail is too sensitive
+  for plaintext mail, please ask briefly for a different channel.
 
-Was eine Meldung schnell bearbeitbar macht: die Fassung aus dem
-Über-Fenster, der Windows-Build, die Schritte zum Auslösen, und — falls
-vorhanden — der Auszug aus `%LOCALAPPDATA%\ctxmenu\ctxmenu.log`. **Sehen Sie
-das Protokoll vorher durch:** es nennt Registry-Pfade und Dateinamen von Ihrem
-Rechner.
+What makes a report quick to act on: the version from the About window, the
+Windows build, the steps to trigger it, and, if available, the excerpt from
+`%LOCALAPPDATA%\ctxmenu\ctxmenu.log`. **Review the log beforehand:** it names
+registry paths and file names from your machine.
 
-## Was als Schwachstelle zählt
+## What Counts as a Vulnerability
 
-Alles, was einer dieser Sätze beschreibt:
+Anything one of these sentences describes:
 
-- Ein Weg, über den das Programm **etwas anderes schreibt, als der Benutzer
-  bestätigt hat** — insbesondere außerhalb der Registry-Bereiche, die es
-  verwaltet, oder ohne die Sicherung, die es zusagt.
-- Ein Weg, über den die **erhöhten Rechte** für etwas anderes benutzt werden als
-  für den einen bestätigten Schritt; jede Möglichkeit, den erhöhten Vorgang von
-  außen zu beeinflussen.
-- Ein Weg, über den **eine Datei verschickt wird**, ohne dass der Benutzer dem
-  für dieses Werkzeug zugestimmt hat, oder an eine andere Adresse als die
-  eingetragene.
-- Ein Weg, über den ein **gespeicherter Schlüssel** an jemanden gelangt, der ihn
-  nicht ohnehin lesen dürfte.
-- Ein **bösartiges OpenAPI-Dokument** oder eine bösartige Antwort eines Dienstes,
-  die das Programm dazu bringt, außerhalb des Zielordners zu schreiben,
-  auszuführen, was es nicht soll, oder abzustürzen.
-- Eine **Sicherung, die nicht zurückspielt**, was sie zu enthalten behauptet.
+- A way for the program to **write something other than what the user
+  confirmed**, in particular outside the registry areas it manages, or
+  without the backup it promises.
+- A way for the **elevated privileges** to be used for something other than
+  the one confirmed step; any way to influence the elevated operation from
+  the outside.
+- A way for **a file to be sent** without the user having consented to that
+  for this tool, or to an address other than the one entered.
+- A way for **a stored key** to reach someone who should not otherwise be
+  able to read it.
+- A **malicious OpenAPI document** or a malicious response from a service
+  that makes the program write outside the target folder, execute something
+  it should not, or crash.
+- **A backup that does not restore** what it claims to contain.
 
-## Was ausdrücklich keine Schwachstelle ist
+## What Is Explicitly Not a Vulnerability
 
-- **Die Schlüssel liegen im Klartext** in `%LOCALAPPDATA%\ctxmenu\`. Das ist
-  gewollt und dokumentiert: geschützt sind sie durch die Rechte auf dem
-  Benutzerprofil, wie in einer `.npmrc` oder `.gitconfig` auch. Wer das nicht
-  will, benutzt einen Schlüssel mit eingeschränkten Rechten. Ein Angreifer, der
-  in Ihrem Profil lesen kann, hat ohnehin schon gewonnen.
-- **Das Programm kann das Kontextmenü kaputt machen.** Das ist sein Zweck. Es
-  sichert vorher und sagt vorher, was es tut.
-- **Ein Eintrag kann jeden Befehl ausführen**, den der Benutzer hineinschreibt.
-  Das ist die Funktion des Kontextmenüs, nicht ein Fehler darin.
-- **Unverschlüsseltes `http://`**, wenn es für einen Favoriten ausdrücklich
-  erlaubt wurde. Das Programm lehnt es ab, bis jemand den Haken setzt.
-- **SmartScreen warnt vor der `.exe`.** Sie ist nicht signiert; ein
-  Zertifikat, dem Windows von sich aus traut, kostet mehrere hundert Euro im
-  Jahr. Die Prüfsumme jeder Veröffentlichung steht bei der Veröffentlichung.
-- Meldungen aus einem Schwachstellen-Scanner **ohne einen Weg, wie sich das
-  hier auswirkt**. Eine Abhängigkeit mit einer CVE in einem Codepfad, den dieses
-  Programm nicht benutzt, ist keine Schwachstelle dieses Programms.
+- **The keys are stored in plaintext** in `%LOCALAPPDATA%\ctxmenu\`. That is
+  intentional and documented: they are protected by the permissions on the
+  user profile, the same as in an `.npmrc` or `.gitconfig`. Anyone who does
+  not want that uses a key with restricted permissions. An attacker who can
+  read your profile has already won regardless.
+- **The program can break the context menu.** That is its purpose. It backs
+  up beforehand and states beforehand what it will do.
+- **An entry can execute any command** that the user writes into it. That is
+  the function of the context menu, not a flaw in it.
+- **Unencrypted `http://`**, when explicitly allowed for a favorite. The
+  program refuses it until someone sets the checkbox.
+- **SmartScreen warns about the `.exe`.** It is not signed; a certificate
+  Windows trusts by default costs several hundred euros a year. The
+  checksum for each release is published with the release.
+- Reports from a vulnerability scanner **without a path showing how this
+  applies here**. A dependency with a CVE in a code path this program does
+  not use is not a vulnerability of this program.
 
-## Was Sie erwarten können
+## What You Can Expect
 
-- **Eingangsbestätigung innerhalb von drei Tagen.** Wenn nach einer Woche nichts
-  kommt, ist die Mail untergegangen — dann bitte über den anderen Weg nachhaken.
-- **Eine Einschätzung innerhalb von zwei Wochen**: bestätigt, kein Fehler, oder
-  eine Rückfrage.
-- **Nennung, wenn Sie das möchten**, in der Veröffentlichung, die es behebt.
-- Kein Geld. Das ist ein Freizeitprojekt ohne Einnahmen.
+- **Acknowledgment of receipt within three days.** If nothing arrives after
+  a week, the mail got lost, please follow up via the other channel.
+- **An assessment within two weeks**: confirmed, not a bug, or a follow-up
+  question.
+- **Credit, if you want it**, in the release that fixes it.
+- No money. This is a spare-time project with no revenue.
