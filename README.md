@@ -1,6 +1,6 @@
 # ctxmenu: Context Menu Manager
 
-*[Deutsche Fassung](README_DE.md)*
+*[Deutsche Fassung](docs/README_DE.md)*
 
 A tool for the Windows right-click menu. It shows what is in it, where it sits
 in the registry, and which program it belongs to, and it lets you hide
@@ -13,8 +13,8 @@ It also works the other way: custom entries, submenus, a toolbox of programs
 and web services, all the way to **two hundred menu entries from a single
 address** when a web application describes itself through OpenAPI.
 
-Windows 10 and 11, 64-bit. A single `.exe` with no installation and no
-runtime library.
+Windows 10 and 11, 64-bit. A single `.exe` of 6.5 MB, no installation, no
+runtime library, no background service.
 
 *Interface in German and English, switchable at runtime; this README is
 English only.*
@@ -24,15 +24,20 @@ English only.*
 ## What It Can Do
 
 - **See everything.** The seven base categories (files, folders, folder
-  background, desktop, drives, ...) across three registry areas: `HKCU`,
-  `HKLM`, and the 32-bit view `WOW6432Node`. Static verbs and COM handlers
-  are shown separately. Plus Windows' own **verb store** (`CommandStore`):
-  229 verbs on this machine that appear in no menu until another entry names
-  them in its `SubCommands` list. Read-only, marked with a lock.
+  background, desktop background, drives, filesystem objects, and the shell
+  namespace) across three registry areas: `HKCU`, `HKLM`, and the 32-bit view
+  `WOW6432Node`. On a machine that has grown over the years, that comes to
+  around 930 entries. Static verbs and COM handlers are shown separately: a
+  verb is a key with a command, a COM handler is a CLSID backed by a DLL, and
+  for the handler the program shows the CLSID's plain-text name and the DLL
+  behind it. Plus Windows' own **verb store** (`CommandStore`): 229 verbs on
+  this machine that appear in no menu until another entry names them in its
+  `SubCommands` list. Read-only, marked with a lock.
 - **Resolve file types.** For an extension like `.jpg`, the complete chain
-  from user choice, ProgID, `PerceivedType`, and `SystemFileAssociations`: in
-  other words, what the right-click actually shows, not what is registered
-  at one single spot.
+  from user choice, ProgID, `PerceivedType`, and `SystemFileAssociations`,
+  seven levels in all: in other words, what the right-click actually shows,
+  not what is registered at one single spot. For `.jpg` that comes to 58
+  entries, 39 of which apply to every file.
 - **Custom file extensions and the full scan.** The *File Types* tab shows a
   curated selection of 98 types; a field above it accepts any further
   extension, which then stays saved. Anyone who wants to see everything
@@ -81,7 +86,7 @@ English only.*
   hang from.
 - **Look at an entry:** double-click a row, or right-click and choose *Look
   at this entry*, opens the form with everything that is actually in the
-  registry. Nothing can be changed there yet.
+  registry.
 - German and English, light and dark, or "Follow system", both without a
   restart; the title bar follows along.
 
@@ -97,6 +102,9 @@ English only.*
 - **Freely determine the order.** Windows sorts subkeys alphabetically and
   only knows the coarse blocks `Position=Top` and `Position=Bottom`. Both
   have been measured; the system does not offer anything more.
+- **Edit scanned entries.** The form shows everything that is in the
+  registry but does not yet write anything back. Entries you created
+  yourself are not affected by this.
 
 ---
 
@@ -127,26 +135,21 @@ The search field works on every tab and searches the display name, the
 command, and the registry path, even when nothing is selected on the left
 yet.
 
-**In the list:** the arrow keys move the selection, Home and End jump to the
-start and the end, holding Shift grows the selection, and Ctrl+A selects
-everything. Clicking a column header sorts by it, a second click reverses
-the direction. The **Appears On** column says in words where an entry shows
+### In the List
+
+The arrow keys move the selection, Home and End jump to the start and the
+end, holding Shift grows the selection, and Ctrl+A selects everything.
+Clicking a column header sorts by it, a second click reverses the
+direction. The **Appears On** column says in words where an entry shows
 up: "All Files" instead of `*`, ".zip" instead of a path with
 `SystemFileAssociations` in the middle; the real registry path sits in the
 tooltip. A **right-click** offers, everywhere, exactly the actions that
-would change something about the item clicked, and in the empty area, *New*.
+would change something about the item clicked; with a multi-selection, the
+ones that only make sense for a single entry drop out, and in the empty
+area, *New*.
 
-**The action bar** above the table is not a set of buttons but four
-switches: *In the menu* (visible <-> hidden), *Shift key* (always <-> only
-with ⇧), *Machine-wide* (free <-> blocked), and *Position*. Highlighted is
-where the selection currently stands; clicking the other side moves it
-there. "Which button do I press?" becomes "where should it go?". Whatever
-is not currently possible is greyed out and says why in the tooltip: for
-instance, that none of the selected entries is a COM handler, so there is
-nothing to block.
-
-**Restart Explorer** sits at the top of the bar. Windows reads the context
-menu keys when Explorer starts; an entry that absolutely refuses to show up
+**Restart Explorer** sits in the top bar. Windows reads the context menu
+keys when Explorer starts; an entry that absolutely refuses to show up
 needs this.
 
 ### A Typical Round
@@ -158,6 +161,42 @@ needs this.
 4. If Windows asks for administrator rights: those are the entries under
    `HKLM`, the ones for all accounts. Anyone who declines keeps the changes
    to their own entries; the others stay as they were.
+
+---
+
+## Changing an Entry
+
+Four levels, from gentle to hard:
+
+| Level | What happens | Reversible |
+|---|---|---|
+| **Hide** | `LegacyDisable` at one location | yes |
+| **Shift-only** | `Extended`, the entry appears on Shift+right-click | yes |
+| **Position** | `Position=Top` or `Bottom` | yes |
+| **System-wide block** | The CLSID goes on the block list, for all accounts | yes |
+| **Delete** | The key disappears | only from the backup |
+
+**Every change is backed up first.** That is not just a stated intent:
+`delete_tree` requires a token, and a token is created only as the return
+value of a successful backup. Without a backup, the delete function cannot be
+called.
+
+**One backup per group action**, not one per entry. Hiding twenty entries at
+once creates one directory, not twenty.
+
+**Elevated rights only when needed.** Entries under `HKLM` require them; the
+program asks for exactly that step and restarts itself once for it. Anyone
+who declines keeps the changes to their own entries.
+
+**The action bar** above the table is not a set of buttons but four
+switches: *In the menu* (visible <-> hidden), *Shift key* (always <-> only
+with ⇧), *Machine-wide* (free <-> blocked), and *Position*. Highlighted is
+where the selection currently stands; clicking the other side moves it
+there. "Which button do I press?" becomes "where should it go?". With a
+mixed selection, nothing lights up, and the tooltip gives the counts.
+Whatever is not currently possible is greyed out and says why in the
+tooltip: for instance, that none of the selected entries is a COM handler,
+so there is nothing to block.
 
 ---
 
@@ -222,26 +261,30 @@ http://192.168.x.y:1349/api/docs/#tag/tools
 
 The program strips off the anchor and looks for the machine-readable
 document behind it: the page itself, then `openapi.json`, `swagger.json`,
-and the other usual locations, both from this path and from the root. The
-status code decides nothing here: a documentation page answers with 200
-just as the document does. Whether the response can be read as JSON is the
-criterion.
+`/v3/api-docs`, and the other usual locations, both from this path and from
+the root. The status code decides nothing here: a documentation page answers
+with 200 just as the document does. Whether the response can be read as JSON
+is the criterion.
 
 Everything that can be read is then read out of the description:
 
 - **Which endpoints even come into question**: the ones that accept a file
-  as `multipart/form-data`. A right-click cannot serve anything else.
+  as `multipart/form-data`. A right-click cannot serve anything else. On a
+  test service with 351 paths, that is 232.
 - **How they belong together.** Not by the OpenAPI `tag`: for many services
-  that is the same for everything. Instead, every possible grouping
+  that is the same for almost everything. Instead, every possible grouping
   competes against every other one, the tag and each segment of the path,
-  and whichever produces the most useful menu wins. For a service with 232
-  tools, this yields *Image, Video, PDF, Audio, Files* instead of a single
-  drawer called "Tools" with 225 entries in it.
+  measured against four criteria: how much of the service ends up in usable
+  groups, how evenly, how close the group count is to the square root of the
+  total, and whether the tool names repeat the group word. For a service
+  with 232 tools, this yields *Image, Video, PDF, Audio, Files* instead of a
+  single drawer called "Tools" with 225 entries in it, and it wins by a
+  factor of 17.
 - **What a tool accepts besides the file.** If the description supplies a
   schema, a form with typed fields is built from it: a number with its
-  allowed range, a checkbox, a dropdown list. If it supplies none, only
-  prose (the more common case), that gets read too, as long as it lists its
-  fields:
+  allowed range shown in the empty field, a checkbox, a dropdown list. If it
+  supplies none, only prose (the more common case), that gets read too, as
+  long as it lists its fields:
 
   ```
   JSON string with options:
@@ -249,17 +292,20 @@ Everything that can be read is then read out of the description:
   - `unit` (string, optional) - One of: px, percent
   ```
 
-  The same kind of form results from this. Where the prose is not
-  unambiguous, it stays a text field with the description above it: better
-  no field than a wrong one, because a wrong one sends nonsense to a real
-  service.
+  The same kind of form results from this. On the test service, 113 of 227
+  options descriptions yield a form, 431 fields in total. Where the prose is
+  not unambiguous, it stays a text field with the description above it:
+  better no field than a wrong one, because a wrong one sends nonsense to a
+  real service, while an overlooked one costs a checkbox.
 - **What would not work.** Endpoints that answer only with a job number and
   keep working in the background do not appear in the list: an entry made
-  from one would report success and save nothing. Their count is shown
-  anyway, with a button that reveals them.
+  from one would report success and save nothing. On the test service, that
+  is 52 of 232. Their count is shown anyway, with a button that reveals
+  them.
 
 You check items individually or by category, and create them in one batch.
-What a service says about itself then lives in every favourite;
+What a service says about itself then lives in every favourite, and every
+tool carries a link to its place in the service's documentation;
 **the address and the key stay local** in
 `%LOCALAPPDATA%\ctxmenu\services.json` and go nowhere.
 
@@ -310,7 +356,13 @@ like an entry that works.
 
 ---
 
-## Where the Backups Live
+## Backing Up and Restoring
+
+Every action creates a backup beforehand. The **Backups** tab shows the
+history, states what each one contains, and plays it back. The **Back Up
+Everything** button captures every location this program touches at all: on
+this machine, 26 of 46 keys, 1.2 MB, in under a second. The remaining 20 do
+not exist here, 15 of them in the empty 32-bit view.
 
 ```
 %LOCALAPPDATA%\ctxmenu\backups\<timestamp>_<action>\
@@ -320,7 +372,10 @@ like an entry that works.
 %LOCALAPPDATA%\ctxmenu\favourites.json  the toolbox
 %LOCALAPPDATA%\ctxmenu\services.json    registered services, including their keys
 %LOCALAPPDATA%\ctxmenu\settings.json    language and appearance
+%LOCALAPPDATA%\ctxmenu\ctxmenu.log      every error shown and every crash
 ```
+
+The log is linked from the About window.
 
 The keys in `favourites.json` and `services.json` sit there in plain text,
 protected only by the permissions on your user profile, the same as in an
@@ -333,19 +388,19 @@ adds and overwrites, it **removes nothing**. After a deletion, it restores
 exactly the previous state; played back over a key that has since changed,
 that key's new values remain in place.
 
-Das Programm selbst geht einen Schritt weiter. Schlüssel, die es beim Sichern
-noch gar nicht gab, stehen im `manifest.json` unter `absent` und werden beim
-Zurückspielen wieder **entfernt** — anders ließe sich ein Blockieren nicht
-rückgängig machen, denn die Blocked-Liste liefert Windows nicht mit, sie
-entsteht erst mit dem ersten blockierten Handler. Für die Gesamtsicherung gilt
-das ausdrücklich nicht: sie umfasst ganze Zweige wie `Directory\shell`, in die
-auch jedes andere Programm schreibt, und nimmt beim Zurückspielen nichts weg.
+The program itself goes one step further. Keys that did not exist at all at
+the time of the backup are listed in `manifest.json` under `absent` and are
+**removed** again on restore. There is no other way to undo a block, because
+Windows does not ship the blocked list at all: it comes into being with the
+first blocked handler. For the full backup this expressly does not apply: it
+covers whole branches such as `Directory\shell`, which every other program
+writes into as well, and it takes nothing away on restore.
 
-Ein Zurückspielen bricht nicht mehr beim ersten fehlenden Schlüssel ab: jeder
-Eintrag wird versucht, und am Ende steht, wie viele zurück sind und welche
-nicht. Eine geteilte Aktion — ein Teil hier, ein Teil mit Administratorrechten —
-legt zwei Sicherungen an; das Ergebnisfenster nennt beide und der Knopf
-*Wiederherstellen* spielt beide ein.
+A restore no longer stops at the first missing key: every entry is
+attempted, and at the end it says how many are back and which are not. A
+split action, one part here and one part with administrator rights, creates
+two backups; the result window names both, and the *Restore* button plays
+back both.
 
 ---
 
@@ -368,6 +423,19 @@ libraries. The finished file therefore needs no "Visual C++
 Redistributable", verified on a freshly installed Windows 10 with no
 additional software at all.
 
+336 tests, `cargo clippy -- -D warnings` clean.
+
 Deferred plans, the development status, the measured values, and the
 places where Windows behaves differently than documented are kept by the
 author in notes that are not part of this repository.
+
+---
+
+## Contributing, Security, Licence
+
+- [Contributing](docs/CONTRIBUTING.md) ([deutsch](docs/CONTRIBUTING_DE.md))
+- [Security policy](docs/SECURITY.md) ([deutsch](docs/SECURITY_DE.md))
+- [Code of conduct](docs/CODE_OF_CONDUCT.md)
+- [Third-party notices](docs/THIRD-PARTY-NOTICES.md)
+  ([deutsch](docs/THIRD-PARTY-NOTICES_DE.md))
+- [MIT licence](LICENSE)

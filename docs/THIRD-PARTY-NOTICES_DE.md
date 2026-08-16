@@ -2,7 +2,7 @@
 
 *[English version](THIRD-PARTY-NOTICES.md)*
 
-`ctxmenu` steht unter der MIT-Lizenz (siehe `LICENSE`). Die fertige
+`ctxmenu` steht unter der MIT-Lizenz (siehe [`LICENSE`](../LICENSE)). Die fertige
 `ctxmenu.exe` enthält darüber hinaus Code und Daten Dritter, die unter eigenen
 Bedingungen stehen. Diese Datei nennt sie vollständig.
 

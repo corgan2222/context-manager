@@ -69,8 +69,8 @@ Der heikelste Teil, also die strengsten Regeln:
   nichts ermöglicht, kostet Prüfzeit und bringt Risiko.
 - **Funktionen, die Windows nicht hergibt.** Die freie Sortierung von
   Menüeinträgen zum Beispiel: nachgemessen, das System kennt nur `Position=Top`
-  und `Position=Bottom`. Was daran scheitert, steht in der README unter „Was es
-  bewusst nicht kann".
+  und `Position=Bottom`. Was daran scheitert, steht in der
+  [README](README_DE.md) unter „Was es bewusst nicht kann".
 - **Automatisch erzeugte Übersetzungen.** Beide Sprachen sind von Hand
   geschrieben und sollen gleich gut lesbar sein.
 
@@ -84,4 +84,5 @@ Was eine Meldung schnell bearbeitbar macht:
 - Den Auszug aus `%LOCALAPPDATA%\ctxmenu\ctxmenu.log` — **vorher durchsehen**,
   er nennt Pfade und Dateinamen von Ihrem Rechner.
 
-Eine Sicherheitslücke gehört **nicht** in ein Issue: siehe `SECURITY_DE.md`.
+Eine Sicherheitslücke gehört **nicht** in ein Issue: siehe
+[`SECURITY_DE.md`](SECURITY_DE.md).
