@@ -8,4 +8,5 @@ pub mod mui;
 pub mod paths;
 pub mod plan;
 pub mod scan;
+pub mod win11;
 pub mod write;

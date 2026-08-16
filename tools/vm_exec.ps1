@@ -25,6 +25,7 @@ param(
     [string]$Command,
     [string]$ScriptFile,
     [string]$CopyIn,
+    [string]$CopyOut,
     [string]$Destination
 )
 
@@ -72,6 +73,18 @@ try {
         } -ArgumentList $parent
         Copy-Item -LiteralPath $CopyIn -Destination $Destination -ToSession $session -Force
         Write-Output "kopiert: $CopyIn -> $Destination"
+    }
+
+    if ($CopyOut) {
+        if (-not $Destination) { throw '-CopyOut braucht -Destination' }
+        # Der Rueckweg, seit dem 2026-08-16: eine Abnahme in der VM erzeugt ein
+        # Bild, und ein Bild, das drin bleibt, belegt nichts.
+        $parent = Split-Path -Parent $Destination
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        }
+        Copy-Item -LiteralPath $CopyOut -Destination $Destination -FromSession $session -Force
+        Write-Output "geholt: $CopyOut -> $Destination"
     }
 
     if ($ScriptFile) {

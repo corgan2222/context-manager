@@ -771,6 +771,13 @@ pub struct App {
     selected: rustc_hash::FxHashSet<Row>,
     /// The row whose details are shown — the last one clicked.
     focused: Option<Row>,
+    /// Whether this Windows has the new context menu at all, and whether the
+    /// classic one is currently switched on.
+    ///
+    /// Both read once at startup: the build number never changes while the
+    /// program runs, and the switch only changes through this window.
+    win11: bool,
+    classic_menu: bool,
     /// The last error already written to the log.
     ///
     /// An error dialog re-sets itself every frame it stays open, so without
@@ -1126,6 +1133,8 @@ impl App {
             focused: None,
             anchor: None,
             selected_backup: None,
+            win11: crate::registry::win11::has_new_menu(),
+            classic_menu: crate::registry::win11::classic_menu(),
             logged_error: None,
             drop_target: None,
             search: start_search,
@@ -2318,6 +2327,7 @@ impl eframe::App for App {
 
 impl App {
     fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let mut switch_menu: Option<bool> = None;
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -2424,6 +2434,32 @@ impl App {
                     }
                 }
 
+                // Only where it means something. On Windows 10 this key would
+                // be a control that changes nothing, which is worse than no
+                // control at all. Read once at startup, not per frame.
+                if self.win11 {
+                    ui.separator();
+                    let classic = self.classic_menu;
+                    ui.label(self.tr.menu_style)
+                        .on_hover_text(self.tr.tip_menu_style);
+                    for (wanted, label) in [
+                        (false, self.tr.menu_style_new),
+                        (true, self.tr.menu_style_classic),
+                    ] {
+                        if ui
+                            .add(egui::Button::selectable(classic == wanted, label))
+                            .on_hover_text(match wanted {
+                                true => self.tr.tip_menu_classic,
+                                false => self.tr.tip_menu_new,
+                            })
+                            .clicked()
+                            && classic != wanted
+                        {
+                            switch_menu = Some(wanted);
+                        }
+                    }
+                }
+
                 let search = ui
                     .add(
                         egui::TextEdit::singleline(&mut self.search)
@@ -2465,6 +2501,21 @@ impl App {
             });
             ui.add_space(4.0);
         });
+
+        // Outside the panel, because it opens a dialog and touches the
+        // registry: doing that inside the closure would borrow `self` twice.
+        if let Some(classic) = switch_menu {
+            match crate::registry::win11::set_classic_menu(classic) {
+                Ok(()) => {
+                    self.classic_menu = classic;
+                    // The handler is loaded when the shell starts, so nothing
+                    // changes until it does. Offered rather than done: a
+                    // restart closes every Explorer window the user has open.
+                    self.dialog = Some(Dialog::Created(String::new()));
+                }
+                Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
+            }
+        }
     }
 
     /// The logo, uploaded on first use and kept afterwards.
@@ -4096,7 +4147,17 @@ impl App {
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ui.ctx(), |ui| {
-                        ui.label(self.tr.fmt_entry_created.replace("{}", &path));
+                        // An empty path means the message is not about an entry
+                        // at all -- the menu switch uses this dialog for its own
+                        // announcement, because what follows is the same
+                        // question either way.
+                        ui.add(
+                            egui::Label::new(match path.is_empty() {
+                                true => self.tr.msg_menu_switched.to_string(),
+                                false => self.tr.fmt_entry_created.replace("{}", &path),
+                            })
+                            .wrap(),
+                        );
                         ui.add_space(6.0);
                         ui.add(egui::Label::new(self.tr.msg_ask_restart).wrap());
                         ui.add_space(8.0);
@@ -7956,32 +8017,79 @@ pub fn run(
     };
     crate::log::note_start(&how);
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            // German here and corrected in the first frame, because the
-            // settings are not read yet — `sync_title` puts both the language
-            // and the version right before anyone can read this one.
-            .with_title(window_title(&i18n::DE))
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([900.0, 600.0]),
-        ..Default::default()
-    };
+    // OpenGL first, DirectX after. `glow` is smaller and starts faster, and on
+    // a machine with a real graphics driver it is the right answer. But there
+    // are machines without one: a Hyper-V guest, an RDP session, a fresh
+    // install before Windows Update has fetched a driver. Measured in a Windows
+    // 11 guest on 2026-08-16 -- DirectX 12 feature level 12_1 present, OpenGL
+    // absent -- where the program refused to start at all with "egui_glow
+    // requires opengl 2.0+". A program that does not open is worse than a
+    // program that opens through a second renderer.
+    //
+    // Tried in this order rather than probed: asking whether OpenGL 2.0 exists
+    // means creating a context, which is most of the work of starting anyway.
+    for renderer in [eframe::Renderer::Glow, eframe::Renderer::Wgpu] {
+        let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+        // No waiting for a vertical blank on the software path. WARP has no
+        // display to synchronise with -- the "blank" it reports is a timer --
+        // and `Fifo` makes every present block on it. Measured symptom: the
+        // window drags behind the mouse while its contents scroll smoothly,
+        // which is presentation stalling rather than drawing being slow.
+        //
+        // Only in the wgpu branch: on a real driver `Fifo` is right, it is what
+        // keeps the frame rate at the refresh rate instead of spinning a GPU
+        // for frames nobody sees.
+        wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+        // One frame in flight rather than two: a queued frame that is already
+        // stale by the time it appears is exactly the lag being chased here.
+        wgpu_options.surface.desired_maximum_frame_latency = Some(1);
 
-    eframe::run_native(
-        "ctxmenu",
-        options,
-        Box::new(move |cc| {
-            Ok(Box::new(App::new(
-                cc,
-                synthetic,
-                bench_frames,
-                start_tab,
-                start_search.clone(),
-                start_ext.clone(),
-                theme_probe,
-            )))
-        }),
-    )
+        let options = eframe::NativeOptions {
+            renderer,
+            wgpu_options,
+            viewport: egui::ViewportBuilder::default()
+                // German here and corrected in the first frame, because the
+                // settings are not read yet — `sync_title` puts both the
+                // language and the version right before anyone can read this
+                // one.
+                .with_title(window_title(&i18n::DE))
+                .with_inner_size([1200.0, 800.0])
+                .with_min_inner_size([900.0, 600.0]),
+            ..Default::default()
+        };
+
+        let search = start_search.clone();
+        let ext = start_ext.clone();
+        let outcome = eframe::run_native(
+            "ctxmenu",
+            options,
+            Box::new(move |cc| {
+                Ok(Box::new(App::new(
+                    cc,
+                    synthetic,
+                    bench_frames,
+                    start_tab,
+                    search.clone(),
+                    ext.clone(),
+                    theme_probe,
+                )))
+            }),
+        );
+
+        match outcome {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // Only the second failure is the user's problem; the first one
+                // is a fact about their graphics driver, and the log is where
+                // that belongs.
+                crate::log::write(crate::log::Kind::Error, &format!("{renderer:?}: {error}"));
+                if renderer == eframe::Renderer::Wgpu {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

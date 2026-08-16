@@ -24,9 +24,16 @@ license = "MIT"
 # Zentral gepflegt, damit die spätere IExplorerCommand-DLL (ToDo Abschnitt 14)
 # ohne Versionsdrift danebengesetzt werden kann.
 [workspace.dependencies]
+# Both renderers, chosen at run time. `glow` is the small, fast one and stays
+# the first choice; `wgpu` is the one that works where there is no OpenGL —
+# a Hyper-V guest, an RDP session, a machine that has never seen a graphics
+# driver. Measured in a Windows 11 guest on 2026-08-16: DirectX 12 feature
+# level 12_1 present, OpenGL absent, and the program refused to start with
+# "egui_glow requires opengl 2.0+".
 eframe = { version = "0.36.1", default-features = false, features = [
     "default_fonts",
     "glow",
+    "wgpu",
 ] }
 egui = "0.36.1"
 # Ohne das "image"-Feature: die Icon-Extraktion aus ToDo 7 baut ihr ColorImage
