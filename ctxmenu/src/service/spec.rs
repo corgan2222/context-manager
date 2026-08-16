@@ -11,13 +11,21 @@
 //! generator and will contain shapes this does not expect; the answer to that
 //! is to skip the endpoint, not to refuse the service.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 /// One endpoint that takes a file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tool {
-    /// `/api/v1/tools/image/compress`
+    /// `/api/v1/tools/image/compress`, the key exactly as the description
+    /// writes it — it is also the anchor its own documentation uses.
     pub path: String,
+    /// What the description's `servers` block puts in front of every path: an
+    /// address of its own (`https://api.example.com/v2`), a path under the same
+    /// host (`/api/v1`), or `/`. Empty when the description says nothing, which
+    /// means the same as `/`.
+    pub base: String,
     /// Upper case, as the request will be sent.
     pub method: String,
     /// The group this belongs to, from `tags`. `None` lands under "other".
@@ -50,7 +58,15 @@ pub enum Settings {
         description: Option<String>,
     },
     /// Real fields, from a real schema. A form can be built from these.
-    Fields { field: String, fields: Vec<Field> },
+    ///
+    /// `field` names the one form field they are packed into as JSON. It is
+    /// `None` where the service declared each option as a form field of its
+    /// own — then every value travels under its own name and there is no such
+    /// single place.
+    Fields {
+        field: Option<String>,
+        fields: Vec<Field>,
+    },
 }
 
 /// One described parameter, enough to draw an input for it.
@@ -95,6 +111,8 @@ pub fn tools(spec: &Value) -> Vec<Tool> {
         return Vec::new();
     };
 
+    let base = base_url(spec);
+
     let mut out = Vec::new();
     for (path, methods) in paths {
         let Some(methods) = methods.as_object() else {
@@ -106,7 +124,8 @@ pub fn tools(spec: &Value) -> Vec<Tool> {
             if !matches!(method.as_str(), "post" | "put" | "patch") {
                 continue;
             }
-            if let Some(tool) = read_operation(path, method, operation) {
+            if let Some(mut tool) = read_operation(spec, path, method, operation) {
+                tool.base.clone_from(&base);
                 out.push(tool);
             }
         }
@@ -114,20 +133,44 @@ pub fn tools(spec: &Value) -> Vec<Tool> {
     out
 }
 
-fn read_operation(path: &str, method: &str, operation: &Value) -> Option<Tool> {
+/// What the description says its paths hang under.
+///
+/// The first `servers` entry: the list is written as alternatives, and the
+/// first is the one a generator means when it means one. An address with
+/// variables in it (`https://{region}.example.com`) is left alone — filling
+/// them in would be a guess, and a guessed host answers nothing at all, which
+/// is worse than the host the description itself came from.
+fn base_url(spec: &Value) -> String {
+    spec.get("servers")
+        .and_then(Value::as_array)
+        .and_then(|list| list.first())
+        .and_then(|server| server.get("url"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.contains('{'))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn read_operation(root: &Value, path: &str, method: &str, operation: &Value) -> Option<Tool> {
     let schema = operation
         .get("requestBody")?
         .get("content")?
         .get("multipart/form-data")?
         .get("schema")?;
-    let properties = schema.get("properties")?.as_object()?;
+    let schema = resolve(root, schema, 0);
+    // Every property in the shape it really has, so that everything below reads
+    // a plain schema whether the description wrote one out or pointed at it.
+    let properties: serde_json::Map<String, Value> = schema
+        .get("properties")?
+        .as_object()?
+        .iter()
+        .map(|(name, value)| (name.clone(), resolve(root, value, 0).into_owned()))
+        .collect();
 
     // The file field: a string declared as binary. Without one this endpoint
     // is not something a right-click on a file can serve.
-    let (file_field, _) = properties.iter().find(|(_, value)| {
-        value.get("type").and_then(Value::as_str) == Some("string")
-            && value.get("format").and_then(Value::as_str) == Some("binary")
-    })?;
+    let (file_field, _) = properties.iter().find(|(_, value)| is_file(value))?;
 
     let required: Vec<&str> = schema
         .get("required")
@@ -135,22 +178,25 @@ fn read_operation(path: &str, method: &str, operation: &Value) -> Option<Tool> {
         .map(|list| list.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
 
-    let settings = read_settings(properties, file_field, &required);
-    let usable = match (&settings, answers_asynchronously(operation)) {
-        (_, true) => Usable::Asynchronous,
-        (Settings::None, _) => Usable::Yes,
-        // A field that is not required can be left out, so the tool still
-        // works with the file alone.
-        (Settings::Text { field, .. } | Settings::Fields { field, .. }, _)
-            if !required.contains(&field.as_str()) =>
-        {
-            Usable::Yes
-        }
-        _ => Usable::NeedsSettings,
+    let settings = read_settings(root, &properties, file_field, &required);
+    // Whether anything has to be filled in first is a question about the whole
+    // schema, not about the one field the settings were built from: a required
+    // field that no form shows makes a tool that looks ready, sends nothing for
+    // it, and is refused on every use.
+    let wanted = required.iter().any(|name| {
+        *name != file_field.as_str() && !PLUMBING.contains(&name.to_lowercase().as_str())
+    });
+    let usable = match (answers_asynchronously(operation), wanted) {
+        (true, _) => Usable::Asynchronous,
+        (_, false) => Usable::Yes,
+        (_, true) => Usable::NeedsSettings,
     };
 
     Some(Tool {
         path: path.to_string(),
+        // Filled in by `tools`, which is where the whole description is in
+        // view; one endpoint knows nothing about the servers block.
+        base: String::new(),
         method: method.to_uppercase(),
         tag: operation
             .get("tags")
@@ -171,6 +217,117 @@ fn read_operation(path: &str, method: &str, operation: &Value) -> Option<Tool> {
         settings,
         usable,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Schemas that stand somewhere else.
+// ---------------------------------------------------------------------------
+
+/// How far a chain of `$ref`s is followed.
+///
+/// A description that points at itself is broken, and the answer to a broken
+/// one is to stop reading it, not to recurse until the stack runs out. Eight is
+/// past anything a generator writes: FastAPI needs one.
+const REF_DEPTH: usize = 8;
+
+/// The schema a value stands for: a `$ref` inside this document followed, an
+/// `allOf` merged flat.
+///
+/// FastAPI — and every other generator that keeps its request bodies under
+/// `components/schemas` — writes `{"$ref": "#/components/schemas/Body_..."}`
+/// where the schema itself could stand. Read as it is written, such an endpoint
+/// has no properties, so no file field, so it never reaches the list: measured
+/// against a FastAPI-shaped description, none of its endpoints did, and the
+/// service came out empty without saying why.
+///
+/// Only pointers into this document are followed. One at another file would
+/// mean a second request while a panel waits, and the answer to it may be
+/// another reference again.
+fn resolve<'a>(root: &'a Value, schema: &'a Value, depth: usize) -> Cow<'a, Value> {
+    if depth >= REF_DEPTH {
+        return Cow::Borrowed(schema);
+    }
+    if let Some(pointer) = schema.get("$ref").and_then(Value::as_str) {
+        return match local(root, pointer) {
+            Some(target) => resolve(root, target, depth + 1),
+            // A reference that leads nowhere leaves the schema as it stands:
+            // the endpoint is skipped, the rest of the description is not.
+            None => Cow::Borrowed(schema),
+        };
+    }
+    match schema.get("allOf").and_then(Value::as_array) {
+        Some(parts) => Cow::Owned(flattened(root, schema, parts, depth)),
+        None => Cow::Borrowed(schema),
+    }
+}
+
+/// Where a pointer leads inside this document, if it stays inside it.
+fn local<'a>(root: &'a Value, pointer: &str) -> Option<&'a Value> {
+    let rest = pointer.strip_prefix('#')?;
+    match rest.is_empty() {
+        true => Some(root),
+        false => root.pointer(rest),
+    }
+}
+
+/// The parts of an `allOf` as the one schema they describe together.
+///
+/// Properties are collected and `required` lists appended, so that a body split
+/// over a shared part and a specific one reads as the whole it stands for.
+/// Whatever the schema says beside its `allOf` is written last and wins: it is
+/// the more specific word.
+fn flattened<'a>(root: &'a Value, schema: &'a Value, parts: &'a [Value], depth: usize) -> Value {
+    let mut merged = serde_json::Map::new();
+    let mut properties = serde_json::Map::new();
+    let mut required: Vec<Value> = Vec::new();
+
+    for part in parts {
+        let part = resolve(root, part, depth + 1);
+        absorb(&part, &mut merged, &mut properties, &mut required);
+    }
+    absorb(schema, &mut merged, &mut properties, &mut required);
+
+    if !properties.is_empty() {
+        merged.insert("properties".into(), Value::Object(properties));
+    }
+    if !required.is_empty() {
+        merged.insert("required".into(), Value::Array(required));
+    }
+    Value::Object(merged)
+}
+
+/// One part of an `allOf` into the schema being built from it.
+fn absorb(
+    part: &Value,
+    merged: &mut serde_json::Map<String, Value>,
+    properties: &mut serde_json::Map<String, Value>,
+    required: &mut Vec<Value>,
+) {
+    let Some(object) = part.as_object() else {
+        return;
+    };
+    for (key, value) in object {
+        match key.as_str() {
+            // The list itself is what is being read; keeping it would invite a
+            // second pass over the same parts.
+            "allOf" => {}
+            "properties" => {
+                if let Some(more) = value.as_object() {
+                    for (name, property) in more {
+                        properties.insert(name.clone(), property.clone());
+                    }
+                }
+            }
+            "required" => {
+                if let Some(more) = value.as_array() {
+                    required.extend(more.iter().cloned());
+                }
+            }
+            _ => {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+    }
 }
 
 /// Form fields that are plumbing rather than settings.
@@ -198,6 +355,7 @@ const SETTINGS_NAMES: &[&str] = &["settings", "options", "params", "parameters",
 
 /// What the endpoint wants beside the file, in the most useful form available.
 fn read_settings(
+    root: &Value,
     properties: &serde_json::Map<String, Value>,
     file_field: &str,
     required: &[&str],
@@ -205,12 +363,18 @@ fn read_settings(
     let candidates: Vec<(&String, &Value)> = properties
         .iter()
         .filter(|(name, _)| name.as_str() != file_field)
+        // A second file is not a setting. Measured on the test service
+        // (2026-08-16): eight endpoints declare one — a mask, a watermark, a
+        // signature image, an archive — and this program sends exactly one
+        // file. Offered as a box to type in, it asks for an image in words.
+        .filter(|(_, value)| !is_file(value))
         .filter(|(name, _)| !PLUMBING.contains(&name.to_lowercase().as_str()))
         .collect();
 
-    // A name the service itself uses for its options beats alphabetical luck;
-    // a described object beats a bare string; otherwise the first one left.
-    let picked = SETTINGS_NAMES
+    // A name the service itself uses for its options, or a described object:
+    // either way this one field holds everything, and what goes into it is a
+    // JSON block rather than a form field per option.
+    let block = SETTINGS_NAMES
         .iter()
         .find_map(|wanted| {
             candidates
@@ -221,18 +385,43 @@ fn read_settings(
             candidates
                 .iter()
                 .find(|(_, value)| value.get("properties").is_some())
-        })
-        .or_else(|| candidates.first());
+        });
 
-    let Some((name, value)) = picked else {
-        return Settings::None;
-    };
-    let (name, value) = (*name, *value);
+    if let Some((name, value)) = block {
+        return one_field(root, name, value, required);
+    }
 
+    match candidates.as_slice() {
+        [] => Settings::None,
+        // One field that says nothing about its own type: the shape this was
+        // built for, where a service names a single place for its options and
+        // spells out in prose what belongs inside. One that declares a number,
+        // a flag or a list of values is better drawn as what it declares.
+        [(name, value)] if kind_of(value) == FieldKind::Text => {
+            one_field(root, name, value, required)
+        }
+        // Several, and none of them the box for all of them: then the service
+        // declared each option as a form field of its own. Every one of them
+        // has to survive — picking the alphabetically first and dropping the
+        // rest sent a request the service refuses, under a tick that says the
+        // tool is ready. Measured on the test service (2026-08-16): three
+        // endpoints, one of which lost a required field.
+        several => Settings::Fields {
+            field: None,
+            fields: several
+                .iter()
+                .map(|(name, value)| field_from(name, value, required))
+                .collect(),
+        },
+    }
+}
+
+/// The settings of a service that keeps all of them in one form field.
+fn one_field(root: &Value, name: &str, value: &Value, required: &[&str]) -> Settings {
     // A described object is the good case: every property becomes an input.
-    if let Some(fields) = read_fields(value, required) {
+    if let Some(fields) = read_fields(root, value, required) {
         return Settings::Fields {
-            field: name.clone(),
+            field: Some(name.to_string()),
             fields,
         };
     }
@@ -249,20 +438,20 @@ fn read_settings(
         let fields = fields_from_prose(text);
         if !fields.is_empty() {
             return Settings::Fields {
-                field: name.clone(),
+                field: Some(name.to_string()),
                 fields,
             };
         }
     }
 
     Settings::Text {
-        field: name.clone(),
+        field: name.to_string(),
         description,
     }
 }
 
 /// The properties of a described object, if this is one.
-fn read_fields(value: &Value, outer_required: &[&str]) -> Option<Vec<Field>> {
+fn read_fields(root: &Value, value: &Value, outer_required: &[&str]) -> Option<Vec<Field>> {
     let properties = value.get("properties")?.as_object()?;
     let required: Vec<&str> = value
         .get("required")
@@ -272,41 +461,70 @@ fn read_fields(value: &Value, outer_required: &[&str]) -> Option<Vec<Field>> {
 
     let mut fields = Vec::new();
     for (name, property) in properties {
-        let kind = match property.get("type").and_then(Value::as_str) {
-            _ if property.get("enum").is_some() => FieldKind::Choice(
-                property
-                    .get("enum")
-                    .and_then(Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .map(|v| match v {
-                                Value::String(text) => text.clone(),
-                                other => other.to_string(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            ),
-            Some("integer" | "number") => FieldKind::Number {
-                minimum: property.get("minimum").and_then(Value::as_f64),
-                maximum: property.get("maximum").and_then(Value::as_f64),
-            },
-            Some("boolean") => FieldKind::Flag,
-            _ => FieldKind::Text,
-        };
-
-        fields.push(Field {
-            name: name.clone(),
-            kind,
-            required: required.contains(&name.as_str()),
-            description: property
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        });
+        let property = resolve(root, property, 0);
+        fields.push(field_from(name, &property, &required));
     }
     Some(fields)
+}
+
+/// One described property, as the input it asks for.
+fn field_from(name: &str, property: &Value, required: &[&str]) -> Field {
+    Field {
+        name: name.to_string(),
+        kind: kind_of(property),
+        required: required.contains(&name),
+        description: property
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
+}
+
+/// Which input can hold what a property declares.
+fn kind_of(property: &Value) -> FieldKind {
+    if let Some(choices) = property.get("enum").and_then(Value::as_array) {
+        return FieldKind::Choice(
+            choices
+                .iter()
+                .map(|value| match value {
+                    Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+                .collect(),
+        );
+    }
+    match type_of(property) {
+        Some("integer" | "number") => FieldKind::Number {
+            minimum: property.get("minimum").and_then(Value::as_f64),
+            maximum: property.get("maximum").and_then(Value::as_f64),
+        },
+        Some("boolean") => FieldKind::Flag,
+        _ => FieldKind::Text,
+    }
+}
+
+/// The type a property declares, however it is written down.
+///
+/// OpenAPI 3.1 and JSON Schema 2020-12 spell "or null" as a list of types:
+/// `"type": ["integer", "null"]`. Read as a single word — which it is not — a
+/// number with a range from 1 to 100 became a free text box, and the range the
+/// description had spelled out went unused while the service refused whatever
+/// was typed.
+fn type_of(property: &Value) -> Option<&str> {
+    match property.get("type")? {
+        Value::String(name) => Some(name.as_str()),
+        Value::Array(names) => names
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|name| *name != "null"),
+        _ => None,
+    }
+}
+
+/// A field the file itself goes into: a string declared as binary.
+fn is_file(property: &Value) -> bool {
+    type_of(property) == Some("string")
+        && property.get("format").and_then(Value::as_str) == Some("binary")
 }
 
 /// Does this endpoint hand back a job rather than a result?
@@ -1296,7 +1514,7 @@ mod tests {
         let Settings::Fields { field, fields } = &convert.settings else {
             panic!("expected described fields, got {:?}", convert.settings);
         };
-        assert_eq!(field, "options");
+        assert_eq!(field.as_deref(), Some("options"));
 
         let format = fields.iter().find(|f| f.name == "format").unwrap();
         assert_eq!(
@@ -1338,6 +1556,290 @@ mod tests {
         assert!(tools(&serde_json::json!({})).is_empty());
         assert!(tools(&serde_json::json!({ "paths": 42 })).is_empty());
         assert!(tools(&serde_json::json!({ "paths": { "/x": { "post": {} } } })).is_empty());
+    }
+
+    /// The shape FastAPI writes: the body schema stands under
+    /// `components/schemas` and the operation only points at it.
+    fn fastapi() -> Value {
+        serde_json::json!({
+            "openapi": "3.1.0",
+            "paths": {
+                "/upload/compress": { "post": {
+                    "tags": ["tools"],
+                    "summary": "Compress",
+                    "requestBody": { "content": { "multipart/form-data": {
+                        "schema": { "$ref": "#/components/schemas/Body_compress_upload_compress_post" }
+                    }}},
+                    "responses": { "200": {} }
+                }},
+                "/upload/convert": { "post": {
+                    "summary": "Convert",
+                    "requestBody": { "content": { "multipart/form-data": {
+                        "schema": { "$ref": "#/components/schemas/Body_convert_upload_convert_post" }
+                    }}},
+                    "responses": { "200": {} }
+                }}
+            },
+            "components": { "schemas": {
+                "Body_compress_upload_compress_post": {
+                    "type": "object",
+                    "required": ["file"],
+                    "properties": {
+                        "file": { "type": "string", "format": "binary" },
+                        "quality": { "$ref": "#/components/schemas/Quality" }
+                    }
+                },
+                "Body_convert_upload_convert_post": {
+                    "type": "object",
+                    "required": ["file"],
+                    "properties": { "file": { "type": "string", "format": "binary" } }
+                },
+                "Quality": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Output quality"
+                }
+            }}
+        })
+    }
+
+    #[test]
+    fn a_body_that_only_stands_somewhere_else_is_followed_to_where_it_stands() {
+        // Measured before the reference was followed: 0 tools out of 2
+        // endpoints, and a service that came out empty without saying why.
+        let found = tools(&fastapi());
+        assert_eq!(found.len(), 2);
+
+        let compress = found.iter().find(|t| t.summary == "Compress").unwrap();
+        assert_eq!(compress.file_field, "file");
+        assert_eq!(compress.usable, Usable::Yes);
+
+        // The option is a reference of its own, and the form has to know it is
+        // a number with a range rather than a box for anything at all.
+        let Settings::Fields { field, fields } = &compress.settings else {
+            panic!("expected fields, got {:?}", compress.settings);
+        };
+        assert_eq!(*field, None, "its own form field, not a box holding JSON");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "quality");
+        assert_eq!(
+            fields[0].kind,
+            FieldKind::Number {
+                minimum: Some(1.0),
+                maximum: Some(100.0)
+            }
+        );
+        assert_eq!(fields[0].description.as_deref(), Some("Output quality"));
+    }
+
+    #[test]
+    fn a_schema_written_in_parts_is_read_as_the_whole_it_describes() {
+        let spec = serde_json::json!({
+            "paths": { "/convert": { "post": {
+                "summary": "Convert",
+                "requestBody": { "content": { "multipart/form-data": { "schema": {
+                    "allOf": [
+                        { "$ref": "#/components/schemas/Upload" },
+                        { "properties": {
+                            "format": { "type": "string", "enum": ["png", "webp"] }
+                        }}
+                    ],
+                    "required": ["format"]
+                }}}},
+                "responses": { "200": {} }
+            }}},
+            "components": { "schemas": { "Upload": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                    "file": { "type": "string", "format": "binary" },
+                    "clientJobId": { "type": "string" }
+                }
+            }}}
+        });
+
+        let found = tools(&spec);
+        assert_eq!(found.len(), 1);
+        // The file comes from the shared part, the option from the specific
+        // one, and what each part calls required counts in both.
+        assert_eq!(found[0].file_field, "file");
+        assert_eq!(found[0].usable, Usable::NeedsSettings);
+
+        let Settings::Fields { fields, .. } = &found[0].settings else {
+            panic!("expected fields, got {:?}", found[0].settings);
+        };
+        assert_eq!(fields.len(), 1, "the plumbing stays out");
+        assert_eq!(
+            fields[0].kind,
+            FieldKind::Choice(vec!["png".into(), "webp".into()])
+        );
+        assert!(fields[0].required);
+    }
+
+    #[test]
+    fn a_reference_that_leads_in_a_circle_costs_the_endpoint_and_nothing_else() {
+        let spec = serde_json::json!({
+            "paths": {
+                "/ring": { "post": {
+                    "requestBody": { "content": { "multipart/form-data": {
+                        "schema": { "$ref": "#/components/schemas/Ring" }
+                    }}},
+                    "responses": { "200": {} }
+                }},
+                "/away": { "post": {
+                    "requestBody": { "content": { "multipart/form-data": {
+                        "schema": { "$ref": "other.json#/components/schemas/Body" }
+                    }}},
+                    "responses": { "200": {} }
+                }},
+                "/missing": { "post": {
+                    "requestBody": { "content": { "multipart/form-data": {
+                        "schema": { "$ref": "#/components/schemas/NotThere" }
+                    }}},
+                    "responses": { "200": {} }
+                }}
+            },
+            "components": { "schemas": {
+                "Ring": { "$ref": "#/components/schemas/Ring" }
+            }}
+        });
+
+        // A ring, a reference into another file, and one that names nothing:
+        // each costs its own endpoint, and none of them the program.
+        assert!(tools(&spec).is_empty());
+    }
+
+    #[test]
+    fn every_form_field_the_description_names_survives_the_reading() {
+        // A service that declares each option as a form field of its own:
+        // nothing is called settings, nothing is an object. Alphabetical order
+        // put `height` first and `width` -- required -- was dropped, which made
+        // a tool that shows a tick and is refused on every use.
+        let spec = serde_json::json!({
+            "paths": { "/resize": { "post": {
+                "summary": "Resize",
+                "requestBody": { "content": { "multipart/form-data": { "schema": {
+                    "type": "object",
+                    "required": ["file", "width"],
+                    "properties": {
+                        "file": { "type": "string", "format": "binary" },
+                        "height": { "type": "integer", "minimum": 1, "description": "Pixels" },
+                        "width": { "type": "integer", "minimum": 1 },
+                        "clientJobId": { "type": "string" }
+                    }
+                }}}},
+                "responses": { "200": { "description": "ok" } }
+            }}}
+        });
+
+        let found = tools(&spec);
+        let Settings::Fields { field, fields } = &found[0].settings else {
+            panic!("expected fields, got {:?}", found[0].settings);
+        };
+        assert_eq!(*field, None, "no single field holds them");
+
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["height", "width"], "the plumbing stays out");
+        assert!(fields.iter().find(|f| f.name == "width").unwrap().required);
+        assert!(!fields.iter().find(|f| f.name == "height").unwrap().required);
+        // And the tool says so: a required field nobody has filled in yet.
+        assert_eq!(found[0].usable, Usable::NeedsSettings);
+    }
+
+    #[test]
+    fn a_second_file_is_not_offered_as_something_to_type() {
+        let spec = serde_json::json!({
+            "paths": { "/watermark": { "post": {
+                "summary": "Watermark",
+                "requestBody": { "content": { "multipart/form-data": { "schema": {
+                    "required": ["file", "overlay"],
+                    "properties": {
+                        "file": { "type": "string", "format": "binary" },
+                        "overlay": { "type": "string", "format": "binary" }
+                    }
+                }}}},
+                "responses": { "200": { "description": "ok" } }
+            }}}
+        });
+
+        let found = tools(&spec);
+        // This program sends one file. A box asking for the second one in
+        // words is worse than saying there is nothing to fill in.
+        assert_eq!(found[0].settings, Settings::None);
+        assert_eq!(found[0].usable, Usable::NeedsSettings, "it wants two files");
+    }
+
+    #[test]
+    fn a_field_that_may_also_be_null_keeps_the_type_it_declares() {
+        // OpenAPI 3.1 and JSON Schema 2020-12 write nullable as a list of
+        // types. Read as a single word -- which it is not -- every one of these
+        // became a free text box, and the range beside it went unused.
+        let spec = serde_json::json!({
+            "paths": { "/compress": { "post": {
+                "summary": "Compress",
+                "requestBody": { "content": { "multipart/form-data": { "schema": {
+                    "required": ["file"],
+                    "properties": {
+                        "file": { "type": ["string", "null"], "format": "binary" },
+                        "options": { "type": "object", "properties": {
+                            "quality": {
+                                "type": ["integer", "null"],
+                                "minimum": 1,
+                                "maximum": 100
+                            },
+                            "strip": { "type": ["boolean", "null"] },
+                            "note": { "type": ["null", "string"] }
+                        }}
+                    }
+                }}}},
+                "responses": { "200": { "description": "ok" } }
+            }}}
+        });
+
+        let found = tools(&spec);
+        // The file field is written the same way and is still the file.
+        assert_eq!(found[0].file_field, "file");
+
+        let Settings::Fields { fields, .. } = &found[0].settings else {
+            panic!("expected fields, got {:?}", found[0].settings);
+        };
+        let kind = |name: &str| {
+            fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("{name} is missing"))
+                .kind
+                .clone()
+        };
+        assert_eq!(
+            kind("quality"),
+            FieldKind::Number {
+                minimum: Some(1.0),
+                maximum: Some(100.0)
+            }
+        );
+        assert_eq!(kind("strip"), FieldKind::Flag);
+        assert_eq!(kind("note"), FieldKind::Text);
+    }
+
+    #[test]
+    fn the_base_the_description_names_is_kept_for_every_tool() {
+        // Nothing said: the same as `/`, and the address stays what it was.
+        assert!(tools(&spec()).iter().all(|tool| tool.base.is_empty()));
+
+        let mut spec = spec();
+        spec["servers"] = serde_json::json!([
+            { "url": "/api/v1" },
+            { "url": "https://elsewhere.example" }
+        ]);
+        // The first entry only: the list is written as alternatives.
+        assert!(tools(&spec).iter().all(|tool| tool.base == "/api/v1"));
+
+        // An address with variables in it is not an address yet, and a guessed
+        // host answers nothing at all.
+        spec["servers"] = serde_json::json!([{ "url": "https://{region}.example.com/v1" }]);
+        assert!(tools(&spec).iter().all(|tool| tool.base.is_empty()));
     }
     // The one field a line declares, so a test can speak about it in one breath.
     fn one(text: &str) -> Field {

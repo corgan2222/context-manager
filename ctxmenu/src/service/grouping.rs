@@ -479,6 +479,7 @@ mod tests {
         // to send a file, which the grouping knows nothing about.
         Tool {
             path: path.to_string(),
+            base: "/".into(),
             tag: tag.map(str::to_string),
             summary: summary.to_string(),
             method: "POST".into(),
