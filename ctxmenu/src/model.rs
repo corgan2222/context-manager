@@ -268,16 +268,12 @@ impl FileTypeInfo {
 
 /// Result of one scan pass.
 #[derive(Debug, Serialize)]
-// The index maps are read by the GUI from milestone 4 onwards.
-#[allow(dead_code)]
 pub struct ScanResult {
     pub entries: Vec<ContextEntry>,
     /// Indices into `entries`. Skipped when serialising because JSON object
     /// keys must be strings and `Category` is an enum.
     #[serde(skip)]
     pub by_category: FxHashMap<Category, Vec<usize>>,
-    #[serde(skip)]
-    pub by_program: FxHashMap<String, Vec<usize>>,
     pub scanned_at: chrono::DateTime<chrono::Local>,
     pub stats: ScanStats,
     /// Empty unless the scan was asked to walk file types.
@@ -291,19 +287,14 @@ impl ScanResult {
         stats: ScanStats,
     ) -> Self {
         let mut by_category: FxHashMap<Category, Vec<usize>> = FxHashMap::default();
-        let mut by_program: FxHashMap<String, Vec<usize>> = FxHashMap::default();
 
         for (i, e) in entries.iter().enumerate() {
             by_category.entry(e.category.clone()).or_default().push(i);
-            if let Some(key) = &e.program_key {
-                by_program.entry(key.clone()).or_default().push(i);
-            }
         }
 
         Self {
             entries,
             by_category,
-            by_program,
             scanned_at: chrono::Local::now(),
             stats,
             file_types,

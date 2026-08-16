@@ -236,14 +236,6 @@ pub fn is_blocked_list_writable() -> bool {
     LOCAL_MACHINE.options().read().write().open(parent).is_ok()
 }
 
-/// Is this CLSID currently on the blocked list?
-pub fn is_blocked(clsid: &str) -> bool {
-    LOCAL_MACHINE
-        .open(paths::SHELL_EXTENSIONS_BLOCKED)
-        .and_then(|key| key.get_type(clsid))
-        .is_ok()
-}
-
 fn require_backup(target: &RegTarget, token: &BackupToken) -> Result<()> {
     if token.covers(target) {
         return Ok(());
