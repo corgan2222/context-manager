@@ -313,7 +313,9 @@ Klick füllt sie aus, die Adresse und der Schlüssel bleiben Ihre.
 ## Über die Kommandozeile
 
 Dieselbe Anwendung ist auch ein Diagnosewerkzeug. Ausgaben landen in der
-Konsole, aus der sie gestartet wurde.
+Konsole, aus der sie gestartet wurde, in der Sprache, auf die das Fenster
+eingestellt ist — ein `--lang de` oder `--lang en` vor dem Befehl ändert das
+für einen Lauf.
 
 ```
 ctxmenu scan --category directory        Einträge einer Kategorie
@@ -339,6 +341,7 @@ ctxmenu favourite add --name "PNG verkleinern"
 ctxmenu favourite place <kennung> --ext .png
 ctxmenu favourite run <kennung> <datei>  ausführen wie ein Klick
 ctxmenu --tab dienste                    Fenster auf einem bestimmten Reiter öffnen
+ctxmenu --lang en scan                   diesen Lauf auf Englisch, Einstellung bleibt
 ctxmenu --version                        welche Fassung das ist
 ctxmenu --help                           die vollständige Liste
 ```

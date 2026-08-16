@@ -4,8 +4,11 @@
 //! inspect `argv` before starting the GUI anyway (the elevated job mode), and
 //! the release binary has a 15 MB budget to keep.
 //!
-//! This is a diagnostic tool for development. The shipping user interface is
-//! the GUI, which gets its bilingual strings in milestone 5.
+//! A diagnostic tool beside the window, and one that ships: what it prints is
+//! marked for both languages the way [`crate::bilingual`] describes, and cut on
+//! the way out. Two things here cut earlier than that, and say why where they
+//! stand: the usage text, which is two whole texts rather than one marked one,
+//! and every padded table column.
 
 use anyhow::{Context as _, Result, bail};
 
@@ -97,8 +100,10 @@ Verwendung:
                             services, backups
   ctxmenu --search <text>   Fenster mit gesetzter Suche öffnen
   ctxmenu --ext .png        Fenster auf dem Dateityp-Reiter, Endung gewählt
-  ctxmenu --lang de|en      Fenster in dieser Sprache öffnen; die gespeicherte
-                            Einstellung bleibt, wie sie ist
+  ctxmenu --lang de|en [...]
+                            Diesen Lauf in dieser Sprache: das Fenster ebenso
+                            wie jeder Unterbefehl. Steht vor dem Befehl; die
+                            gespeicherte Einstellung bleibt, wie sie ist
   ctxmenu --window 1600x1000
                             Fenster in dieser Größe (Bildpunkte) auf dem linken
                             Bildschirm öffnen; mindestens 900x600
@@ -168,8 +173,10 @@ Usage:
   ctxmenu --search <text>   open the window with the search box filled
   ctxmenu --ext .png        open the file type tab with that extension
                             selected
-  ctxmenu --lang de|en      open the window in that language, leaving the
-                            saved setting as it is
+  ctxmenu --lang de|en [...]
+                            run in that language: the window and every
+                            subcommand alike. Goes in front of the command;
+                            the saved setting is left as it is
   ctxmenu --window 1600x1000
                             open the window at that size in pixels on the
                             leftmost screen; at least 900x600
@@ -228,12 +235,26 @@ Options:
   --quiet             suppress progress output
 ";
 
+/// Reads the command line, and picks the language while doing so.
+///
+/// The one side effect: a leading `--lang` sets the language of this process
+/// before the rest of the list is looked at, so that the messages this function
+/// itself raises already come out in the language that was asked for. Setting
+/// it afterwards, in `main`, would leave `ctxmenu --lang en scan --category
+/// nonsense` answering in German.
 pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
-    let args: Vec<String> = args.collect();
+    let mut args: Vec<String> = args.collect();
+    let language = take_leading_language(&mut args)?;
+    if let Some(language) = language {
+        crate::bilingual::set_language(language);
+    }
 
     // No arguments means the product: a window, not a usage message.
     if args.is_empty() {
-        return Ok(Command::Gui(crate::app::Start::default()));
+        return Ok(Command::Gui(crate::app::Start {
+            language,
+            ..Default::default()
+        }));
     }
 
     match args[0].as_str() {
@@ -299,6 +320,9 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 }
             }
 
+            // A `--lang` in front of the other flags has already been taken
+            // off the list; one among them was just read by the loop.
+            start.language = start.language.or(language);
             return Ok(Command::Gui(start));
         }
         "programs" => return Ok(Command::Programs),
@@ -316,9 +340,12 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 "shift-only" => Action::ShiftOnly,
                 _ => Action::AlwaysShow,
             };
-            let path = args
-                .get(1)
-                .with_context(|| format!("{} erwartet einen Registry-Pfad", args[0]))?;
+            let path = args.get(1).with_context(|| {
+                format!(
+                    "{} \x1eerwartet einen Registry-Pfad\x1fexpects a registry path\x1d",
+                    args[0]
+                )
+            })?;
             return Ok(Command::Apply {
                 action,
                 path: path.clone(),
@@ -511,6 +538,35 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
     }))
 }
 
+/// Takes a leading `--lang <de|en>` off the argument list.
+///
+/// `--lang` used to reach the window and nothing else, back when the window was
+/// the only part of this program that showed text in a chosen language. The
+/// console cuts its messages to one language too, out of the saved setting, so
+/// on a German machine there was no way at all of reading `scan` or `--help` in
+/// English — and that is the one reader this flag exists for.
+///
+/// Leading, not anywhere in the list: `--name`, `--args` and `--sub` all take
+/// free text, and a global flag that might be hiding inside one of their values
+/// is a flag nobody can reason about. Taken off the list rather than skipped
+/// over, so every parser below still sees the argument surface it was written
+/// for.
+fn take_leading_language(args: &mut Vec<String>) -> Result<Option<crate::settings::Language>> {
+    if args.first().map(String::as_str) != Some("--lang") {
+        return Ok(None);
+    }
+
+    let value = args
+        .get(1)
+        .context("--lang \x1eerwartet einen Wert\x1fexpects a value\x1d")?
+        .clone();
+    let language = crate::settings::Language::from_slug(&value)
+        .with_context(|| format!("\x1eUnbekannte Sprache\x1funknown language\x1d: {value}"))?;
+
+    args.drain(..2);
+    Ok(Some(language))
+}
+
 /// The smallest window `--window` will hand out, in physical pixels.
 ///
 /// The pair the viewport is built with, read here as pixels. Below it the
@@ -548,8 +604,10 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     // Progress goes to stderr so that --json keeps stdout parseable.
     let result = scan::scan(&args.options, |p: ScanProgress| {
         if !args.quiet {
+            // The group sits at the end of the line, behind the last padded
+            // column, so the widths above it are none of its business.
             crate::errln!(
-                "[{:>2}/{:>2}] {:<60} {:>4} Einträge",
+                "[{:>2}/{:>2}] {:<60} {:>4} \x1eEinträge\x1fentries\x1d",
                 p.done,
                 p.total,
                 p.label,
@@ -567,13 +625,16 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     let nested = count_all(&result.entries) - result.entries.len();
     crate::outln!();
     crate::outln!(
-        "{} Einträge (+{nested} in Untermenüs) in {:.2} s ({} Scopes, {})",
+        "{} \x1eEinträge (+{nested} in Untermenüs)\x1fentries (+{nested} in submenus)\x1d \
+         in {:.2} s ({} \x1eScopes\x1fscopes\x1d, {})",
         result.entries.len(),
         elapsed.as_secs_f32(),
         args.options.scopes.len(),
         match &args.options.categories {
+            // A slug, not a translation: this is the word the user typed after
+            // `--category`, echoed back so a typo is visible.
             Some(c) => c.iter().map(|c| c.slug()).collect::<Vec<_>>().join(", "),
-            None => "alle Kategorien".to_string(),
+            None => "\x1ealle Kategorien\x1fall categories\x1d".to_string(),
         }
     );
     // Says how far the scan reached. Without it `--all-types` and
@@ -589,14 +650,7 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
     }
     crate::outln!();
 
-    crate::outln!(
-        "{:<7} {:<8} {:<22} {:<34} {:<7} Befehl|CLSID",
-        "Scope",
-        "Typ",
-        "Schlüssel",
-        "Anzeigename",
-        "Flags"
-    );
+    crate::outln!("{}", scan_header(crate::bilingual::language()));
     let rule = "-".repeat(120);
     crate::outln!("{rule}");
 
@@ -606,12 +660,43 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
 
     print_summary(&result.entries, &args.options.scopes);
     crate::outln!(
-        "MUI-Cache: {} Treffer / {} Auflösungen, blockierte CLSIDs im System: {}",
+        "MUI-Cache: {} \x1eTreffer\x1fhits\x1d / {} \x1eAuflösungen\x1flookups\x1d, \
+         \x1eblockierte CLSIDs im System\x1fCLSIDs blocked system-wide\x1d: {}",
         result.stats.mui_cache_hits,
         result.stats.mui_cache_misses,
         result.stats.blocked_clsids
     );
     Ok(())
+}
+
+/// A table heading, cut to the language on screen before it is padded.
+///
+/// See [`crate::bilingual::column`]: the cut has to happen here rather than on
+/// the way out, or the markers are counted into the width and then taken out of
+/// it again.
+fn column(marked: &str, width: usize) -> String {
+    crate::bilingual::column(marked, width, crate::bilingual::language())
+}
+
+/// The header row of the `scan` table, already in one language.
+///
+/// A function rather than a line inside the `outln!` call, and taking its
+/// language rather than reading the process's, so that a test can measure where
+/// each column starts in both of them at once — against the widths
+/// [`print_entry`] prints its rows at. That the two agree is the whole reason
+/// [`crate::bilingual::column`] exists.
+fn scan_header(language: crate::settings::Language) -> String {
+    let column = |marked: &str, width: usize| crate::bilingual::column(marked, width, language);
+    [
+        column("Scope", 7),
+        column("\x1eTyp\x1ftype\x1d", 8),
+        column("\x1eSchlüssel\x1fkey\x1d", 22),
+        column("\x1eAnzeigename\x1fdisplay name\x1d", 34),
+        column("Flags", 7),
+        // Nothing follows it, so it needs no width of its own.
+        column("\x1eBefehl\x1fcommand\x1d|CLSID", 0),
+    ]
+    .join(" ")
 }
 
 pub fn run_programs() -> Result<()> {
@@ -624,14 +709,18 @@ pub fn run_programs() -> Result<()> {
 
     let grouped: usize = groups.iter().map(|g| g.entry_count()).sum();
     crate::outln!(
-        "{} Programme aus {} Einträgen in {:.2} s ({} ohne zuordenbares Programm)",
+        "{} \x1eProgramme aus\x1fprograms out of\x1d {} \x1eEinträgen in\x1fentries in\x1d \
+         {:.2} s ({} \x1eohne zuordenbares Programm\x1fwith no program to attribute them to\x1d)",
         groups.len(),
         result.entries.len(),
         elapsed.as_secs_f32(),
         result.entries.len() - grouped
     );
     let (hits, lookups) = names.stats();
-    crate::outln!("Namens-Cache: {hits} Treffer / {lookups} Auflösungen");
+    crate::outln!(
+        "\x1eNamens-Cache\x1fname cache\x1d: {hits} \x1eTreffer\x1fhits\x1d / \
+         {lookups} \x1eAuflösungen\x1flookups\x1d"
+    );
     {
         use crate::program::identity::Presence;
         let count = |wanted: Presence| groups.iter().filter(|g| g.presence == wanted).count();
@@ -647,7 +736,9 @@ pub fn run_programs() -> Result<()> {
     for group in &groups {
         let marks = [
             group.is_system.then_some("System"),
-            group.read_only.then_some("schreibgeschützt"),
+            group
+                .read_only
+                .then_some("\x1eschreibgeschützt\x1fread-only\x1d"),
             (!group.clsids.is_empty()).then_some("COM"),
             // The window paints this row red; the console has no colour, so it
             // says it in words.
@@ -676,6 +767,12 @@ pub fn run_programs() -> Result<()> {
     Ok(())
 }
 
+/// Width of the label column in `filetype`.
+///
+/// Wide enough for the longest label in either language — `wirksame ProgID:`
+/// and `effective ProgID:` — with room left for the eye to cross the gap.
+const LABEL: usize = 20;
+
 pub fn run_file_type(raw_ext: &str) -> Result<()> {
     use crate::registry::filetypes;
 
@@ -691,34 +788,49 @@ pub fn run_file_type(raw_ext: &str) -> Result<()> {
         |_| {},
     );
 
-    let info = result
-        .file_types
-        .first()
-        .context("Der Scanner hat den Dateityp nicht geliefert")?;
+    let info = result.file_types.first().context(
+        "\x1eDer Scanner hat den Dateityp nicht geliefert\
+         \x1fthe scanner did not return the file type\x1d",
+    )?;
     let r = &info.resolution;
 
-    crate::outln!("{}   Gruppe: {:?}", r.ext, info.group);
+    crate::outln!("{}   \x1eGruppe\x1fgroup\x1d: {:?}", r.ext, info.group);
     crate::outln!("{}", "-".repeat(100));
-    crate::outln!("registriert:        {}", r.registered);
+    // A label column, so the same rule as the scan header: cut first, pad
+    // after. `PerceivedType` and `OpenWithProgids` are registry value names
+    // rather than words, and stay as Windows spells them.
     crate::outln!(
-        "Nutzerwahl:         {}",
+        "{}{}",
+        column("\x1eregistriert:\x1fregistered:\x1d", LABEL),
+        r.registered
+    );
+    crate::outln!(
+        "{}{}",
+        column("\x1eNutzerwahl:\x1fuser choice:\x1d", LABEL),
         r.user_choice.as_deref().unwrap_or("—")
     );
     crate::outln!(
-        "Systemvorgabe:      {}",
+        "{}{}",
+        column("\x1eSystemvorgabe:\x1fsystem default:\x1d", LABEL),
         r.default_progid.as_deref().unwrap_or("—")
     );
     crate::outln!(
-        "wirksame ProgID:    {}",
+        "{}{}",
+        column("\x1ewirksame ProgID:\x1feffective ProgID:\x1d", LABEL),
         r.effective_progid().unwrap_or("—")
     );
     crate::outln!(
-        "PerceivedType:      {}",
+        "{}{}",
+        column("PerceivedType:", LABEL),
         r.perceived_type
             .as_deref()
-            .unwrap_or("— (Ebene 3 entfällt)")
+            .unwrap_or("\x1e— (Ebene 3 entfällt)\x1f— (level 3 does not apply)\x1d")
     );
-    crate::outln!("OpenWithProgids:    {}", r.open_with_progids.join(", "));
+    crate::outln!(
+        "{}{}",
+        column("OpenWithProgids:", LABEL),
+        r.open_with_progids.join(", ")
+    );
     crate::outln!();
 
     // Levels 1 and 2 are shared by every file type; showing them separately
@@ -736,7 +848,8 @@ pub fn run_file_type(raw_ext: &str) -> Result<()> {
         .collect();
 
     crate::outln!(
-        "Ebenen 1-2, gelten fuer ALLE Dateien: {} Einträge",
+        "\x1eEbenen 1-2, gelten für ALLE Dateien\x1flevels 1-2, they apply to ALL files\x1d: \
+         {} \x1eEinträge\x1fentries\x1d",
         inherited.len()
     );
     for entry in inherited.iter().take(6) {
@@ -748,12 +861,17 @@ pub fn run_file_type(raw_ext: &str) -> Result<()> {
         );
     }
     if inherited.len() > 6 {
-        crate::outln!("    … und {} weitere", inherited.len() - 6);
+        // Named, not positional: the count appears in both halves, and a `{}`
+        // would consume one argument per half.
+        crate::outln!(
+            "    … \x1eund {more} weitere\x1fand {more} more\x1d",
+            more = inherited.len() - 6
+        );
     }
     crate::outln!();
 
     crate::outln!(
-        "Ebenen 3-7, nur fuer {}: {} Einträge",
+        "\x1eEbenen 3-7, nur für\x1flevels 3-7, only for\x1d {}: {} \x1eEinträge\x1fentries\x1d",
         r.ext,
         info.own_entry_count()
     );
@@ -770,25 +888,35 @@ pub fn run_file_type(raw_ext: &str) -> Result<()> {
 
     crate::outln!();
     crate::outln!(
-        "Summe fuer einen Rechtsklick auf eine {}-Datei: {} Einträge, ermittelt in {:.2} s",
-        r.ext,
+        "\x1eSumme für einen Rechtsklick auf eine {ext}-Datei\
+         \x1ftotal for one right-click on a {ext} file\x1d: \
+         {} \x1eEinträge, ermittelt in\x1fentries, worked out in\x1d {:.2} s",
         inherited.len() + info.own_entry_count(),
-        started.elapsed().as_secs_f32()
+        started.elapsed().as_secs_f32(),
+        ext = r.ext
     );
     Ok(())
 }
 
 /// Which level of the chain an entry came from.
+///
+/// Printed in the last column of its line, so the groups here cost no
+/// alignment: nothing is padded behind them.
 fn level_label(category: &Category) -> String {
     match category {
-        Category::AllFiles => "1 alle Dateien".into(),
-        Category::AllFilesystemObjects => "2 alle Dateisystemobjekte".into(),
-        Category::PerceivedType(t) => format!("3 wahrgenommener Typ ({t})"),
+        Category::AllFiles => "1 \x1ealle Dateien\x1fall files\x1d".into(),
+        Category::AllFilesystemObjects => {
+            "2 \x1ealle Dateisystemobjekte\x1fall filesystem objects\x1d".into()
+        }
+        Category::PerceivedType(t) => {
+            format!("3 \x1ewahrgenommener Typ\x1fperceived type\x1d ({t})")
+        }
+        // The rest name a registry path, and a path is not translated.
         Category::ExtAssoc(e) => format!("4 SystemFileAssociations\\{e}"),
         Category::ProgId { prog_id, .. } => format!("5/7 ProgID {prog_id}"),
         Category::ExtDirect(e) => format!("6 {e}\\shell"),
         // Not part of the chain at all: a stock, not a level.
-        Category::CommandStore => "— Verbvorrat".into(),
+        Category::CommandStore => "— \x1eVerbvorrat\x1fverb store\x1d".into(),
         other => format!("{other:?}"),
     }
 }
@@ -809,6 +937,9 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
         );
     }
 
+    // Read before `action` is moved into the plan. `plan.label` is the German
+    // one and stays that way — see `action_label` below.
+    let shown = action_label(&action);
     let plan = Plan::new(
         action.label(),
         vec![Operation {
@@ -823,7 +954,7 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     let needs_elevation = !elevated.is_empty();
 
     if !confirmed {
-        crate::outln!("\x1eWürde ausführen\x1fwould apply\x1d: {}", plan.label);
+        crate::outln!("\x1eWürde ausführen\x1fwould apply\x1d: {shown}");
         crate::outln!("  {}", target.full_path());
         crate::outln!(
             "  \x1eRechteerhöhung nötig\x1felevation required\x1d: {}",
@@ -859,11 +990,36 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
     for result in &report.results {
         match &result.error {
             None => crate::outln!("  ok   {}", result.registry_path),
-            Some(error) => crate::outln!("  FEHL {}  —  {error}", result.registry_path),
+            Some(error) => crate::outln!(
+                "  \x1eFEHL\x1ffail\x1d {}  —  {error}",
+                result.registry_path
+            ),
         }
     }
 
     Ok(())
+}
+
+/// The name of an action, for the console.
+///
+/// [`crate::registry::plan::Action::label`] stays German, and deliberately so:
+/// it names the backup directory under `%LOCALAPPDATA%\ctxmenu\backups`, where
+/// directories written by earlier versions have to stay recognisable and
+/// `tools\backups_aufraeumen.ps1` tells real backups from test ones by that
+/// name. The window keeps a translation of its own for the same reason
+/// (`app::action_label`); this is the console's.
+fn action_label(action: &crate::registry::plan::Action) -> &'static str {
+    use crate::registry::plan::Action;
+    match action {
+        Action::Hide => "\x1eAusblenden\x1fHide\x1d",
+        Action::Show => "\x1eEinblenden\x1fShow\x1d",
+        Action::ShiftOnly => "\x1eNur mit Umschalt\x1fShift only\x1d",
+        Action::AlwaysShow => "\x1eImmer zeigen\x1fAlways show\x1d",
+        Action::SetPosition(_) => "Position",
+        Action::Block => "\x1eBlockieren\x1fBlock\x1d",
+        Action::Unblock => "\x1eFreigeben\x1fUnblock\x1d",
+        Action::Delete => "\x1eLöschen\x1fDelete\x1d",
+    }
 }
 
 /// Creates an entry and tells the shell about it.
@@ -935,16 +1091,18 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
         Favourite, ResultAction, ResultSource, Tool, Upload, UploadBody, WebMode, WebTool,
     };
 
-    let what = args
-        .first()
-        .map(String::as_str)
-        .context("favourite erwartet list, add, place, remove oder run")?;
+    let what = args.first().map(String::as_str).context(
+        "favourite \x1eerwartet list, add, place, remove oder run\
+             \x1fexpects list, add, place, remove or run\x1d",
+    )?;
 
     match what {
         "list" => Ok(FavouriteCommand::List),
 
         "remove" => {
-            let id = args.get(1).context("remove erwartet eine Kennung")?;
+            let id = args
+                .get(1)
+                .context("remove \x1eerwartet eine Kennung\x1fexpects an id\x1d")?;
             Ok(FavouriteCommand::Remove(id.clone()))
         }
 
@@ -961,14 +1119,17 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
         }
 
         "place" => {
-            let id = args.get(1).context("place erwartet eine Kennung")?.clone();
+            let id = args
+                .get(1)
+                .context("place \x1eerwartet eine Kennung\x1fexpects an id\x1d")?
+                .clone();
             let mut category = None;
             let mut rest = args[2..].iter();
 
             while let Some(flag) = rest.next() {
-                let value = rest
-                    .next()
-                    .with_context(|| format!("{flag} erwartet einen Wert"))?;
+                let value = rest.next().with_context(|| {
+                    format!("{flag} \x1eerwartet einen Wert\x1fexpects a value\x1d")
+                })?;
                 category = Some(match flag.as_str() {
                     "--category" => Category::from_slug(value).with_context(|| {
                         format!("\x1eUnbekannte Kategorie\x1funknown category\x1d: {value}")
@@ -981,7 +1142,10 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
 
             Ok(FavouriteCommand::Place {
                 id,
-                category: category.context("place erwartet --category, --ext oder --perceived")?,
+                category: category.context(
+                    "place \x1eerwartet --category, --ext oder --perceived\
+                     \x1fexpects --category, --ext or --perceived\x1d",
+                )?,
             })
         }
 
@@ -1015,9 +1179,9 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                     _ => {}
                 }
 
-                let value = rest
-                    .next()
-                    .with_context(|| format!("{flag} erwartet einen Wert"))?;
+                let value = rest.next().with_context(|| {
+                    format!("{flag} \x1eerwartet einen Wert\x1fexpects a value\x1d")
+                })?;
                 match flag.as_str() {
                     "--name" => name = value.clone(),
                     "--exe" => exe = Some(value.clone()),
@@ -1045,9 +1209,10 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                     "--suffix" => suffix = value.clone(),
                     "--json-path" => json_path = Some(value.clone()),
                     "--header" => {
-                        let (key, val) = value
-                            .split_once(':')
-                            .context("--header erwartet \"Name: Wert\"")?;
+                        let (key, val) = value.split_once(':').context(
+                            "--header \x1eerwartet \"Name: Wert\"\
+                                 \x1fexpects \"Name: Value\"\x1d",
+                        )?;
                         headers.push(crate::favourites::Header {
                             name: key.trim().to_string(),
                             value: val.trim().to_string(),
@@ -1097,7 +1262,10 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                     confirmed: false,
                 }),
                 (None, None, None) => {
-                    bail!("add erwartet --exe, --url oder --endpoint")
+                    bail!(
+                        "add \x1eerwartet --exe, --url oder --endpoint\
+                         \x1fexpects --exe, --url or --endpoint\x1d"
+                    )
                 }
             };
 
@@ -1113,6 +1281,12 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
         other => bail!("\x1eUnbekannt\x1funknown\x1d: favourite {other}"),
     }
 }
+
+/// Width of the kind column in `favourites`.
+///
+/// `Programm` and `web tool` are the longest of the four words this column ever
+/// holds, at eight characters each.
+const KIND: usize = 10;
 
 pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
     use crate::favourites;
@@ -1130,14 +1304,20 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
                 crate::outln!("{:<20} {}", favourite.id, favourite.name);
                 match &favourite.tool {
                     crate::favourites::Tool::Program { path, args } => {
-                        crate::outln!("    Programm  {} {}", path.display(), args);
+                        crate::outln!(
+                            "    {}{} {}",
+                            column("\x1eProgramm\x1fprogram\x1d", KIND),
+                            path.display(),
+                            args
+                        );
                     }
                     crate::favourites::Tool::Web(_) => {
                         crate::outln!(
-                            "    Webtool   {}{}",
+                            "    {}{}{}",
+                            column("\x1eWebtool\x1fweb tool\x1d", KIND),
                             favourite.address().unwrap_or_default(),
                             if favourite.transfers_the_file() {
-                                "   (sendet die Datei)"
+                                "   \x1e(sendet die Datei)\x1f(sends the file)\x1d"
                             } else {
                                 ""
                             }
@@ -1166,7 +1346,9 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
 
         FavouriteCommand::Place { id, category } => {
             let favourite = favourites::find(&id)?;
-            let exe = std::env::current_exe().context("Eigenen Pfad nicht ermittelbar")?;
+            let exe = std::env::current_exe().context(
+                "\x1eEigenen Pfad nicht ermittelbar\x1fcannot work out this program's own path\x1d",
+            )?;
             let entry = favourite.entry(category, &exe);
 
             for problem in crate::registry::create::check(&entry) {
@@ -1249,14 +1431,20 @@ pub fn run_backups() -> Result<()> {
 
     for (directory, manifest) in &backups {
         crate::outln!(
-            "{}  {:<20} {} Schlüssel{}",
+            // `manifest.action` is quoted, not translated: it is the word that
+            // was written into the directory name when the backup was taken,
+            // and it carries no markers, so `{:<20}` counts it correctly.
+            "{}  {:<20} {} \x1eSchlüssel\x1fkeys\x1d{}",
             manifest.created_at.format("%Y-%m-%d %H:%M:%S"),
             manifest.action,
             manifest.entries.len(),
             if manifest.missing.is_empty() {
                 String::new()
             } else {
-                format!(", {} fehlten beim Export", manifest.missing.len())
+                format!(
+                    ", {} \x1efehlten beim Export\x1fwere missing at export time\x1d",
+                    manifest.missing.len()
+                )
             }
         );
         crate::outln!("    {}", directory.display());
@@ -1274,7 +1462,7 @@ pub fn run_restore(directory: &str) -> Result<()> {
     let path = std::path::Path::new(directory);
     let report = backup::restore(path)?;
     crate::outln!(
-        "{} Datei(en) \x1ezurückgespielt\x1frestored from\x1d {directory}",
+        "{} \x1eDatei(en) zurückgespielt aus\x1ffile(s) restored from\x1d {directory}",
         report.restored
     );
     if report.removed > 0 {
@@ -1288,7 +1476,7 @@ pub fn run_restore(directory: &str) -> Result<()> {
     // restore that stopped at the first gap used to leave the keys behind it
     // unreachable by this route.
     for failure in &report.failures {
-        crate::outln!("  FEHL {failure}");
+        crate::outln!("  \x1eFEHL\x1ffail\x1d {failure}");
     }
     crate::outln!(
         "\x1eHinweis: reg import fügt hinzu und überschreibt, entfernt aber nichts.\
@@ -1391,6 +1579,11 @@ fn flags(entry: &ContextEntry) -> String {
     out.trim_end().to_string()
 }
 
+/// Width of the label column in the scan summary.
+///
+/// `Nach Kategorie:` is the longest of the two labels, at fifteen characters.
+const SUMMARY: usize = 16;
+
 fn print_summary(entries: &[ContextEntry], requested: &[Scope]) {
     use std::collections::BTreeMap;
 
@@ -1414,10 +1607,17 @@ fn print_summary(entries: &[ContextEntry], requested: &[Scope]) {
     }
 
     crate::outln!();
-    crate::outln!("Nach Scope:     {per_scope:?}");
-    crate::outln!("Nach Kategorie: {per_category:?}");
     crate::outln!(
-        "Davon COM-Handler: {shellex}, statische Verben: {}",
+        "{}{per_scope:?}",
+        column("\x1eNach Scope:\x1fby scope:\x1d", SUMMARY)
+    );
+    crate::outln!(
+        "{}{per_category:?}",
+        column("\x1eNach Kategorie:\x1fby category:\x1d", SUMMARY)
+    );
+    crate::outln!(
+        "\x1eDavon COM-Handler\x1fof those, COM handlers\x1d: {shellex}, \
+         \x1estatische Verben\x1fstatic verbs\x1d: {}",
         entries.len() - shellex
     );
 }
@@ -1464,6 +1664,9 @@ mod tests {
 
     #[test]
     fn the_start_language_can_be_named_for_one_run() {
+        // `parse` sets the language of this process, so it is put back.
+        let before = crate::bilingual::language();
+
         assert_eq!(
             start_of(&["--lang", "en"]).language,
             Some(crate::settings::Language::English)
@@ -1480,6 +1683,105 @@ mod tests {
 
         assert!(parse_args(&["--lang", "klingonisch"]).is_err());
         assert!(parse_args(&["--lang"]).is_err());
+
+        crate::bilingual::set_language(before);
+    }
+
+    #[test]
+    fn a_leading_language_flag_reaches_the_subcommands_as_well() {
+        // The gap this closes: the console cuts every message to one language
+        // out of the saved setting, so on a German machine there was no way of
+        // reading `scan` or `--help` in English at all.
+        let before = crate::bilingual::language();
+
+        assert!(matches!(
+            parse_args(&["--lang", "en", "scan"]).unwrap(),
+            Command::Scan(_)
+        ));
+        assert_eq!(
+            crate::bilingual::language(),
+            crate::settings::Language::English
+        );
+        assert!(crate::cli::help().starts_with("ctxmenu"));
+        assert!(help().contains("open the window"));
+
+        assert!(matches!(
+            parse_args(&["--lang", "de", "programs"]).unwrap(),
+            Command::Programs
+        ));
+        assert_eq!(
+            crate::bilingual::language(),
+            crate::settings::Language::German
+        );
+        assert!(help().contains("Fenster öffnen"));
+
+        crate::bilingual::set_language(before);
+    }
+
+    #[test]
+    fn the_language_flag_is_read_at_the_front_and_nowhere_else() {
+        let mut args: Vec<String> = ["--lang", "en", "scan", "--json"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            take_leading_language(&mut args).unwrap(),
+            Some(crate::settings::Language::English)
+        );
+        // Taken off, so the parser below sees the list it was written for.
+        assert_eq!(args, ["scan", "--json"]);
+
+        // A free-text value that happens to spell the flag belongs to the flag
+        // in front of it and is none of this function's business.
+        let mut named: Vec<String> = ["create", "--name", "--lang"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(take_leading_language(&mut named).unwrap(), None);
+        assert_eq!(named.len(), 3);
+
+        assert!(take_leading_language(&mut vec!["--lang".to_string()]).is_err());
+        assert!(
+            take_leading_language(&mut vec!["--lang".to_string(), "klingonisch".to_string()])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_scan_header_starts_its_columns_where_the_rows_below_do() {
+        // `print_entry` prints {:<7} {:<8} {:<22} {:<34} {:<7} joined by single
+        // spaces, so these are the character positions the eye follows down the
+        // page. Both languages have to hit every one of them: a heading padded
+        // before it was cut would come out short, and short by a different
+        // amount in each language.
+        let starts = [0usize, 8, 17, 40, 75, 83];
+
+        for language in [
+            crate::settings::Language::German,
+            crate::settings::Language::English,
+        ] {
+            let header = scan_header(language);
+            let chars: Vec<char> = header.chars().collect();
+
+            assert!(
+                !header.contains(crate::bilingual::is_marker),
+                "{language:?}: a marker reached the header: {header:?}"
+            );
+            for start in starts {
+                assert_ne!(
+                    chars.get(start),
+                    Some(&' '),
+                    "{language:?}: no column starts at {start}: {header:?}"
+                );
+                if start > 0 {
+                    assert_eq!(
+                        chars[start - 1],
+                        ' ',
+                        "{language:?}: column {start} is not preceded by a gap: {header:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

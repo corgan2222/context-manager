@@ -319,7 +319,8 @@ one click fills them in, and the address and the key remain yours.
 ## From the Command Line
 
 The same application is also a diagnostic tool. Output goes to the console
-it was started from.
+it was started from, in the language the window is set to — put `--lang en`
+or `--lang de` in front of the command to change that for one run.
 
 ```
 ctxmenu scan --category directory        entries in one category
@@ -345,6 +346,7 @@ ctxmenu favourite add --name "PNG verkleinern"
 ctxmenu favourite place <id> --ext .png
 ctxmenu favourite run <id> <file>        run it like a click
 ctxmenu --tab services                   open the window on a specific tab
+ctxmenu --lang en scan                   this run in English, saved setting untouched
 ctxmenu --version                        which version this is
 ctxmenu --help                           the complete list
 ```
