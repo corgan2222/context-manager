@@ -281,6 +281,14 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                         if flag == "--synthetic" {
                             start.synthetic = Some(number);
                         } else {
+                            // A run over zero frames measures nothing, and
+                            // the counter it would drive is unsigned: caught
+                            // here first so it never even reaches that guard.
+                            if number == 0 {
+                                bail!(
+                                    "\x1e--bench 0 misst nichts\x1f--bench 0 measures nothing\x1d"
+                                );
+                            }
                             start.bench = Some(number);
                         }
                     }
@@ -1015,11 +1023,25 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                     "--exe" => exe = Some(value.clone()),
                     "--args" => program_args = value.clone(),
                     "--url" => url = Some(value.clone()),
-                    "--mode" => mode = value.to_lowercase(),
+                    "--mode" => {
+                        mode = value.to_lowercase();
+                        if !matches!(mode.as_str(), "clipboard" | "open") {
+                            bail!(
+                                "\x1eUnbekannter Modus\x1funknown mode\x1d: {value} (clipboard, open)"
+                            );
+                        }
+                    }
                     "--endpoint" => endpoint = Some(value.clone()),
                     "--field" => field = value.clone(),
                     "--icon" => icon = Some(value.clone()),
-                    "--result" => result = value.to_lowercase(),
+                    "--result" => {
+                        result = value.to_lowercase();
+                        if !matches!(result.as_str(), "save" | "open" | "report") {
+                            bail!(
+                                "\x1eUnbekanntes Ergebnis\x1funknown result\x1d: {value} (save, open, report)"
+                            );
+                        }
+                    }
                     "--suffix" => suffix = value.clone(),
                     "--json-path" => json_path = Some(value.clone()),
                     "--header" => {
@@ -1550,6 +1572,91 @@ mod tests {
 
         assert!(parse_args(&["--synthetic"]).is_err());
         assert!(parse_args(&["--synthetic", "viele"]).is_err());
+    }
+
+    #[test]
+    fn a_bench_of_zero_frames_is_refused() {
+        // Regression for todo 22: a run over zero frames never measures
+        // anything, and used to hang the window forever instead of saying
+        // so -- `bench.remaining -= 1` had nothing to reach zero from.
+        let Err(error) = parse_args(&["--synthetic", "50", "--bench", "0"]) else {
+            panic!("--bench 0 must be refused");
+        };
+        assert!(format!("{error}").contains("--bench 0"));
+
+        // Zero synthetic rows is a perfectly fine (if boring) scan, and
+        // unrelated to the counter this guards -- only --bench is refused.
+        assert_eq!(start_of(&["--synthetic", "0"]).synthetic, Some(0));
+    }
+
+    fn favourite_args(args: &[&str]) -> Result<FavouriteCommand> {
+        parse_favourite(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_typo_in_favourite_mode_is_refused_not_swallowed() {
+        // Regression for todo 23: any unrecognised --mode silently became
+        // WebMode::Clipboard, so "oepn" opened nothing and copied the URL to
+        // the clipboard instead, without a word about the typo.
+        let Err(error) =
+            favourite_args(&["add", "--name", "X", "--url", "https://y", "--mode", "oepn"])
+        else {
+            panic!("a typo'd mode must be refused");
+        };
+        assert!(format!("{error}").contains("oepn"));
+
+        // The real values still work, and build the mode that was named.
+        let FavouriteCommand::Add(favourite) =
+            favourite_args(&["add", "--name", "X", "--url", "https://y", "--mode", "open"])
+                .expect("a known mode is accepted")
+        else {
+            panic!("expected FavouriteCommand::Add");
+        };
+        let crate::favourites::Tool::Web(web) = favourite.tool else {
+            panic!("expected a web tool");
+        };
+        assert!(matches!(web.mode, crate::favourites::WebMode::Open { .. }));
+    }
+
+    #[test]
+    fn a_typo_in_favourite_result_is_refused_not_swallowed() {
+        // Same bug, the other switch: an unrecognised --result silently
+        // became ResultAction::Report.
+        let Err(error) = favourite_args(&[
+            "add",
+            "--name",
+            "X",
+            "--endpoint",
+            "https://y",
+            "--result",
+            "svae",
+        ]) else {
+            panic!("a typo'd result must be refused");
+        };
+        assert!(format!("{error}").contains("svae"));
+
+        let FavouriteCommand::Add(favourite) = favourite_args(&[
+            "add",
+            "--name",
+            "X",
+            "--endpoint",
+            "https://y",
+            "--result",
+            "save",
+        ])
+        .expect("a known result is accepted") else {
+            panic!("expected FavouriteCommand::Add");
+        };
+        let crate::favourites::Tool::Web(web) = favourite.tool else {
+            panic!("expected a web tool");
+        };
+        let crate::favourites::WebMode::Upload(upload) = web.mode else {
+            panic!("expected an upload mode");
+        };
+        assert!(matches!(
+            upload.result,
+            crate::favourites::ResultAction::Save { .. }
+        ));
     }
 
     #[test]

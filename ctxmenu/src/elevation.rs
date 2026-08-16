@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
+use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 // OpenProcessToken lives in System::Threading, not Security, even though it
@@ -28,6 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SW_HIDE};
 use windows::core::{Owned, PCWSTR, w};
 
 use crate::registry::plan::{Plan, Report, execute};
+use crate::settings::Language;
 
 /// Keeps a started console tool from flashing a window. Same constant and same
 /// reason as in `registry::backup`.
@@ -278,6 +280,28 @@ fn result_path(job: &Path) -> PathBuf {
     job.with_extension("result.json")
 }
 
+/// What a job file carries for the elevated child.
+///
+/// `#[serde(flatten)]` keeps `Plan`'s own fields at the top level of the
+/// file, so a job file this same struct wrote is byte-for-byte what a plain
+/// `Plan` expects — and, the other way round, a job file left over from a
+/// build before `language` existed has none of these keys either, and
+/// `#[serde(default)]` fills it in rather than refusing to load.
+#[derive(Debug, Serialize, Deserialize)]
+struct Job {
+    #[serde(flatten)]
+    plan: Plan,
+    /// The language the window was showing when the job was written.
+    ///
+    /// The elevated child never opens a window and so never calls
+    /// [`crate::bilingual::set_language`] itself; without this, its call to
+    /// `backup::export` fell back to re-reading `settings.json` from disk,
+    /// which can name a language the user already changed away from — the
+    /// manifest note then permanently disagrees with the screen (todo 25).
+    #[serde(default)]
+    language: Language,
+}
+
 /// Writes a plan to a job file in the temp directory.
 pub fn write_job(plan: &Plan) -> Result<PathBuf> {
     let name = format!(
@@ -286,41 +310,67 @@ pub fn write_job(plan: &Plan) -> Result<PathBuf> {
         chrono::Local::now().format("%Y%m%dT%H%M%S%3f")
     );
     let path = std::env::temp_dir().join(name);
-    std::fs::write(&path, serde_json::to_string_pretty(plan)?)
+    let job = Job {
+        plan: plan.clone(),
+        language: crate::bilingual::language(),
+    };
+    std::fs::write(&path, serde_json::to_string_pretty(&job)?)
         .with_context(|| format!("\x1eJob-Datei\x1fjob file\x1d {path:?}"))?;
     Ok(path)
+}
+
+/// Deletes the job and result files when dropped, whichever way the
+/// enclosing function returns.
+///
+/// `run_elevated` used to remove both only at its very end, one statement
+/// after the `?` and the `bail!` in its `Outcome::Finished` arm — both of
+/// which return past that point, leaving the job file (the full plan: every
+/// registry path and action) behind in `%TEMP%` on every such failure
+/// (todo 19). A guard covers every return path, including ones added later.
+struct JobFiles {
+    job: PathBuf,
+    result: PathBuf,
+}
+
+impl Drop for JobFiles {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.job);
+        let _ = std::fs::remove_file(&self.result);
+    }
 }
 
 /// Parent side: hand the elevated half over and collect the report.
 pub fn run_elevated(plan: &Plan) -> Result<Report> {
     let job = write_job(plan)?;
-    let outcome = run_elevated_job(&job);
     let result = result_path(&job);
+    let _cleanup = JobFiles {
+        job: job.clone(),
+        result: result.clone(),
+    };
 
-    let report = match outcome {
-        Outcome::Cancelled => {
-            let _ = std::fs::remove_file(&job);
-            bail!("\x1eVom Benutzer abgebrochen\x1fcancelled by the user\x1d");
-        }
-        Outcome::Failed(message) => {
-            let _ = std::fs::remove_file(&job);
-            bail!(
-                "\x1eStart mit Administratorrechten fehlgeschlagen\x1felevation failed\x1d: {message}"
-            );
-        }
-        Outcome::Finished(_) => match std::fs::read_to_string(&result) {
+    let outcome = run_elevated_job(&job);
+    collect_report(outcome, &result)
+}
+
+/// Turns the outcome of an elevated run into its report, or an error.
+///
+/// Split out from `run_elevated` so these branches can be exercised without
+/// actually asking Windows for elevation.
+fn collect_report(outcome: Outcome, result: &Path) -> Result<Report> {
+    match outcome {
+        Outcome::Cancelled => bail!("\x1eVom Benutzer abgebrochen\x1fcancelled by the user\x1d"),
+        Outcome::Failed(message) => bail!(
+            "\x1eStart mit Administratorrechten fehlgeschlagen\x1felevation failed\x1d: {message}"
+        ),
+        Outcome::Finished(_) => match std::fs::read_to_string(result) {
             Ok(raw) => serde_json::from_str(&raw)
-                .context("\x1eErgebnisdatei unlesbar\x1fresult file unreadable\x1d")?,
+                .context("\x1eErgebnisdatei unlesbar\x1fresult file unreadable\x1d"),
             Err(_) => bail!(
                 "\x1eDer erhöhte Vorgang hat keinen Bericht hinterlasse\
                  n\x1fthe elevated run left no report\x1d"
             ),
         },
-    };
-
-    let _ = std::fs::remove_file(&job);
-    let _ = std::fs::remove_file(&result);
-    Ok(report)
+    }
 }
 
 /// Child side: run one job file and leave the report next to it.
@@ -335,10 +385,16 @@ pub fn run_job(job: &Path) -> Result<()> {
 
     let raw = std::fs::read_to_string(job)
         .with_context(|| format!("\x1eJob-Datei\x1fjob file\x1d {job:?}"))?;
-    let plan: Plan =
+    let parsed: Job =
         serde_json::from_str(&raw).context("\x1eJob-Datei unlesbar\x1fjob file unreadable\x1d")?;
 
-    let report = execute(&plan)?;
+    // This process never opens a window, so nothing else would ever call
+    // `set_language` -- without this, `execute` (by way of `backup::export`)
+    // wrote the manifest note in whatever language `settings.json` happened
+    // to hold, which can already disagree with the one shown on screen.
+    crate::bilingual::set_language(parsed.language);
+
+    let report = execute(&parsed.plan)?;
     std::fs::write(result_path(job), serde_json::to_string_pretty(&report)?)
         .context("\x1eErgebnisdatei\x1fresult file\x1d")?;
 
@@ -395,5 +451,106 @@ mod tests {
             format!("{error}").contains("Administratorrechte"),
             "unexpected error: {error}"
         );
+    }
+
+    /// Regression for todo 19: a partial return out of `run_elevated` --
+    /// the `bail!` and the `?` in its `Outcome::Finished` arm both did this
+    /// -- used to skip the cleanup at the bottom of the function and leave
+    /// both files behind in `%TEMP%` forever.
+    #[test]
+    fn dropping_the_job_guard_removes_both_files() {
+        let dir = std::env::temp_dir();
+        let job = dir.join(format!("ctxmenu_test_job_{}.json", std::process::id()));
+        let result = result_path(&job);
+        std::fs::write(&job, "{}").expect("writable temp directory");
+        std::fs::write(&result, "{}").expect("writable temp directory");
+
+        {
+            let _guard = JobFiles {
+                job: job.clone(),
+                result: result.clone(),
+            };
+        }
+
+        assert!(!job.exists(), "job file survived the guard");
+        assert!(!result.exists(), "result file survived the guard");
+    }
+
+    #[test]
+    fn collect_report_refuses_a_cancelled_prompt_without_touching_any_file() {
+        let error = collect_report(Outcome::Cancelled, Path::new(r"C:\gibt\es\nicht.json"))
+            .expect_err("a declined prompt is not a report");
+        assert!(format!("{error}").contains("abgebrochen"));
+    }
+
+    #[test]
+    fn collect_report_names_the_failure_when_elevation_itself_failed() {
+        let error = collect_report(
+            Outcome::Failed("kein Handle".into()),
+            Path::new(r"C:\gibt\es\nicht.json"),
+        )
+        .expect_err("a failed elevation is not a report");
+        assert!(format!("{error}").contains("kein Handle"));
+    }
+
+    #[test]
+    fn collect_report_complains_when_a_finished_run_left_no_result_file() {
+        let error = collect_report(Outcome::Finished(0), Path::new(r"C:\gibt\es\nicht.json"))
+            .expect_err("a missing result file is not a report");
+        assert!(format!("{error}").contains("keinen Bericht"));
+    }
+
+    #[test]
+    fn collect_report_reads_the_result_file_a_finished_run_left_behind() {
+        let path = std::env::temp_dir().join(format!(
+            "ctxmenu_test_result_{}_{}.json",
+            std::process::id(),
+            line!()
+        ));
+        let report = Report {
+            backup_directories: vec!["irgendwo".into()],
+            results: Vec::new(),
+        };
+        std::fs::write(&path, serde_json::to_string(&report).unwrap()).unwrap();
+
+        let back =
+            collect_report(Outcome::Finished(0), &path).expect("a written report reads back");
+        assert_eq!(back.backup_directories, vec!["irgendwo".to_string()]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Regression for todo 25: the elevated child never calls
+    /// `bilingual::set_language`, so it needs the language handed to it
+    /// through the job file instead of guessing from `settings.json`.
+    #[test]
+    fn the_job_file_carries_the_current_language() {
+        let before = crate::bilingual::language();
+        crate::bilingual::set_language(Language::English);
+
+        let plan = Plan::new("test", Vec::new());
+        let path = write_job(&plan).expect("writable temp directory");
+        let raw = std::fs::read_to_string(&path).expect("readable");
+        let job: Job = serde_json::from_str(&raw).expect("valid json");
+        assert_eq!(job.language, Language::English);
+
+        let _ = std::fs::remove_file(&path);
+        crate::bilingual::set_language(before);
+    }
+
+    /// A job file written before this field existed has no `language` key
+    /// at all -- `#[serde(default)]` must load it anyway rather than turn a
+    /// leftover file from an interrupted run into a parse error.
+    #[test]
+    fn an_older_job_file_without_a_language_field_still_loads() {
+        let raw = serde_json::to_string(&Plan::new("test", Vec::new())).unwrap();
+        assert!(
+            !raw.contains("language"),
+            "a bare Plan must not itself mention language: {raw}"
+        );
+
+        let job: Job = serde_json::from_str(&raw).expect("an old job file must still load");
+        assert_eq!(job.plan.label, "test");
+        assert_eq!(job.language, Language::German, "serde's own default");
     }
 }
