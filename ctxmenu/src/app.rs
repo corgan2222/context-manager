@@ -4133,6 +4133,7 @@ impl App {
                 let mut close = false;
                 let mut open_url: Option<&str> = None;
                 let mut open_log = false;
+                let mut toggle_self: Option<(Category, bool)> = None;
                 let logo = self.logo_texture(ui.ctx());
                 egui::Window::new(self.tr.about_title)
                     .collapsible(false)
@@ -4172,6 +4173,37 @@ impl App {
                                 if ui.link(label).on_hover_text(url).clicked() {
                                     open_url = Some(url);
                                 }
+                            }
+
+                            // Put the program itself in the menu it manages.
+                            // The one entry a user cannot make with the editor
+                            // without first knowing where their own .exe
+                            // lives, and the one that makes the program
+                            // reachable from where the question comes up.
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                            ui.small(self.tr.self_entry_intro);
+                            ui.add_space(4.0);
+                            for (category, present) in create::self_entry_present() {
+                                let label = format!(
+                                    "{}  \u{b7}  {}",
+                                    category_label(&category, self.tr),
+                                    match present {
+                                        true => self.tr.self_entry_there,
+                                        false => self.tr.self_entry_absent,
+                                    }
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.label(label);
+                                    let button = match present {
+                                        true => self.tr.self_entry_remove,
+                                        false => self.tr.self_entry_add,
+                                    };
+                                    if ui.small_button(button).clicked() {
+                                        toggle_self = Some((category.clone(), present));
+                                    }
+                                });
                             }
 
                             // The log, from the one window every user finds.
@@ -4216,6 +4248,25 @@ impl App {
                 {
                     self.dialog = Some(Dialog::Error(format!("{error:#}")));
                     close = true;
+                }
+
+                if let Some((category, present)) = toggle_self {
+                    // Always HKCU, like every entry this program writes, so no
+                    // elevation and no effect on anyone else's account.
+                    let outcome = match present {
+                        true => create::self_entry(category, "x")
+                            .and_then(|entry| entry.target())
+                            .and_then(|target| create::remove_self(&target)),
+                        false => create::self_entry(category, self.tr.self_entry_name)
+                            .and_then(|entry| create::create(&entry).map(|_| ())),
+                    };
+                    if let Err(error) = outcome {
+                        self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                        close = true;
+                    } else {
+                        elevation::notify_shell();
+                        self.start_scan(ctx);
+                    }
                 }
                 if !close {
                     self.dialog = Some(Dialog::About);

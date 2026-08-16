@@ -285,6 +285,65 @@ pub fn from_dropped_file(path: &std::path::Path, category: Category) -> NewEntry
     }
 }
 
+/// The key name this program uses for its own context menu entry.
+///
+/// Fixed rather than derived from the display name: the entry has to be found
+/// again to say whether it is there and to take it away, and the display name
+/// changes with the interface language.
+pub const SELF_KEY: &str = "ctxmenu_manage";
+
+/// The entry that opens this program from a right-click.
+///
+/// Two places, and only two: the background of a folder and the background of
+/// the desktop. Those are where somebody stands when they think "what is even
+/// in this menu" — on a file the entry would only be in the way of the menu it
+/// is meant to tidy up.
+///
+/// No `%1` or `%V`: the program takes no file, it opens its own window.
+pub fn self_entry(category: Category, display_name: &str) -> Result<NewEntry> {
+    let exe = std::env::current_exe().context("\x1eeigener Pfad\x1fown path\x1d")?;
+    Ok(NewEntry {
+        category,
+        key_name: SELF_KEY.to_string(),
+        display_name: display_name.to_string(),
+        command: format!("\"{}\"", exe.display()),
+        icon: Some(exe.display().to_string()),
+        position: None,
+        extended: false,
+        children: Vec::new(),
+    })
+}
+
+/// Where this program offers to put itself.
+pub const SELF_CATEGORIES: [Category; 2] =
+    [Category::DirectoryBackground, Category::DesktopBackground];
+
+/// Whether the entry is in place, per category.
+pub fn self_entry_present() -> Vec<(Category, bool)> {
+    SELF_CATEGORIES
+        .into_iter()
+        .map(|category| {
+            let there = self_entry(category.clone(), "x")
+                .and_then(|entry| entry.target())
+                .map(|target| super::write::exists(&target))
+                .unwrap_or(false);
+            (category, there)
+        })
+        .collect()
+}
+
+/// Takes this program's own entry back out of the menu.
+///
+/// Through the ordinary road — back up, delete, forget — and not through
+/// `write::remove_own_new_key`, which exists for undoing a half-written create
+/// and skips the backup on purpose. "Backed up before every change" has no
+/// exception for the entry this program made for itself.
+pub fn remove_self(target: &super::paths::RegTarget) -> Result<()> {
+    let token = super::backup::export("ctxmenu-Eintrag", &[target.full_path()])?;
+    super::write::delete_tree(target, &token)?;
+    forget_target(target)
+}
+
 /// Checks an entry before anything is written.
 pub fn check(entry: &NewEntry) -> Vec<Problem> {
     let mut problems = Vec::new();

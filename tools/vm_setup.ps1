@@ -1,17 +1,23 @@
-# Legt die Windows-10-Test-VM an, in der die HKLM-Schreibtests laufen.
+# Legt eine Test-VM an, in der die HKLM-Schreibtests laufen.
 #
 # ToDo 2.8 verlangt eine VM mit Checkpoint vor der ersten Schreiboperation:
 # ein Fehler in HKLM\SOFTWARE\Classes macht den Explorer unbenutzbar, und das
 # faellt erst beim naechsten Rechtsklick auf.
 #
+# Seit dem 2026-08-16 auch fuer Windows 11: -Tpm schaltet den virtuellen TPM
+# und den Schluesselschutz ein, ohne die Setup sich weigert zu installieren.
+#
 # Voraussetzungen:
 #   - Hyper-V aktiviert, Konto in der Gruppe "Hyper-V-Administratoren"
 #   - der Dienst vmms laeuft (Start-Service vmms; die Dienst-ACL erlaubt das
 #     dieser Gruppe ausdruecklich, eine Erhoehung ist nicht noetig)
-#   - eine unbeaufsichtigte Windows-10-ISO
+#   - eine unbeaufsichtigte ISO
 #
 # Aufruf:
 #   pwsh -File tools\vm_setup.ps1 -Iso D:\temp\win10\Win10_22H2_unattend.iso
+#   pwsh -File tools\vm_setup.ps1 -Iso D:\Temp\Win11_25H2_unraid_en.iso `
+#        -Name ctxmenu-test-win11 -Tpm `
+#        -VhdPath 'D:\Hyper-V\ctxmenu-test-win11.vhdx'
 
 [CmdletBinding()]
 param(
@@ -24,7 +30,12 @@ param(
     # und laesst Platz fuer Testprogramme.
     [uint64]$DiskBytes = 64GB,
     [uint64]$MemoryBytes = 4GB,
-    [int]$Cpu = 4
+    [int]$Cpu = 4,
+    # Windows 11 prueft TPM 2.0 und Secure Boot, bevor es ueberhaupt anfaengt,
+    # und bricht sonst mit "Auf diesem PC kann Windows 11 nicht ausgefuehrt
+    # werden" ab. Hyper-V bringt beides mit; der Schluesselschutz muss vorher
+    # angelegt werden, sonst laesst sich der vTPM nicht einschalten.
+    [switch]$Tpm
 )
 
 Set-StrictMode -Version Latest
@@ -60,6 +71,21 @@ Get-VMIntegrationService -VMName $Name | Enable-VMIntegrationService -ErrorActio
 Add-VMDvdDrive -VMName $Name -Path $Iso
 Set-VMFirmware -VMName $Name -FirstBootDevice (Get-VMDvdDrive -VMName $Name)
 Set-VMFirmware -VMName $Name -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
+
+if ($Tpm) {
+    # Reihenfolge ist Pflicht: ohne Schluesselschutz weigert sich
+    # Enable-VMTpm mit "Der Schluesselschutz fuer die VM ist ungueltig".
+    Write-Host 'Richte den virtuellen TPM ein ...'
+    # Unbedingt, nicht nur wenn keiner da ist: eine frische VM hat bereits
+    # einen Schluesselschutz, nur einen leeren, und `Get-VMKeyProtector`
+    # liefert dafuer keinen Null-Wert. Die Pruefung sah also erfuellt aus,
+    # und Enable-VMTpm scheiterte an genau der Vorbedingung, die sie
+    # herstellen sollte.
+    Set-VMKeyProtector -VMName $Name -NewLocalKeyProtector
+    Enable-VMTpm -VMName $Name
+    $tpm = Get-VMSecurity -VMName $Name
+    Write-Host "  TPM aktiviert: $($tpm.TpmEnabled), Verschluesselung: $($tpm.EncryptStateAndVmMigrationTraffic)"
+}
 
 Write-Host 'Starte VM ...'
 Start-VM -Name $Name
