@@ -628,12 +628,41 @@ mod source {
     /// and `1000.0 / average` would be reported; without the literal check,
     /// `hits as f64 / total as f64` would be. What is left is text written for
     /// a reader.
+    ///
+    /// A question mark counts as the end of a word here, and that is not
+    /// decoration: `"schreibgeschützt? / read-only?"` in `update.rs` survived
+    /// the rewrite for exactly this reason, because the character in front of
+    /// the slash was `?` rather than a letter. Sentence-ending punctuation is
+    /// where a translated question stops, so it belongs on this side of the
+    /// check. Arithmetic is unaffected — `?` before a slash means the `?`
+    /// operator, which never appears inside a string literal.
     fn bilingual_looking(line: &str) -> bool {
+        let ends_a_word = |c: char| c.is_alphabetic() || matches!(c, '?' | '!' | '.');
         line.match_indices(" / ").any(|(at, _)| {
             let before = line[..at].chars().next_back().unwrap_or(' ');
             let after = line[at + 3..].chars().next().unwrap_or(' ');
-            before.is_alphabetic() && after.is_alphabetic() && inside_a_literal(line, at)
+            ends_a_word(before) && after.is_alphabetic() && inside_a_literal(line, at)
         })
+    }
+
+    #[test]
+    fn a_translated_question_is_caught_even_though_it_ends_in_punctuation() {
+        // The line as it stood in update.rs until 2026-08-16. The guard read
+        // over it for two months because `?` is not alphabetic, so the one
+        // message written in the old shape was the one message never reported.
+        let missed = r#"    "{} \x1ebeiseite legen\x1fmoving aside\x1d: schreibgeschützt? / read-only?","#;
+        assert!(bilingual_looking(missed));
+
+        // The shapes that made the letter check necessary in the first place
+        // stay out, and `?` before a slash outside a literal is the operator.
+        for arithmetic in [
+            "let share = hits as f64 / total as f64;",
+            "let each = 1000.0 / average;",
+            "let per = width / columns;",
+            "let value = parse(text)? / divisor;",
+        ] {
+            assert!(!bilingual_looking(arithmetic), "reported: {arithmetic}");
+        }
     }
 
     /// Is the byte at `at` inside a string literal? Counted by unescaped

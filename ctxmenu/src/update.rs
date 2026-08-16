@@ -270,7 +270,7 @@ pub fn install(new_bytes: &[u8]) -> Result<std::path::PathBuf> {
 
     std::fs::rename(&running, &leftover).with_context(|| {
         format!(
-            "{} \x1ebeiseite legen\x1fmoving aside\x1d: schreibgeschützt? / read-only?",
+            "{} \x1ebeiseite legen: schreibgeschützt?\x1fmoving aside: read-only?\x1d",
             running.display()
         )
     })?;
