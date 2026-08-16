@@ -13,8 +13,12 @@ resolver = "3"
 # subcommand and no stored format touched. 1.1.0 on 2026-08-16: the services
 # tab, which reads an OpenAPI description and makes favourites from it, plus a
 # services.json beside the other stored files — a new ability, and one that
-# older versions simply ignore.
-version = "1.1.0"
+# older versions simply ignore. 1.2.0 on 2026-08-16, the same day: a queued job
+# is now followed to its result, which turned the services tab from working in
+# two clicks out of six into working in six, plus --lang and --window on the
+# command line. New abilities; nothing stored changed shape, and a favourite
+# written by 1.1.0 still loads.
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
