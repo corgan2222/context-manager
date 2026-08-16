@@ -222,15 +222,20 @@ pub fn tools_of(service: &Service) -> Result<(String, Vec<spec::Tool>)> {
 
 /// A readable, stable id from a name — the same rule favourites use.
 pub fn id_for(name: &str) -> String {
-    let mut id: String = name
+    // Cut by characters rather than by bytes. `String::truncate` insists on a
+    // character boundary and panics otherwise, and the names this is handed
+    // come out of somebody else's description: a summary of 47 letters followed
+    // by an umlaut is an ordinary German sentence, not a corner case. In a
+    // release build that panic takes the window with it, without a message.
+    let id: String = name
         .to_lowercase()
         .chars()
         .map(|c| match c.is_alphanumeric() {
             true => c,
             false => '_',
         })
+        .take(48)
         .collect();
-    id.truncate(48);
     match id.trim_matches('_').is_empty() {
         true => "dienst".into(),
         false => id,
@@ -253,16 +258,26 @@ pub fn favourite_for(
     };
 
     let name = format!("{}: {}", service.name, tool.summary);
-    let mut fields = Vec::new();
-    if let Some(settings) = settings
-        && let spec::Settings::Text { field, .. } | spec::Settings::Fields { field, .. } =
-            &tool.settings
-    {
-        fields.push(crate::favourites::Header {
-            name: field.clone(),
-            value: settings,
-        });
-    }
+    let fields = match (settings, &tool.settings) {
+        // One field holds everything the service wants: what was typed goes in
+        // under that name, as the JSON the service asked for.
+        (Some(settings), spec::Settings::Text { field, .. })
+        | (
+            Some(settings),
+            spec::Settings::Fields {
+                field: Some(field), ..
+            },
+        ) => {
+            vec![crate::favourites::Header {
+                name: field.clone(),
+                value: settings,
+            }]
+        }
+        // Each option is a form field of its own, so the object the panel
+        // filled in is spread back out into them.
+        (Some(settings), spec::Settings::Fields { field: None, .. }) => spread(&settings),
+        _ => Vec::new(),
+    };
 
     Favourite {
         id: format!("{}__{}", service.id, id_for(&tool.summary)),
@@ -296,7 +311,39 @@ pub fn favourite_for(
     }
 }
 
-/// The full address of one tool: the origin of the description plus the path.
+/// One form field per option, out of the object the panel filled in.
+///
+/// A service that declares every option as its own form field cannot be sent
+/// one field holding JSON — it would read none of it. So `{"width":1920}`
+/// travels as a part named `width` holding `1920`. A string keeps its text; a
+/// number or a flag is written the way JSON writes it, which is the way the
+/// service spelled it out in its own description.
+fn spread(settings: &str) -> Vec<crate::favourites::Header> {
+    let Ok(serde_json::Value::Object(values)) = serde_json::from_str(settings) else {
+        return Vec::new();
+    };
+    values
+        .into_iter()
+        .map(|(name, value)| crate::favourites::Header {
+            name,
+            value: match value {
+                serde_json::Value::String(text) => text,
+                other => other.to_string(),
+            },
+        })
+        .collect()
+}
+
+/// The full address of one tool: what the description says its paths hang
+/// under, plus the tool's own path.
+///
+/// The `servers` block is the service's own word on where its interface lives,
+/// and it comes in three shapes. An address of its own replaces the origin —
+/// a description may be published behind a documentation server or a proxy and
+/// describe a machine somewhere else. A path (`/api/v1`) hangs under the origin
+/// the description was fetched from. And `/`, which the test service writes,
+/// means the origin itself: joined naively it would grow the second slash that
+/// makes every request fail.
 fn endpoint_for(service: &Service, tool: &spec::Tool) -> String {
     let origin = service
         .spec_url
@@ -306,7 +353,23 @@ fn endpoint_for(service: &Service, tool: &spec::Tool) -> String {
             format!("{scheme}://{host}")
         })
         .unwrap_or_else(|| service.spec_url.clone());
-    format!("{origin}{}", tool.path)
+
+    let base = tool.base.trim();
+    let root = match base.contains("://") {
+        true => base.to_string(),
+        false => joined(&origin, base),
+    };
+    joined(&root, &tool.path)
+}
+
+/// Two halves of an address with exactly one slash between them, however many
+/// each half brought along.
+fn joined(left: &str, right: &str) -> String {
+    format!(
+        "{}/{}",
+        left.trim_end_matches('/'),
+        right.trim_start_matches('/')
+    )
 }
 
 #[cfg(test)]
@@ -330,6 +393,8 @@ mod tests {
     fn tool() -> spec::Tool {
         spec::Tool {
             path: "/api/v1/tools/image/compress".into(),
+            // What the test service writes: paths hang under the origin itself.
+            base: "/".into(),
             method: "POST".into(),
             tag: Some("Tools".into()),
             summary: "Compress Image".into(),
@@ -454,5 +519,105 @@ mod tests {
         assert_eq!(id_for("SnapOtter"), "snapotter");
         assert_eq!(id_for("Bild verkleinern!"), "bild_verkleinern_");
         assert_eq!(id_for("   "), "dienst");
+    }
+
+    #[test]
+    fn a_long_name_is_cut_where_a_character_ends_not_where_a_byte_does() {
+        // 47 letters and then an umlaut, so the 48th character is two bytes
+        // wide and the cut falls in the middle of it. Cutting by bytes panics
+        // here, and the name comes out of somebody else's description.
+        let name = format!("{}ä{}", "a".repeat(47), "b".repeat(20));
+        let id = id_for(&name);
+
+        assert_eq!(id.chars().count(), 48);
+        assert!(id.ends_with('ä'), "the whole character survives: {id}");
+        // Every kind of writing, cut at the same place.
+        assert_eq!(id_for(&"д".repeat(60)).chars().count(), 48);
+        assert_eq!(id_for(&"漢".repeat(60)).chars().count(), 48);
+        assert_eq!(id_for(&"a".repeat(60)).len(), 48);
+    }
+
+    #[test]
+    fn the_address_follows_the_servers_entry_whichever_shape_it_has() {
+        let service = service();
+
+        // `/` is the origin itself -- and the one that used to grow a second
+        // slash, which is what the acceptance test watches.
+        let mut tool = tool();
+        tool.base = "/".into();
+        assert_eq!(
+            endpoint_for(&service, &tool),
+            "http://192.168.2.11:1349/api/v1/tools/image/compress"
+        );
+
+        // A description that says nothing is the same as `/`.
+        tool.base = String::new();
+        assert_eq!(
+            endpoint_for(&service, &tool),
+            "http://192.168.2.11:1349/api/v1/tools/image/compress"
+        );
+
+        // A path hangs under the origin the description came from.
+        tool.base = "/gateway".into();
+        assert_eq!(
+            endpoint_for(&service, &tool),
+            "http://192.168.2.11:1349/gateway/api/v1/tools/image/compress"
+        );
+
+        // An address of its own replaces it: the interface may live on another
+        // machine than the document that describes it.
+        tool.base = "https://api.example.com/v2/".into();
+        tool.path = "tools/compress".into();
+        assert_eq!(
+            endpoint_for(&service, &tool),
+            "https://api.example.com/v2/tools/compress"
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_leading_slash_does_not_grow_into_the_host() {
+        let mut tool = tool();
+        tool.base = String::new();
+        tool.path = "api/v1/tools/image/compress".into();
+
+        assert_eq!(
+            endpoint_for(&service(), &tool),
+            "http://192.168.2.11:1349/api/v1/tools/image/compress"
+        );
+    }
+
+    #[test]
+    fn settings_declared_as_separate_form_fields_travel_under_their_own_names() {
+        let mut tool = tool();
+        tool.settings = spec::Settings::Fields {
+            field: None,
+            fields: Vec::new(),
+        };
+
+        let favourite = favourite_for(
+            &service(),
+            &tool,
+            Some(r#"{"format":"png","quality":80,"strip":true}"#.into()),
+            ".neu",
+        );
+        let crate::favourites::Tool::Web(web) = &favourite.tool else {
+            unreachable!()
+        };
+        let crate::favourites::WebMode::Upload(upload) = &web.mode else {
+            unreachable!()
+        };
+
+        let sent: Vec<(&str, &str)> = upload
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.value.as_str()))
+            .collect();
+        // Three parts, each under the name the description gave it -- not one
+        // part holding JSON, which such a service would read none of. A string
+        // travels as its text, without the quotes JSON writes around it.
+        assert_eq!(
+            sent,
+            vec![("format", "png"), ("quality", "80"), ("strip", "true")]
+        );
     }
 }

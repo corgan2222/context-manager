@@ -8148,6 +8148,7 @@ mod tests {
     fn tool(summary: &str, tag: Option<&str>) -> spec::Tool {
         spec::Tool {
             path: format!("/api/v1/tools/{}", summary.to_lowercase()),
+            base: "/".into(),
             method: "POST".into(),
             tag: tag.map(str::to_string),
             summary: summary.into(),
