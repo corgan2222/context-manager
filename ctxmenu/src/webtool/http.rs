@@ -20,10 +20,11 @@ use anyhow::{Context as _, Result, bail};
 use windows::Win32::Networking::WinHttp::{
     INTERNET_DEFAULT_HTTPS_PORT, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
     WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS,
+    WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
     WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_QUERY_STATUS_CODE,
     WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen,
     WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-    WinHttpSendRequest, WinHttpSetTimeouts,
+    WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
 };
 use windows::core::PCWSTR;
 
@@ -45,14 +46,62 @@ pub struct Answer {
 
 impl Answer {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
+        header_of(&self.headers, name)
     }
 
     pub fn is_ok(&self) -> bool {
         (200..300).contains(&self.status)
+    }
+}
+
+/// One header out of a block of them, whatever case the server chose.
+///
+/// A free function rather than a method because `fetch` and `download` build no
+/// [`Answer`] at all and still have to look at `Location` when a redirect comes
+/// back.
+fn header_of<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+/// As much of an error body as belongs in a message.
+///
+/// Characters, not bytes. Cutting a `&str` at byte 400 panics when a multi-byte
+/// character straddles the cut, and one umlaut in a German error text is enough
+/// to land there — measured: a 461-byte body with `ä` at bytes 399..401 ended
+/// the process with "end byte index 400 is not a char boundary". In
+/// `--favourite` mode there is no window and no console, so that panic (an
+/// abort in a release build) replaced the message box explaining the failure
+/// with nothing happening at all.
+fn excerpt(body: &[u8]) -> String {
+    String::from_utf8_lossy(body)
+        .trim()
+        .chars()
+        .take(400)
+        .collect()
+}
+
+/// A 3xx answer, said so that the reader learns where they were being sent.
+///
+/// Redirects are switched off (see [`Handle::request`]), so a 3xx arrives here
+/// instead of being followed. Naming the other address is the whole point: the
+/// question asked before an upload names one host, and "the service answered
+/// 307" alone would leave the user guessing at which one it wanted instead.
+fn redirected(status: u32, location: Option<&str>) -> anyhow::Error {
+    match location {
+        Some(target) => anyhow::anyhow!(
+            "\x1eDer Dienst antwortete mit {status} und verweist auf {target}. \
+             Dorthin wurde nichts geschickt — wenn das die richtige Adresse ist, \
+             gehört sie in den Endpunkt.\x1fthe service answered {status} and \
+             pointed at {target}; nothing was sent there, and if that is the right \
+             address it belongs in the endpoint\x1d"
+        ),
+        None => anyhow::anyhow!(
+            "\x1eDer Dienst antwortete mit {status} und einer Weiterleitung ohne Ziel\
+             \x1fthe service answered {status} with a redirect that names no address\x1d"
+        ),
     }
 }
 
@@ -178,11 +227,16 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
         body: body_of(&request_handle)?,
     };
 
+    if (300..400).contains(&answer.status) {
+        // The file was not sent on: the consent dialog named one host, and
+        // this is the service asking for another one.
+        return Err(redirected(answer.status, answer.header("Location")));
+    }
+
     if !answer.is_ok() {
         // The body of an error answer is usually the only thing that says what
         // went wrong, so it goes into the message rather than the log.
-        let hint = String::from_utf8_lossy(&answer.body);
-        let hint = hint.trim();
+        let hint = excerpt(&answer.body);
         bail!(
             "\x1eDer Dienst antwortete mit {}\x1fthe service answered {}\x1d{}",
             answer.status,
@@ -190,7 +244,7 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
             if hint.is_empty() {
                 String::new()
             } else {
-                format!(": {}", &hint[..hint.len().min(400)])
+                format!(": {hint}")
             }
         );
     }
@@ -227,6 +281,13 @@ pub fn fetch(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
         .context("WinHttpReceiveResponse")?;
 
     let status = status_of(&request)?;
+    if (300..400).contains(&status) {
+        // A description that has moved is worth saying out loud: the candidate
+        // list would otherwise just run out and report that nothing was found,
+        // when the address that works was in the answer all along.
+        let headers = headers_of(&request)?;
+        return Err(redirected(status, header_of(&headers, "Location")));
+    }
     if !(200..300).contains(&status) {
         // Deliberately without the body. An error answer from a documentation
         // host is an HTML page, and pouring the first 300 characters of
@@ -253,6 +314,13 @@ pub fn download(url: &str) -> Result<Vec<u8>> {
         .context("WinHttpReceiveResponse")?;
 
     let status = status_of(&request)?;
+    if (300..400).contains(&status) {
+        // The address came out of a service answer and was checked against the
+        // rules of the favourite; a redirect would put the result back in the
+        // hands of whoever answered, past that check.
+        let headers = headers_of(&request)?;
+        return Err(redirected(status, header_of(&headers, "Location")));
+    }
     if !(200..300).contains(&status) {
         bail!("\x1eAbruf antwortete mit {status}\x1fthe download answered {status}\x1d");
     }
@@ -486,7 +554,25 @@ impl Handle {
                 flags,
             )
         };
-        Self::check(handle, "WinHttpOpenRequest")
+        let handle = Self::check(handle, "WinHttpOpenRequest")?;
+
+        // Left to itself WinHTTP follows redirects, and its default policy
+        // forbids only the step from https to http — a step to a different host
+        // it takes, repeating the request there with body and headers, which for
+        // an upload means the file and the key. The question asked before
+        // sending names exactly one host, so no other one is dialled: the 3xx
+        // comes back instead and is reported with the address it pointed at.
+        let policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER.to_ne_bytes();
+        unsafe {
+            WinHttpSetOption(
+                Some(handle.0 as *const c_void),
+                WINHTTP_OPTION_REDIRECT_POLICY,
+                Some(&policy),
+            )
+        }
+        .context("WinHttpSetOption (Weiterleitungen)")?;
+
+        Ok(handle)
     }
 
     /// The three handle-making calls answer with a raw pointer and no result;
@@ -512,7 +598,144 @@ impl Drop for Handle {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use super::*;
+
+    /// A server on the loopback interface that answers once and says what it
+    /// was asked.
+    ///
+    /// The two things worth knowing about redirects cannot be settled without a
+    /// real socket: that a 3xx is reported rather than followed, and that an
+    /// ordinary answer still travels the same path unharmed. Both cost a port
+    /// on 127.0.0.1 and reach no network.
+    fn one_shot(response: String) -> (u16, mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = listener.local_addr().expect("the port").port();
+        let (sender, receiver) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // Read until the writes stop rather than parsing Content-Length:
+            // this has to recognise a request, not serve one.
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 8 * 1024];
+            while let Ok(read) = stream.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            let _ = sender.send(request);
+        });
+
+        (port, receiver)
+    }
+
+    #[test]
+    fn a_redirect_is_reported_and_the_file_stays_here() {
+        // The host that must never see the file, and the one that points at it.
+        let (elsewhere_port, elsewhere) =
+            one_shot("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".into());
+        let (service_port, _service) = one_shot(format!(
+            "HTTP/1.1 307 Temporary Redirect\r\n\
+             Location: http://127.0.0.1:{elsewhere_port}/woanders\r\n\
+             Content-Length: 0\r\n\r\n"
+        ));
+
+        let sent = send(
+            &format!("http://127.0.0.1:{service_port}/upload"),
+            "POST",
+            &[],
+            Request::raw(b"ein Bild".to_vec(), "image/png"),
+        );
+        let error = match sent {
+            Err(error) => error,
+            Ok(answer) => panic!(
+                "a 307 carries the body along and must not be followed, but the \
+                 call came back with {}",
+                answer.status
+            ),
+        };
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&elsewhere_port.to_string()),
+            "the message has to name where the service pointed: {message}"
+        );
+        assert!(
+            elsewhere.recv_timeout(Duration::from_secs(2)).is_err(),
+            "the consent dialog named one host; the file must not reach another"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_answer_still_travels_the_whole_way() {
+        // The other half of switching redirects off: the path a real upload
+        // takes must be exactly as it was.
+        let (port, arrived) = one_shot(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5\r\n\r\nklein".into(),
+        );
+        let key = [Header {
+            name: "Authorization".into(),
+            value: "Bearer test".into(),
+        }];
+
+        let answer = send(
+            &format!("http://127.0.0.1:{port}/api/v1/tools/image/compress"),
+            "POST",
+            &key,
+            Request::raw(b"ein Bild".to_vec(), "image/png"),
+        )
+        .expect("an ordinary answer");
+
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.body, b"klein");
+        assert_eq!(answer.header("content-type"), Some("image/png"));
+
+        let request = arrived
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the request arrived");
+        let request = String::from_utf8_lossy(&request).to_string();
+        assert!(
+            request.starts_with("POST /api/v1/tools/image/compress "),
+            "method and path: {request}"
+        );
+        assert!(request.contains("Authorization: Bearer test"), "{request}");
+        assert!(request.contains("ein Bild"), "the file itself: {request}");
+    }
+
+    #[test]
+    fn an_error_body_is_cut_on_a_character_boundary() {
+        // Measured on the expression this replaced: a 461-byte body with `ä`
+        // at bytes 399..401 ended the process with "end byte index 400 is not
+        // a char boundary", and in --favourite mode that is a click that
+        // visibly does nothing at all.
+        let mut body = "a".repeat(399);
+        body.push('ä');
+        body.push_str(&"b".repeat(60));
+        assert_eq!(body.len(), 461);
+        assert!(
+            !body.is_char_boundary(400),
+            "the cut lands inside the umlaut"
+        );
+
+        let cut = excerpt(body.as_bytes());
+        assert_eq!(cut.chars().count(), 400);
+        assert!(cut.ends_with('ä'), "the last character survives whole");
+
+        // Short bodies come through as they are, without their whitespace.
+        assert_eq!(excerpt("  kaputt  ".as_bytes()), "kaputt");
+        assert_eq!(excerpt(b""), "");
+    }
 
     #[test]
     fn an_address_is_taken_apart_the_way_winhttp_needs_it() {

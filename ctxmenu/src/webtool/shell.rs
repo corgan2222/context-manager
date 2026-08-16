@@ -33,22 +33,70 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Opens an address with whatever the user has set as their browser.
+/// Opens an address this program built itself.
+///
+/// `file:///` is allowed here because the `{fileurl}` placeholder produces one:
+/// a favourite may point a page at the very file that was clicked, and that
+/// address is this program's own work on the user's own file. An address that
+/// arrived in the answer of a foreign service is a different thing entirely and
+/// goes through [`open_from_service`].
+pub fn open(address: &str) -> Result<()> {
+    check_own(address)?;
+    execute(address)
+}
+
+/// Opens an address a foreign service handed back.
+///
+/// Web schemes only. The verb below is `open`, which for a `.exe` means run it,
+/// so a service answering `{"url": "file:///C:/Users/…/setup.exe"}` or
+/// `Location: file:////angreifer/share/payload.exe` would otherwise get to pick
+/// a program on this machine — or on a share of its own — and have the
+/// right-click start it. The service cannot know what is on this disk, so a
+/// local path from over there is never something it legitimately meant.
+pub fn open_from_service(address: &str) -> Result<()> {
+    check_from_service(address)?;
+    execute(address)
+}
+
+/// The two schemes a web tool is reached by.
+fn is_web(address: &str) -> bool {
+    address.starts_with("https://") || address.starts_with("http://")
+}
+
+/// What [`open`] will act on.
+///
+/// Split out from the call itself so the rule can be tested without a browser
+/// or a program starting up.
+fn check_own(address: &str) -> Result<()> {
+    if is_web(address) || address.starts_with("file:///") {
+        Ok(())
+    } else {
+        // Anything else could be a local program or a protocol handler, and
+        // this path exists to open web tools.
+        bail!("\x1eKeine Web-Adresse\x1fnot a web address\x1d: {address}");
+    }
+}
+
+/// What [`open_from_service`] will act on.
+fn check_from_service(address: &str) -> Result<()> {
+    if is_web(address) {
+        Ok(())
+    } else {
+        bail!(
+            "\x1eDer Dienst hat statt einer Web-Adresse etwas Lokales geantwortet; \
+             das wird nicht geöffnet.\x1fthe service answered with something local \
+             rather than a web address; that is not opened.\x1d: {address}"
+        );
+    }
+}
+
+/// The `ShellExecuteExW` call both entry points end in.
 ///
 /// `ShellExecuteExW` rather than `ShellExecuteW`, matching
 /// [`crate::elevation`]: the simple one answers with an `HINSTANCE` whose
 /// value has to be compared against 32 to mean "failed", the other returns a
 /// real error.
-pub fn open(address: &str) -> Result<()> {
-    if !address.starts_with("https://")
-        && !address.starts_with("http://")
-        && !address.starts_with("file:///")
-    {
-        // Anything else could be a local program or a protocol handler, and
-        // this path exists to open web tools.
-        bail!("\x1eKeine Web-Adresse\x1fnot a web address\x1d: {address}");
-    }
-
+fn execute(address: &str) -> Result<()> {
     let verb = wide("open");
     let target = wide(address);
 
@@ -304,6 +352,28 @@ mod tests {
         assert!(open("cmd.exe /c del /s C:\\").is_err());
         assert!(open("javascript:alert(1)").is_err());
         assert!(open("ftp://example.invalid").is_err());
+    }
+
+    #[test]
+    fn a_service_answer_never_opens_a_local_file() {
+        // The checks rather than `open_from_service` itself: a test that runs
+        // on the author's machine must not be one keystroke away from starting
+        // cmd.exe if the rule it guards ever goes missing.
+        assert!(check_from_service("file:///C:/Windows/System32/cmd.exe").is_err());
+        assert!(
+            check_from_service("file:////server/share/x.exe").is_err(),
+            "the UNC form begins with file:/// as well and would open a share \
+             on a machine the user never named"
+        );
+        assert!(check_from_service("javascript:alert(1)").is_err());
+        assert!(check_from_service("http://192.168.2.11:1349/api/v1/download/1/a.png").is_ok());
+        assert!(check_from_service("https://cdn.example/out/1.png").is_ok());
+
+        // And the other half of the split: an address this program built from
+        // {fileurl} is a feature and stays.
+        assert!(check_own("file:///C:/Bilder/Sonne.png").is_ok());
+        assert!(check_own("https://squoosh.app").is_ok());
+        assert!(check_own("C:\\Windows\\System32\\cmd.exe").is_err());
     }
 
     #[test]
