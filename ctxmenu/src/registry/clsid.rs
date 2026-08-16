@@ -77,12 +77,16 @@ impl ClsidResolver {
             return ClsidInfo::default();
         }
 
-        if let Some(hit) = self.cache.get(clsid) {
+        // Same normalisation as `is_blocked`: GUIDs turn up in both cases
+        // across a scan, and a cache keyed on the raw string would miss the
+        // second spelling and pay for the full three-hive lookup again.
+        let key = clsid.to_uppercase();
+        if let Some(hit) = self.cache.get(&key) {
             return hit.clone();
         }
 
         let info = lookup(clsid, &mut self.mui);
-        self.cache.insert(clsid.to_string(), info.clone());
+        self.cache.insert(key, info.clone());
         info
     }
 }
@@ -220,5 +224,26 @@ mod tests {
         let mut resolver = ClsidResolver::new();
         let clsid = "{7BA4C740-9E81-11CF-99D3-00AA004AE837}";
         assert_eq!(resolver.resolve(clsid), resolver.resolve(clsid));
+    }
+
+    /// `is_blocked` folds case because GUIDs turn up spelled both ways
+    /// across a scan; the cache has to fold it the same way or the second
+    /// spelling misses and repeats the full three-hive lookup for nothing.
+    #[test]
+    fn a_cache_hit_survives_a_different_letter_case() {
+        let mut resolver = ClsidResolver::new();
+        let lower = "{7ba4c740-9e81-11cf-99d3-00aa004ae837}";
+        let upper = "{7BA4C740-9E81-11CF-99D3-00AA004AE837}";
+
+        let first = resolver.resolve(lower);
+        assert_eq!(resolver.cache.len(), 1);
+
+        let second = resolver.resolve(upper);
+        assert_eq!(second, first, "the two spellings name the same CLSID");
+        assert_eq!(
+            resolver.cache.len(),
+            1,
+            "a different case of the same CLSID must reuse the cached entry"
+        );
     }
 }
