@@ -76,6 +76,11 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
         }
 
         WebMode::Upload(upload) => {
+            // Before the question rather than after it: agreeing to send a file
+            // over a connection this tool was never allowed to use would be an
+            // agreement to nothing, and the answer is remembered.
+            permitted(&upload.endpoint, web.allow_insecure)?;
+
             // The one place in this program where data leaves the machine.
             // Asked once per favourite and recorded, so it is a decision about
             // this service rather than a habit of clicking yes.
@@ -128,9 +133,52 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
             let answer = http::send(&upload.endpoint, &upload.method, &upload.headers, request)
                 .with_context(|| format!("{} {}", upload.method, upload.endpoint))?;
 
-            apply_result(&upload.result, &answer, file, &upload.endpoint)
+            apply_result(
+                &upload.result,
+                &answer,
+                file,
+                &upload.endpoint,
+                web.allow_insecure,
+            )
         }
     }
+}
+
+/// Whether this program may act on an address at all.
+///
+/// Two rules in one place, because every address this sends a file to, fetches
+/// a result from, or opens on the strength of an answer has to pass both:
+///
+/// * It is `http://` or `https://` and nothing else. `file:` is refused here
+///   even though [`fill`] builds one for `{fileurl}` — that placeholder is this
+///   program pointing a page at the file the user clicked, whereas
+///   `{"url": "file:///C:/Users/…/setup.exe"}` in an answer is a foreign
+///   service picking a program on this machine to have started.
+/// * Unencrypted `http://` only where the user said so. The tick box called
+///   "unverschlüsseltes http:// erlauben" used to be read by
+///   [`crate::favourites::Favourite::problems`] alone, which advises and never
+///   refuses, so the upload itself went out in the clear regardless. A service
+///   in the local network is exactly what the tick box is for, and with it set
+///   nothing here changes.
+fn permitted(address: &str, allow_insecure: bool) -> Result<()> {
+    if address.starts_with("https://") {
+        return Ok(());
+    }
+
+    if address.starts_with("http://") {
+        if allow_insecure {
+            return Ok(());
+        }
+        bail!(
+            "\x1eUnverschlüsselte Adresse: die Datei ginge im Klartext durchs Netz. \
+             Für dieses Werkzeug „unverschlüsseltes http:// erlauben“ ankreuzen, \
+             wenn das so gewollt ist.\x1funencrypted address; the file would travel \
+             in the clear. Tick “allow unencrypted http://” for this tool if that \
+             is what you want.\x1d: {address}"
+        );
+    }
+
+    bail!("\x1eKeine Web-Adresse\x1fnot a web address\x1d: {address}")
 }
 
 /// Makes an address the service handed back usable on its own.
@@ -145,6 +193,10 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
 /// origin of the endpoint. A relative path without the leading slash would have
 /// to guess how much of the endpoint's own path to keep, and guessing at where
 /// to send a request is not something this should do quietly.
+///
+/// Which scheme is acceptable is deliberately not decided here: [`permitted`]
+/// does that for both callers afterwards, so the rule sits in one place rather
+/// than being split between resolving an address and using it.
 fn absolute(address: &str, endpoint: &str) -> Result<String> {
     if address.contains("://") {
         return Ok(address.to_string());
@@ -197,6 +249,7 @@ fn apply_result(
     answer: &http::Answer,
     file: &Path,
     endpoint: &str,
+    allow_insecure: bool,
 ) -> Result<String> {
     // Before anything is fetched or written: what came back is a receipt, not
     // a result, and every path below would make a mess of it.
@@ -218,7 +271,8 @@ fn apply_result(
 
         ResultAction::Open { source } => {
             let address = absolute(&locate(source, answer)?, endpoint)?;
-            shell::open(&address)?;
+            permitted(&address, allow_insecure)?;
+            shell::open_from_service(&address)?;
             Ok(format!(
                 "\x1eErgebnis geöffnet\x1fresult opened\x1d: {address}"
             ))
@@ -231,6 +285,7 @@ fn apply_result(
                     // The service answered with an address rather than the
                     // file; fetching it is the other half of the job.
                     let address = absolute(&locate(other, answer)?, endpoint)?;
+                    permitted(&address, allow_insecure)?;
                     http::download(&address).with_context(|| address.clone())?
                 }
             };
@@ -516,7 +571,7 @@ mod tests {
             headers: Vec::new(),
             body: br#"{"jobId":"abc"}"#.to_vec(),
         };
-        assert!(apply_result(&save, &accepted, file, "http://x/y").is_err());
+        assert!(apply_result(&save, &accepted, file, "http://x/y", true).is_err());
 
         // And the one that turns up when the description promised 200:
         // measured on a real service, which answers this to a tool its own
@@ -526,11 +581,11 @@ mod tests {
             headers: Vec::new(),
             body: br#"{"jobId":"abc","async":true}"#.to_vec(),
         };
-        assert!(apply_result(&save, &lying, file, "http://x/y").is_err());
+        assert!(apply_result(&save, &lying, file, "http://x/y", true).is_err());
 
         // Reporting is still allowed: that is the mode for looking at what a
         // service actually says.
-        assert!(apply_result(&ResultAction::Report, &accepted, file, "http://x/y").is_ok());
+        assert!(apply_result(&ResultAction::Report, &accepted, file, "http://x/y", true).is_ok());
 
         // An ordinary answer is untouched by any of this.
         let ordinary = http::Answer {
@@ -541,8 +596,108 @@ mod tests {
         let directory = std::env::temp_dir().join("ctxmenu_async_test");
         let _ = std::fs::create_dir_all(&directory);
         let target = directory.join("bild.png");
-        assert!(apply_result(&save, &ordinary, &target, "http://x/y").is_ok());
+        assert!(apply_result(&save, &ordinary, &target, "http://x/y", true).is_ok());
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_service_in_the_local_network_is_still_reached_over_http() {
+        // The case this program exists for: a tool on the LAN, no certificate,
+        // and a user who ticked the box that says so. Every favourite in the
+        // author's own list is of this shape, and anything that refuses it has
+        // broken the main use rather than secured it.
+        let endpoint = "http://192.168.2.11:1349/api/v1/tools/image/compress";
+        assert!(permitted(endpoint, true).is_ok());
+        assert!(permitted("https://api.tinify.com/shrink", false).is_ok());
+
+        // And the second half of that trip: the service answers with a path,
+        // which has to resolve against the endpoint and then be allowed.
+        let result = absolute("/api/v1/download/abc/test_compress.png", endpoint)
+            .expect("a path resolves against the endpoint it came from");
+        assert_eq!(
+            result,
+            "http://192.168.2.11:1349/api/v1/download/abc/test_compress.png"
+        );
+        assert!(
+            permitted(&result, true).is_ok(),
+            "fetching the result from the same host must stay possible"
+        );
+    }
+
+    #[test]
+    fn an_unencrypted_endpoint_is_refused_unless_it_was_allowed() {
+        // The tick box used to be read by `problems()` only, which advises and
+        // refuses nothing: the file went out in the clear either way.
+        let error = permitted("http://tool.example/api/upload", false)
+            .expect_err("http:// without the permission");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("http://") && message.contains("tool.example"),
+            "the message has to say which address it means: {message}"
+        );
+    }
+
+    #[test]
+    fn an_address_out_of_an_answer_may_not_be_a_local_program() {
+        // `ResultAction::Open` hands the address to ShellExecuteExW with the
+        // verb `open`, and for an `.exe` that means run it.
+        assert!(permitted("file:///C:/Users/x/Downloads/setup.exe", true).is_err());
+        assert!(
+            permitted("file:////angreifer/share/payload.exe", true).is_err(),
+            "the UNC form is a file: address as well"
+        );
+        assert!(permitted("javascript:alert(1)", true).is_err());
+        assert!(permitted("ftp://example.invalid/x", true).is_err());
+    }
+
+    #[test]
+    fn a_local_path_in_the_answer_never_reaches_the_shell() {
+        // The whole way through, as a favourite would take it: a service that
+        // answers with a file: address must not get a program started, and the
+        // refusal has to happen before anything is opened.
+        let open = ResultAction::Open {
+            source: ResultSource::Json { path: "url".into() },
+        };
+        // A share on a machine that does not exist, deliberately: should this
+        // rule ever go missing, the test must not be what starts a program.
+        let answer = http::Answer {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"url":"file:////angreifer.invalid/share/payload.exe"}"#.to_vec(),
+        };
+        assert!(
+            apply_result(
+                &open,
+                &answer,
+                Path::new("bild.png"),
+                "https://tool.example/api",
+                true
+            )
+            .is_err()
+        );
+
+        // Same for the Location header, the other way an address arrives.
+        let located = http::Answer {
+            status: 200,
+            headers: vec![(
+                "Location".into(),
+                "file:////angreifer.invalid/share/payload.exe".into(),
+            )],
+            body: Vec::new(),
+        };
+        let open_located = ResultAction::Open {
+            source: ResultSource::Location,
+        };
+        assert!(
+            apply_result(
+                &open_located,
+                &located,
+                Path::new("bild.png"),
+                "https://tool.example/api",
+                true
+            )
+            .is_err()
+        );
     }
 
     #[test]
