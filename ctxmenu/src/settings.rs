@@ -25,6 +25,19 @@ impl Language {
         }
     }
 
+    /// Lets the start language be named on the command line.
+    ///
+    /// Both words for both languages, the way [`crate::app::Tab`] takes its
+    /// tab names: whoever types the flag is as likely to be thinking in one as
+    /// in the other, and refusing `--lang german` would be pedantry.
+    pub fn from_slug(value: &str) -> Option<Language> {
+        match value.to_ascii_lowercase().as_str() {
+            "de" | "deutsch" | "german" => Some(Language::German),
+            "en" | "english" | "englisch" => Some(Language::English),
+            _ => None,
+        }
+    }
+
     /// Derives the start language from a Windows UI language identifier.
     ///
     /// Only the primary language matters: German is `0x07`, so `de-DE`
@@ -143,6 +156,29 @@ mod tests {
                 "0x{id:04X} should be German"
             );
         }
+    }
+
+    #[test]
+    fn the_command_line_can_name_either_language() {
+        for slug in ["de", "DE", "Deutsch", "german", "GERMAN"] {
+            assert_eq!(
+                Language::from_slug(slug),
+                Some(Language::German),
+                "{slug} names German"
+            );
+        }
+        for slug in ["en", "English", "englisch"] {
+            assert_eq!(
+                Language::from_slug(slug),
+                Some(Language::English),
+                "{slug} names English"
+            );
+        }
+        // A language nobody translated is refused rather than guessed at: the
+        // window has exactly two, and silently picking one would leave the
+        // screenshot in the wrong one.
+        assert_eq!(Language::from_slug("klingonisch"), None);
+        assert_eq!(Language::from_slug(""), None);
     }
 
     #[test]

@@ -15,23 +15,9 @@ use crate::registry::scan::{self, ScanOptions};
 use crate::registry::{backup, write};
 
 pub enum Command {
-    /// The product itself. `synthetic` fills the table with generated rows
-    /// instead of scanning, for the performance target of milestone 4.
-    Gui {
-        synthetic: Option<usize>,
-        /// Run this many measured frames, report and exit.
-        bench: Option<usize>,
-        /// Which tab to open on.
-        tab: crate::app::Tab,
-        /// Text to put in the search box before the first frame. Exists so a
-        /// search can be photographed and checked, not only tried by hand.
-        search: String,
-        /// Extension to preselect in the file type tab.
-        ext: Option<String>,
-        /// Flip the system theme once while running and report whether the
-        /// window followed. Restores the setting afterwards.
-        theme_probe: bool,
-    },
+    /// The product itself. Everything the flags had to say about how it should
+    /// open travels in one [`crate::app::Start`].
+    Gui(crate::app::Start),
     Scan(ScanArgs),
     /// Group every entry by the program behind it (milestone 8).
     Programs,
@@ -108,9 +94,14 @@ Verwendung:
   ctxmenu                   Fenster öffnen
   ctxmenu --tab <name>      Fenster auf einem Reiter öffnen:
                             categories, filetypes, programs, favourites,
-                            backups
+                            services, backups
   ctxmenu --search <text>   Fenster mit gesetzter Suche öffnen
   ctxmenu --ext .png        Fenster auf dem Dateityp-Reiter, Endung gewählt
+  ctxmenu --lang de|en      Fenster in dieser Sprache öffnen; die gespeicherte
+                            Einstellung bleibt, wie sie ist
+  ctxmenu --window 1600x1000
+                            Fenster in dieser Größe (Bildpunkte) auf dem linken
+                            Bildschirm öffnen; mindestens 900x600
   ctxmenu --synthetic <n> [--bench <frames>]
                             Fenster mit n erzeugten Zeilen, optional als
                             Messlauf
@@ -173,10 +164,15 @@ Usage:
   ctxmenu                   open the window
   ctxmenu --tab <name>      open the window on a tab:
                             categories, filetypes, programs, favourites,
-                            backups
+                            services, backups
   ctxmenu --search <text>   open the window with the search box filled
   ctxmenu --ext .png        open the file type tab with that extension
                             selected
+  ctxmenu --lang de|en      open the window in that language, leaving the
+                            saved setting as it is
+  ctxmenu --window 1600x1000
+                            open the window at that size in pixels on the
+                            leftmost screen; at least 900x600
   ctxmenu --synthetic <n> [--bench <frames>]
                             window with n generated rows, optionally as a
                             measured run
@@ -237,14 +233,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
 
     // No arguments means the product: a window, not a usage message.
     if args.is_empty() {
-        return Ok(Command::Gui {
-            synthetic: None,
-            bench: None,
-            tab: crate::app::Tab::Categories,
-            search: String::new(),
-            ext: None,
-            theme_probe: false,
-        });
+        return Ok(Command::Gui(crate::app::Start::default()));
     }
 
     match args[0].as_str() {
@@ -253,21 +242,13 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
         "--smoke" => return Ok(Command::Smoke),
         // Takes no value, so it cannot join the loop below.
         "--theme-probe" => {
-            return Ok(Command::Gui {
-                synthetic: None,
-                bench: None,
-                tab: crate::app::Tab::Categories,
-                search: String::new(),
-                ext: None,
+            return Ok(Command::Gui(crate::app::Start {
                 theme_probe: true,
-            });
+                ..Default::default()
+            }));
         }
-        "--synthetic" | "--bench" | "--tab" | "--search" | "--ext" => {
-            let mut synthetic = None;
-            let mut bench = None;
-            let mut tab = crate::app::Tab::Categories;
-            let mut search = String::new();
-            let mut ext = None;
+        "--synthetic" | "--bench" | "--tab" | "--search" | "--ext" | "--lang" | "--window" => {
+            let mut start = crate::app::Start::default();
             let mut rest = args.iter();
 
             while let Some(flag) = rest.next() {
@@ -275,24 +256,32 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     format!("{flag} \x1eerwartet einen Wert\x1fexpects a value\x1d")
                 })?;
                 match flag.as_str() {
-                    "--search" => search = value.clone(),
+                    "--search" => start.search = value.clone(),
                     "--ext" => {
-                        ext = Some(value.to_lowercase());
-                        tab = crate::app::Tab::FileTypes;
+                        start.ext = Some(value.to_lowercase());
+                        start.tab = crate::app::Tab::FileTypes;
                     }
                     "--tab" => {
-                        tab = crate::app::Tab::from_slug(value).with_context(|| {
+                        start.tab = crate::app::Tab::from_slug(value).with_context(|| {
                             format!("\x1eUnbekannter Reiter\x1funknown tab\x1d: {value}")
                         })?;
                     }
+                    "--lang" => {
+                        start.language = Some(
+                            crate::settings::Language::from_slug(value).with_context(|| {
+                                format!("\x1eUnbekannte Sprache\x1funknown language\x1d: {value}")
+                            })?,
+                        );
+                    }
+                    "--window" => start.size = Some(parse_window_size(value)?),
                     "--synthetic" | "--bench" => {
                         let number = value.parse::<usize>().with_context(|| {
                             format!("\x1eKeine Zahl\x1fnot a number\x1d: {value}")
                         })?;
                         if flag == "--synthetic" {
-                            synthetic = Some(number);
+                            start.synthetic = Some(number);
                         } else {
-                            bench = Some(number);
+                            start.bench = Some(number);
                         }
                     }
                     other => bail!(
@@ -302,14 +291,7 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 }
             }
 
-            return Ok(Command::Gui {
-                synthetic,
-                bench,
-                tab,
-                search,
-                ext,
-                theme_probe: false,
-            });
+            return Ok(Command::Gui(start));
         }
         "programs" => return Ok(Command::Programs),
         "filetype" => {
@@ -519,6 +501,37 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
         json,
         quiet,
     }))
+}
+
+/// The smallest window `--window` will hand out, in physical pixels.
+///
+/// The pair the viewport is built with, read here as pixels. Below it the
+/// window would refuse to shrink anyway, and a picture of a window arguing
+/// with its own minimum is worth nothing.
+const MIN_WINDOW: (i32, i32) = (900, 600);
+
+/// `1600x1000` into a window size.
+///
+/// Too small is raised rather than refused: the number is a wish about how a
+/// picture should look, and a run that stops over it costs more than it saves.
+/// Anything that is not two numbers is refused, because there is no sensible
+/// guess at what `--window gross` meant.
+fn parse_window_size(value: &str) -> Result<(i32, i32)> {
+    let lowered = value.to_ascii_lowercase();
+    let (width, height) = lowered.split_once('x').with_context(|| {
+        format!("--window \x1eerwartet <breite>x<höhe>\x1fexpects <width>x<height>\x1d: {value}")
+    })?;
+
+    let number = |part: &str| -> Result<i32> {
+        part.trim()
+            .parse::<i32>()
+            .with_context(|| format!("\x1eKeine Zahl\x1fnot a number\x1d: {value}"))
+    };
+
+    Ok((
+        number(width)?.max(MIN_WINDOW.0),
+        number(height)?.max(MIN_WINDOW.1),
+    ))
 }
 
 pub fn run_scan(args: ScanArgs) -> Result<()> {
@@ -1375,19 +1388,104 @@ mod tests {
         parse(args.iter().map(|s| s.to_string()))
     }
 
+    /// The `Start` behind a `--`something run, or a failed test.
+    fn start_of(args: &[&str]) -> crate::app::Start {
+        match parse_args(args).unwrap() {
+            Command::Gui(start) => start,
+            _ => panic!("{args:?} should open the window"),
+        }
+    }
+
     #[test]
     fn no_arguments_opens_the_window() {
         // This is a GUI application that happens to have a command line, not
         // the other way round: a bare double-click must show the product.
-        assert!(matches!(
-            parse_args(&[]).unwrap(),
-            Command::Gui {
-                synthetic: None,
-                bench: None,
-                ..
-            }
-        ));
+        let start = start_of(&[]);
+        assert!(start.synthetic.is_none());
+        assert!(start.bench.is_none());
+        // Nothing imposed: the saved language stands and the window opens at
+        // the size it always has.
+        assert_eq!(start.language, None);
+        assert_eq!(start.size, None);
         assert!(matches!(parse_args(&["--help"]).unwrap(), Command::Help));
+    }
+
+    #[test]
+    fn the_start_language_can_be_named_for_one_run() {
+        assert_eq!(
+            start_of(&["--lang", "en"]).language,
+            Some(crate::settings::Language::English)
+        );
+        assert_eq!(
+            start_of(&["--lang", "Deutsch"]).language,
+            Some(crate::settings::Language::German)
+        );
+        // It travels with the rest instead of ruling out the other flags: a
+        // screenshot run names a language and a tab in the same breath.
+        let start = start_of(&["--lang", "en", "--tab", "services"]);
+        assert_eq!(start.language, Some(crate::settings::Language::English));
+        assert_eq!(start.tab, crate::app::Tab::Services);
+
+        assert!(parse_args(&["--lang", "klingonisch"]).is_err());
+        assert!(parse_args(&["--lang"]).is_err());
+    }
+
+    #[test]
+    fn the_window_size_is_parsed_and_never_falls_below_the_minimum() {
+        assert_eq!(
+            start_of(&["--window", "1600x1000"]).size,
+            Some((1600, 1000))
+        );
+        // Upper case and spaces are what a person types, not a mistake.
+        assert_eq!(
+            start_of(&["--window", "1600X1000"]).size,
+            Some((1600, 1000))
+        );
+        assert_eq!(
+            start_of(&["--window", " 1600 x 1000 "]).size,
+            Some((1600, 1000))
+        );
+        // Raised rather than refused, and raised per side: a window narrower
+        // than its own minimum cannot be opened, so asking is not an error.
+        assert_eq!(start_of(&["--window", "100x100"]).size, Some((900, 600)));
+        assert_eq!(start_of(&["--window", "1600x10"]).size, Some((1600, 600)));
+
+        for nonsense in ["abc", "1600", "1600x", "x1000", "1600x1000x60"] {
+            assert!(
+                parse_args(&["--window", nonsense]).is_err(),
+                "--window {nonsense} should be refused"
+            );
+        }
+        assert!(parse_args(&["--window"]).is_err());
+    }
+
+    #[test]
+    fn both_help_texts_name_every_switch() {
+        // The reason for this test: `services` was a tab `--tab` accepted and
+        // the help did not mention, in either language, for as long as the tab
+        // has existed. A list nobody compares drifts.
+        for token in [
+            "--tab",
+            "--search",
+            "--ext",
+            "--lang",
+            "--window",
+            "--synthetic",
+            "--bench",
+            "--theme-probe",
+            "--smoke",
+            "--version",
+            "--help",
+            "categories",
+            "filetypes",
+            "programs",
+            "favourites",
+            "services",
+            "backups",
+        ] {
+            assert!(HELP_DE.contains(token), "the German help omits {token}");
+            assert!(HELP_EN.contains(token), "the English help omits {token}");
+        }
     }
 
     #[test]
@@ -1413,22 +1511,14 @@ mod tests {
 
     #[test]
     fn the_synthetic_row_count_is_parsed() {
-        assert!(matches!(
-            parse_args(&["--synthetic", "2000"]).unwrap(),
-            Command::Gui {
-                synthetic: Some(2000),
-                bench: None,
-                ..
-            }
-        ));
-        assert!(matches!(
-            parse_args(&["--synthetic", "2000", "--bench", "600"]).unwrap(),
-            Command::Gui {
-                synthetic: Some(2000),
-                bench: Some(600),
-                ..
-            }
-        ));
+        let start = start_of(&["--synthetic", "2000"]);
+        assert_eq!(start.synthetic, Some(2000));
+        assert_eq!(start.bench, None);
+
+        let start = start_of(&["--synthetic", "2000", "--bench", "600"]);
+        assert_eq!(start.synthetic, Some(2000));
+        assert_eq!(start.bench, Some(600));
+
         assert!(parse_args(&["--synthetic"]).is_err());
         assert!(parse_args(&["--synthetic", "viele"]).is_err());
     }
