@@ -1007,14 +1007,15 @@ mod tests {
         // asked all over again.
         let scratch = Scratch::new(
             "rename-keeps-consent",
-            &[web(WebMode::Upload(Upload {
+            &[web(WebMode::Upload(Box::new(Upload {
                 endpoint: "https://tool.example/upload".into(),
                 method: default_method(),
                 body: UploadBody::Raw,
                 headers: Vec::new(),
                 fields: Vec::new(),
+                poll: None,
                 result: ResultAction::Report,
-            }))],
+            })))],
         );
 
         // What the form was filled in from, read before anything happened.
@@ -1039,14 +1040,15 @@ mod tests {
         // whole -- which is what it used to do -- undid the rename.
         let scratch = Scratch::new(
             "consent-keeps-rename",
-            &[web(WebMode::Upload(Upload {
+            &[web(WebMode::Upload(Box::new(Upload {
                 endpoint: "https://tool.example/upload".into(),
                 method: default_method(),
                 body: UploadBody::Raw,
                 headers: Vec::new(),
                 fields: Vec::new(),
+                poll: None,
                 result: ResultAction::Report,
-            }))],
+            })))],
         );
 
         let before = scratch.list().remove(0);
