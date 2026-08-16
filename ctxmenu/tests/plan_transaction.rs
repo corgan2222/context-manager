@@ -6,6 +6,8 @@
 //! class of this tool's own, so nothing a user would recognise is touched and
 //! no VM is required. The HKLM half is exercised in the test VM instead.
 
+use std::path::{Path, PathBuf};
+
 use ctxmenu::model::Scope;
 use ctxmenu::registry::paths::RegTarget;
 use ctxmenu::registry::plan::{Action, Operation, Plan, execute};
@@ -66,15 +68,68 @@ impl Drop for Fixture {
     }
 }
 
-/// Removes the backup a test produced.
+/// Removes every backup directory a test produced, even when a `Drop` runs
+/// because the test panicked rather than finished.
 ///
 /// Not cosmetic: every run of this file writes into
 /// `%LOCALAPPDATA%\ctxmenu\backups`, and the tests once left 266 directories
 /// there, all of which the backup tab of the application then offered as if
-/// they were the user's.
-fn discard(report: &ctxmenu::registry::plan::Report) {
-    for directory in &report.backup_directories {
-        let _ = std::fs::remove_dir_all(directory);
+/// they were the user's. An end-of-test cleanup call fixed the ordinary case,
+/// but every assertion standing between `execute()` and that call could
+/// unwind straight past it. `Drop` is the same fix `Fixture` already has for
+/// the registry keys, applied to the directory tree beside them.
+struct BackupGuard(Vec<PathBuf>);
+
+impl BackupGuard {
+    fn none() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Remembers one more directory to remove.
+    ///
+    /// A test may call `execute` more than once -- hide, then show again --
+    /// and must not lose track of the first backup while waiting for the
+    /// second.
+    fn track(&mut self, directory: impl AsRef<Path>) {
+        self.0.push(directory.as_ref().into());
+    }
+}
+
+impl Drop for BackupGuard {
+    fn drop(&mut self) {
+        for directory in &self.0 {
+            remove_dir_all_with_retry(directory);
+        }
+    }
+}
+
+/// Retries a directory removal for the same reason `backup::export` retries
+/// creating one -- and for longer, because deleting is contested harder.
+///
+/// Measured on a machine doing other work at the same time: a `remove_dir_all`
+/// right after `execute()` can meet `ERROR_SHARING_VIOLATION` while a search
+/// indexer or endpoint security scanner still has a freshly written `.reg`
+/// file open, well past the roughly two-second budget that is enough for
+/// `backup::export`'s own retries on the way in. Ten seconds covers the
+/// ordinary case for free -- a successful first attempt returns immediately,
+/// nothing here ever slows down a clean run. It cannot promise the directory
+/// is gone by the time this function returns: on a machine busy enough, the
+/// same contention can outlast any bounded retry a test's `Drop` could afford
+/// without turning a rare failure into a multi-minute one. What it does
+/// promise, and what the bug this fixes needed, is that removal is *attempted*
+/// on the panic path exactly as it always was on the success path, instead of
+/// never at all -- and every attempt made here is one the pre-`Drop` code
+/// never got to make.
+fn remove_dir_all_with_retry(directory: &Path) {
+    for attempt in 0u32..20 {
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if attempt < 19 => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(_) => {}
+        }
     }
 }
 
@@ -124,8 +179,13 @@ fn flag_present(target: &RegTarget, name: &str) -> bool {
 #[test]
 fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
     let fixture = Fixture::create("hide", &["a", "b", "c", "d", "e"]);
+    let mut backups = BackupGuard::none();
 
     let report = execute(&fixture.plan(Action::Hide)).expect("plan runs");
+    report
+        .backup_directories
+        .iter()
+        .for_each(|d| backups.track(d));
     assert_eq!(
         report.succeeded(),
         5,
@@ -138,7 +198,6 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
         1,
         "one backup, and it is mandatory"
     );
-    discard(&report);
 
     for target in &fixture.targets {
         assert!(
@@ -150,22 +209,26 @@ fn hiding_a_group_sets_the_flag_on_every_entry_and_can_be_undone() {
 
     // And back again — the whole point of offering this before delete.
     let report = execute(&fixture.plan(Action::Show)).expect("plan runs");
+    report
+        .backup_directories
+        .iter()
+        .for_each(|d| backups.track(d));
     assert_eq!(report.succeeded(), 5, "{}", failures(&report));
     for target in &fixture.targets {
         assert!(!flag_present(target, "LegacyDisable"));
     }
-
-    discard(&report);
 }
 
 #[test]
 fn one_backup_covers_the_whole_group_rather_than_one_per_entry() {
     let fixture = Fixture::create("backup", &["x", "y", "z"]);
+    let mut backups = BackupGuard::none();
 
     let report = execute(&fixture.plan(Action::ShiftOnly)).expect("plan runs");
     let [directory] = &report.backup_directories[..] else {
         panic!("one plan, one backup, got {:?}", report.backup_directories);
     };
+    backups.track(directory);
     let path = std::path::Path::new(directory);
 
     // Checked on the backup itself rather than by counting directories in
@@ -188,8 +251,6 @@ fn one_backup_covers_the_whole_group_rather_than_one_per_entry() {
         .filter(|e| e.path().extension().is_some_and(|x| x == "reg"))
         .count();
     assert_eq!(reg_files, 3, "one .reg per key, all in one directory");
-
-    let _ = std::fs::remove_dir_all(path);
 }
 
 #[test]
@@ -198,6 +259,7 @@ fn a_failing_step_does_not_stop_the_others() {
     // and the rest must still be applied — stopping at the first error would
     // leave a half-applied change with no report of which half.
     let fixture = Fixture::create("partial", &["p", "q", "r", "s"]);
+    let mut backups = BackupGuard::none();
 
     let mut plan = fixture.plan(Action::Hide);
     plan.operations.insert(
@@ -215,6 +277,10 @@ fn a_failing_step_does_not_stop_the_others() {
     );
 
     let report = execute(&plan).expect("plan runs despite a bad step");
+    report
+        .backup_directories
+        .iter()
+        .for_each(|d| backups.track(d));
     assert_eq!(report.results.len(), 5, "every step must be reported");
     assert_eq!(
         report.succeeded(),
@@ -231,15 +297,18 @@ fn a_failing_step_does_not_stop_the_others() {
             target.full_path()
         );
     }
-
-    discard(&report);
 }
 
 #[test]
 fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
     let fixture = Fixture::create("delete", &["one", "two", "three"]);
+    let mut backups = BackupGuard::none();
 
     let report = execute(&fixture.plan(Action::Delete)).expect("plan runs");
+    report
+        .backup_directories
+        .iter()
+        .for_each(|d| backups.track(d));
     assert_eq!(report.succeeded(), 3, "{}", failures(&report));
     for target in &fixture.targets {
         assert!(!write::exists(target), "{} survived", target.full_path());
@@ -259,8 +328,6 @@ fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
             target.full_path()
         );
     }
-
-    let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]

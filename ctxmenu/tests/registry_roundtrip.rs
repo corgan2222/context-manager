@@ -9,6 +9,8 @@
 //! umlauts and an `&`, which becomes a menu accelerator and is a classic
 //! quoting trap on the way through `reg.exe`.
 
+use std::path::{Path, PathBuf};
+
 use ctxmenu::model::{Category, EntryKind, Scope};
 use ctxmenu::registry::paths::RegTarget;
 use ctxmenu::registry::scan::{ScanOptions, scan};
@@ -77,6 +79,65 @@ impl Drop for Fixture {
     }
 }
 
+/// Removes every backup directory a test produced, even when a `Drop` runs
+/// because the test panicked rather than finished.
+///
+/// `backup::export_targets` writes into the user's own
+/// `%LOCALAPPDATA%\ctxmenu\backups`, and an assertion standing between that
+/// call and an end-of-test `remove_dir_all` could unwind straight past it,
+/// leaving the directory there for the backup tab to offer as if it were the
+/// user's own. Same fix as [`Fixture`], for the directory tree beside the
+/// registry keys instead of the keys themselves.
+struct BackupGuard(Vec<PathBuf>);
+
+impl BackupGuard {
+    fn none() -> Self {
+        Self(Vec::new())
+    }
+
+    fn track(&mut self, directory: impl AsRef<Path>) {
+        self.0.push(directory.as_ref().into());
+    }
+}
+
+impl Drop for BackupGuard {
+    fn drop(&mut self) {
+        for directory in &self.0 {
+            remove_dir_all_with_retry(directory);
+        }
+    }
+}
+
+/// Retries a directory removal for the same reason `backup::export` retries
+/// creating one -- and for longer, because deleting is contested harder.
+///
+/// Measured on a machine doing other work at the same time: a `remove_dir_all`
+/// right after `export_targets()` can meet `ERROR_SHARING_VIOLATION` while a
+/// search indexer or endpoint security scanner still has a freshly written
+/// `.reg` file open, well past the roughly two-second budget that is enough
+/// for `backup::export`'s own retries on the way in. Ten seconds covers the
+/// ordinary case for free -- a successful first attempt returns immediately,
+/// nothing here ever slows down a clean run. It cannot promise the directory
+/// is gone by the time this function returns: on a machine busy enough, the
+/// same contention can outlast any bounded retry a test's `Drop` could afford
+/// without turning a rare failure into a multi-minute one. What it does
+/// promise, and what the bug this fixes needed, is that removal is *attempted*
+/// on the panic path exactly as it always was on the success path, instead of
+/// never at all -- and every attempt made here is one the pre-`Drop` code
+/// never got to make.
+fn remove_dir_all_with_retry(directory: &Path) {
+    for attempt in 0u32..20 {
+        match std::fs::remove_dir_all(directory) {
+            Ok(()) => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) if attempt < 19 => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            Err(_) => {}
+        }
+    }
+}
+
 fn find_entry(key_name: &str) -> Option<ctxmenu::model::ContextEntry> {
     let options = ScanOptions {
         scopes: vec![Scope::User],
@@ -135,6 +196,8 @@ fn a_deleted_key_comes_back_from_its_backup() {
     let token = backup::export_targets("selftest", std::slice::from_ref(&target))
         .expect("export of an existing key");
     let directory = token.directory().to_path_buf();
+    let mut backups = BackupGuard::none();
+    backups.track(&directory);
 
     let manifest = backup::read_manifest(&directory).expect("manifest.json");
     assert_eq!(manifest.entries.len(), 1);
@@ -173,8 +236,6 @@ fn a_deleted_key_comes_back_from_its_backup() {
         EntryKind::Verb { command, .. } => assert_eq!(command.as_deref(), Some(COMMAND)),
         other => panic!("expected a verb, got {other:?}"),
     }
-
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 /// What the editor writes as a submenu, read back by the scanner.
@@ -372,6 +433,11 @@ fn exporting_a_missing_key_records_an_empty_state_without_licensing_a_delete() {
     let before = backup::list().expect("listable").len();
     let token = backup::export_targets("selftest_missing", std::slice::from_ref(&target))
         .expect("an empty starting state is a state");
+    // A safety net, not the primary cleanup below: an assertion failing
+    // between here and the manual `remove_dir_all` must still not leave the
+    // directory behind for good.
+    let mut backups = BackupGuard::none();
+    backups.track(token.directory());
 
     let manifest = backup::read_manifest(token.directory()).expect("manifest.json");
     assert!(manifest.entries.is_empty(), "there was nothing to export");
