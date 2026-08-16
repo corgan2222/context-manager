@@ -22,7 +22,7 @@ version = "1.2.0"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
-# nothing here forced the decision either way — see THIRD-PARTY-NOTICES.md.
+# nothing here forced the decision either way — see docs/THIRD-PARTY-NOTICES.md.
 license = "MIT"
 
 # Zentral gepflegt, damit die spätere IExplorerCommand-DLL (ToDo Abschnitt 14)

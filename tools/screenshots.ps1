@@ -138,7 +138,7 @@ $shots = @(
     @{
         Name  = '04-dateitypen'
         Title = @{ de = 'Wo ein Dateityp seine Einträge herhat'; en = 'Where a file type gets its entries' }
-        Use   = 'FEATURES: the resolution chain, the part no other tool shows'
+        Use   = 'README: the resolution chain, the part no other tool shows'
         Args  = @('--tab', 'filetypes', '--ext', '.png')
         Wait  = 3000
     }
@@ -154,7 +154,7 @@ $shots = @(
     @{
         Name  = '06-favoriten'
         Title = @{ de = 'Eigene Werkzeuge im Menü'; en = 'Your own tools in the menu' }
-        Use   = 'FEATURES: programs and web tools the user put there'
+        Use   = 'README: programs and web tools the user put there'
         Args  = @('--tab', 'favourites')
         Wait  = 3000
         # No entry table here, so no startup_to_first_list_ms is ever printed.
@@ -163,7 +163,7 @@ $shots = @(
     @{
         Name  = '07-dienste'
         Title = @{ de = 'Ein Webdienst wird zum Menü'; en = 'A web service becomes a menu' }
-        Use   = 'FEATURES headline: an OpenAPI description turned into entries'
+        Use   = 'README headline: an OpenAPI description turned into entries'
         Args  = @('--tab', 'services')
         Wait  = 4000
         # No entry table here, so no startup_to_first_list_ms is ever printed.
@@ -181,7 +181,7 @@ $shots = @(
     @{
         Name  = '09-viele-eintraege'
         Title = @{ de = 'Auch mit tausenden Zeilen flüssig'; en = 'Still smooth at thousands of rows' }
-        Use   = 'FEATURES: the performance claim, with the row count visible'
+        Use   = 'README: the performance claim, with the row count visible'
         Args  = @('--tab', 'categories', '--synthetic', '2000')
         Wait  = 2500
     }
