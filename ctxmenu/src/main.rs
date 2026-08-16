@@ -99,15 +99,7 @@ fn main() -> ExitCode {
             ctxmenu::outln!("ctxmenu {}", ctxmenu::VERSION);
             Ok(())
         }
-        cli::Command::Gui {
-            synthetic,
-            bench,
-            tab,
-            search,
-            ext,
-            theme_probe,
-        } => app::run(synthetic, bench, tab, search, ext, theme_probe)
-            .map_err(|e| anyhow::anyhow!("eframe: {e}")),
+        cli::Command::Gui(start) => app::run(start).map_err(|e| anyhow::anyhow!("eframe: {e}")),
         cli::Command::Scan(args) => cli::run_scan(args),
         cli::Command::Programs => cli::run_programs(),
         cli::Command::FileType(ext) => cli::run_file_type(&ext),

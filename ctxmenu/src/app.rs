@@ -28,8 +28,9 @@ use crate::service::{self, Service, grouping, spec};
 use crate::settings::{Language, Settings, ThemeChoice};
 use crate::theme;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
+    #[default]
     Categories,
     FileTypes,
     Programs,
@@ -52,6 +53,50 @@ impl Tab {
             _ => None,
         }
     }
+}
+
+/// What the command line asked the window to start as.
+///
+/// One value rather than a parameter each. `run` and `App::new` both need the
+/// whole set, and passing them one by one had already reached the seven
+/// arguments clippy allows before it calls a signature unreadable — which it
+/// is: the second `Option<usize>` in a row is a slip away from being the
+/// wrong one, and the compiler would not notice.
+///
+/// [`Default`] is the plain `ctxmenu` with no arguments at all: scan the
+/// registry, open on the first tab, in the saved language, at the usual size.
+#[derive(Debug, Clone, Default)]
+pub struct Start {
+    /// Fill the table with generated rows instead of scanning, for the
+    /// performance target of milestone 4.
+    pub synthetic: Option<usize>,
+    /// Run this many measured frames, report and exit.
+    pub bench: Option<usize>,
+    /// Which tab to open on.
+    pub tab: Tab,
+    /// Text to put in the search box before the first frame. Exists so a
+    /// search can be photographed and checked, not only tried by hand.
+    pub search: String,
+    /// Extension to preselect in the file type tab. It exists so that tab can
+    /// be measured at all: without a selection it shows nothing, and its one
+    /// real fault was invisible from outside.
+    pub ext: Option<String>,
+    /// Flip the system theme once while running and report whether the window
+    /// followed. Restores the setting afterwards.
+    pub theme_probe: bool,
+    /// The language for this run only. `None` keeps the saved choice, which is
+    /// what every run that nobody said otherwise about gets. Setting it does
+    /// not write the settings file — a screenshot in the other language must
+    /// not cost the user their preference.
+    pub language: Option<Language>,
+    /// The window size for this run only, in physical pixels. `None` opens at
+    /// the size this window has always opened at.
+    ///
+    /// Physical rather than logical points, because a size is asked for in
+    /// order to photograph it and a photograph is measured in pixels. A run
+    /// that names a size also places itself on the leftmost screen, the way
+    /// every other automatic run does — see `App::place_window_once`.
+    pub size: Option<(i32, i32)>,
 }
 
 /// What the worker sends back after fetching a description: the address that
@@ -903,6 +948,10 @@ pub struct App {
     theme_probe: Option<ThemeProbe>,
     /// Still owing the window a move to the leftmost screen.
     place_left: bool,
+    /// How big to make it when that move happens, in physical pixels. `None`
+    /// takes the full width of the screen, which is what an unattended run
+    /// wants unless it said otherwise.
+    place_size: Option<(i32, i32)>,
     /// Milliseconds from process creation to the first frame that actually
     /// showed rows — the milestone 12 target of under two seconds.
     ///
@@ -1080,26 +1129,21 @@ struct Bench {
 }
 
 impl App {
-    /// `synthetic` replaces the registry scan with generated entries, so the
-    /// table can be measured at the 2.000 rows milestone 4 asks for even
-    /// though this machine's registry only holds a fraction of that.
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        synthetic: Option<usize>,
-        bench_frames: Option<usize>,
-        start_tab: Tab,
-        start_search: String,
-        // `start_ext` preselects an extension in the file type tab. It exists
-        // so that tab can be measured at all: without a selection it shows
-        // nothing, and its one real fault was invisible from outside.
-        start_ext: Option<String>,
-        // Runs the runtime theme switch probe instead of waiting for a user to
-        // change the setting by hand.
-        theme_probe: bool,
-    ) -> Self {
+    /// Everything the command line had to say about this run arrives in
+    /// [`Start`]; `Start::default()` is the plain double-click.
+    pub fn new(cc: &eframe::CreationContext<'_>, start: Start) -> Self {
         install_fonts(&cc.egui_ctx);
 
-        let settings = Settings::load_or_default(theme::system_language());
+        let mut settings = Settings::load_or_default(theme::system_language());
+        // `--lang` moves this run and nothing else. Written into the loaded
+        // settings rather than kept beside them so the whole window agrees on
+        // one language — the box in the tool bar included — and the file stays
+        // as it was: nothing here saves, and the only thing that does is the
+        // user changing something, at which point saving what is on screen is
+        // exactly right.
+        if let Some(language) = start.language {
+            settings.language = language;
+        }
         cc.egui_ctx.set_theme(settings.theme.to_preference());
 
         // Why a table row sometimes ignored a click: egui makes every label
@@ -1122,9 +1166,9 @@ impl App {
             filter_dirty: true,
             sort: (SortBy::Natural, true),
             scroll_to_top: false,
-            tab: start_tab,
+            tab: start.tab,
             selected_category: None,
-            selected_ext: start_ext,
+            selected_ext: start.ext,
             ext_draft: String::new(),
             scan_every_type: false,
             selected_group: None,
@@ -1137,7 +1181,7 @@ impl App {
             classic_menu: crate::registry::win11::classic_menu(),
             logged_error: None,
             drop_target: None,
-            search: start_search,
+            search: start.search,
             dialog: None,
             action_rx: None,
             scan_rx: None,
@@ -1183,7 +1227,7 @@ impl App {
             frame_times: FrameTimes::default(),
             theme_reported: false,
             first_list_ms: None,
-            bench: bench_frames.map(|frames| Bench {
+            bench: start.bench.map(|frames| Bench {
                 // The first frames pay for fonts, textures and window setup;
                 // measuring those would flatter or slander the result.
                 warmup: 120,
@@ -1194,9 +1238,13 @@ impl App {
                 last_focus: None,
             }),
             // Every run that started itself goes to the left screen: the
-            // main one is the user's desk.
-            place_left: theme_probe || bench_frames.is_some(),
-            theme_probe: theme_probe.then(|| ThemeProbe {
+            // main one is the user's desk. A run that asked for a size joins
+            // them — the size is asked for in order to photograph the window,
+            // and a photograph wants it in a known place as much as at a
+            // known size.
+            place_left: start.theme_probe || start.bench.is_some() || start.size.is_some(),
+            place_size: start.size,
+            theme_probe: start.theme_probe.then(|| ThemeProbe {
                 stage: ProbeStage::Settling {
                     left: PROBE_SETTLE_FRAMES,
                 },
@@ -1204,7 +1252,7 @@ impl App {
             }),
         };
 
-        match synthetic {
+        match start.synthetic {
             Some(count) => {
                 app.scan = Some(crate::synthetic::scan_result(count));
                 app.filter_dirty = true;
@@ -1676,12 +1724,15 @@ impl App {
     /// Moves the window to the leftmost screen, once, on automatic runs.
     ///
     /// Only for runs nobody started by hand — a probe, a benchmark, a smoke
-    /// test. A window that a person opened belongs wherever that person wants
-    /// it, and dragging it away would be its own kind of rude.
+    /// test, or one that named a window size on the command line. A window
+    /// that a person opened belongs wherever that person wants it, and
+    /// dragging it away would be its own kind of rude.
     ///
     /// Not done through `ViewportBuilder`, because the handle does not exist
     /// before the window does; the first frame is the earliest moment this can
-    /// happen at all.
+    /// happen at all. It is also the only way to get a size in pixels rather
+    /// than in points: `ViewportBuilder` speaks logical points, and on this
+    /// machine's 150 % screens the two differ by half again.
     fn place_window_once(&mut self) {
         if !self.place_left {
             return;
@@ -1689,7 +1740,7 @@ impl App {
         let Some(hwnd) = self.hwnd else { return };
         self.place_left = false;
 
-        match theme::place_on_left_screen(hwnd) {
+        match theme::place_on_left_screen(hwnd, self.place_size) {
             Some(placed) => crate::errln!(
                 "window_placed: x={} y={} {}x{} physical, leftmost screen",
                 placed.x,
@@ -8000,22 +8051,24 @@ impl FrameTimes {
 }
 
 /// Launches the window.
-pub fn run(
-    synthetic: Option<usize>,
-    bench_frames: Option<usize>,
-    start_tab: Tab,
-    start_search: String,
-    start_ext: Option<String>,
-    theme_probe: bool,
-) -> eframe::Result<()> {
+pub fn run(start: Start) -> eframe::Result<()> {
     // One line per run, so the entries under it can be told apart -- and so a
     // log that ends without a matching error says "it just closed", which is
     // itself worth knowing.
-    let how = match synthetic {
+    let how = match start.synthetic {
         Some(rows) => format!("window, {rows} synthetic rows"),
         None => "window".to_string(),
     };
     crate::log::note_start(&how);
+
+    // The size a run asked for is meant in pixels and lands here as points,
+    // which is right on a screen at 100 % and too small on this machine's
+    // 150 % ones. `place_window_once` corrects it in the first frame; this is
+    // only about opening near the right size instead of visibly jumping to it.
+    let (width, height) = match start.size {
+        Some((width, height)) => (width as f32, height as f32),
+        None => (1200.0, 800.0),
+    };
 
     // OpenGL first, DirectX after. `glow` is smaller and starts faster, and on
     // a machine with a real graphics driver it is the right answer. But there
@@ -8053,27 +8106,18 @@ pub fn run(
                 // language and the version right before anyone can read this
                 // one.
                 .with_title(window_title(&i18n::DE))
-                .with_inner_size([1200.0, 800.0])
+                .with_inner_size([width, height])
                 .with_min_inner_size([900.0, 600.0]),
             ..Default::default()
         };
 
-        let search = start_search.clone();
-        let ext = start_ext.clone();
+        // Cloned per attempt: the loop may come round a second time, and the
+        // closure has to own what it hands to `App::new`.
+        let start = start.clone();
         let outcome = eframe::run_native(
             "ctxmenu",
             options,
-            Box::new(move |cc| {
-                Ok(Box::new(App::new(
-                    cc,
-                    synthetic,
-                    bench_frames,
-                    start_tab,
-                    search.clone(),
-                    ext.clone(),
-                    theme_probe,
-                )))
-            }),
+            Box::new(move |cc| Ok(Box::new(App::new(cc, start.clone())))),
         );
 
         match outcome {

@@ -17,7 +17,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::SystemServices::LANG_GERMAN;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+    GetWindowRect, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetWindowPos,
 };
 use windows::core::BOOL;
 
@@ -92,12 +93,16 @@ pub fn set_titlebar_dark(hwnd: HWND, dark: bool) -> bool {
     }
 }
 
-/// Puts the window across the full width of the leftmost screen.
+/// Puts the window on the leftmost screen, at `size` or across the full width.
 ///
 /// Every automatic run does this, and it is not a preference: on this machine
 /// the main screen at `X=0` is where the user is working, and a window that
 /// opens there interrupts them. The leftmost screen — smallest `X` — is the
 /// one to use.
+///
+/// `size` is in physical pixels, and larger than the screen is capped to it: a
+/// window that hangs off the edge cannot be photographed whole, which is the
+/// only reason anybody asks for a size. `None` takes the whole work area.
 ///
 /// Works in physical pixels through `SetWindowPos` rather than asking eframe
 /// for a position in logical points. That sidesteps the trap the notes
@@ -107,10 +112,13 @@ pub fn set_titlebar_dark(hwnd: HWND, dark: bool) -> bool {
 /// here is real.
 ///
 /// Returns what it did, so a caller can report it instead of assuming.
-pub fn place_on_left_screen(hwnd: HWND) -> Option<PlacedWindow> {
+pub fn place_on_left_screen(hwnd: HWND, size: Option<(i32, i32)>) -> Option<PlacedWindow> {
     let work = leftmost_work_area()?;
-    let width = work.right - work.left;
-    let height = work.bottom - work.top;
+    let full = (work.right - work.left, work.bottom - work.top);
+    let (width, height) = match size {
+        Some((width, height)) => (width.min(full.0), height.min(full.1)),
+        None => full,
+    };
 
     unsafe {
         SetWindowPos(
@@ -123,6 +131,20 @@ pub fn place_on_left_screen(hwnd: HWND) -> Option<PlacedWindow> {
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
         .ok()?;
+    }
+
+    // Read back rather than repeated: winit refuses to go below the minimum
+    // size the viewport was built with, so a small enough request ends
+    // somewhere other than where it asked. Whoever reports this line should be
+    // reporting the window, not the wish.
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+        return Some(PlacedWindow {
+            x: rect.left,
+            y: rect.top,
+            width: rect.right - rect.left,
+            height: rect.bottom - rect.top,
+        });
     }
 
     Some(PlacedWindow {
