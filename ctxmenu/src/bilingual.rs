@@ -214,6 +214,25 @@ pub fn set_language(language: Language) {
     );
 }
 
+/// Held by every test that moves the process-wide language.
+///
+/// The program writes [`CURRENT`] twice in its life, from the window; the test
+/// suite writes it in four places across three modules, and `cargo test` runs
+/// those threads at once. Each of them saves the old value and puts it back,
+/// which is correct on its own and useless against a second test doing the
+/// same thing in parallel: `elevation::the_job_file_carries_the_current_language`
+/// failed on every run of `cargo test` without `--test-threads=1`, and only
+/// stayed hidden because this project always passes that flag.
+///
+/// A poisoned lock is taken anyway. A test that panicked while holding it has
+/// already reported its own failure, and turning that into a failure of every
+/// language test afterwards would bury the one that matters.
+#[cfg(test)]
+pub(crate) fn while_setting_the_language() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// `UNSET` means nobody has said yet, so [`language`] falls back to the
 /// settings file. An atomic rather than a lock: this is read on every printed
 /// line and written twice in the life of the program.
@@ -495,6 +514,7 @@ mod tests {
 
     #[test]
     fn the_process_language_can_be_set_and_read_back() {
+        let _serial = while_setting_the_language();
         let before = language();
 
         set_language(Language::English);
@@ -707,7 +727,8 @@ mod source {
         // The line as it stood in update.rs until 2026-08-16. The guard read
         // over it for two months because `?` is not alphabetic, so the one
         // message written in the old shape was the one message never reported.
-        let missed = r#"    "{} \x1ebeiseite legen\x1fmoving aside\x1d: schreibgeschützt? / read-only?","#;
+        let missed =
+            r#"    "{} \x1ebeiseite legen\x1fmoving aside\x1d: schreibgeschützt? / read-only?","#;
         assert!(bilingual_looking(missed));
 
         // The shapes that made the letter check necessary in the first place

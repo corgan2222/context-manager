@@ -1664,7 +1664,9 @@ mod tests {
 
     #[test]
     fn the_start_language_can_be_named_for_one_run() {
-        // `parse` sets the language of this process, so it is put back.
+        // `parse` sets the language of this process, so it is put back — and
+        // no other test may be doing the same at that moment.
+        let _serial = crate::bilingual::while_setting_the_language();
         let before = crate::bilingual::language();
 
         assert_eq!(
@@ -1692,6 +1694,7 @@ mod tests {
         // The gap this closes: the console cuts every message to one language
         // out of the saved setting, so on a German machine there was no way of
         // reading `scan` or `--help` in English at all.
+        let _serial = crate::bilingual::while_setting_the_language();
         let before = crate::bilingual::language();
 
         assert!(matches!(

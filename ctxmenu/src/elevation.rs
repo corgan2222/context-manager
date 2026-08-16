@@ -525,6 +525,7 @@ mod tests {
     /// through the job file instead of guessing from `settings.json`.
     #[test]
     fn the_job_file_carries_the_current_language() {
+        let _serial = crate::bilingual::while_setting_the_language();
         let before = crate::bilingual::language();
         crate::bilingual::set_language(Language::English);
 
