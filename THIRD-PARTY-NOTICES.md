@@ -1,44 +1,46 @@
-# Fremde Bestandteile
+# Third-Party Components
 
-`ctxmenu` steht unter der MIT-Lizenz (siehe `LICENSE`). Die fertige
-`ctxmenu.exe` enthält darüber hinaus Code und Daten Dritter, die unter eigenen
-Bedingungen stehen. Diese Datei nennt sie vollständig.
+*[Deutsche Fassung](THIRD-PARTY-NOTICES_DE.md)*
 
-Nichts davon verlangt, dass abgeleitete Arbeiten offengelegt werden — es sind
-durchweg permissive Lizenzen. Alle verlangen aber, dass Urhebervermerk und
-Lizenztext mitgeliefert werden, und genau dafür ist diese Datei da.
+`ctxmenu` is licensed under the MIT license (see `LICENSE`). The finished
+`ctxmenu.exe` additionally contains code and data from third parties, which
+are subject to their own terms. This file lists them in full.
 
-## Eingebettet in die ausgelieferte Datei
+None of them require derivative works to be disclosed: they are all
+permissive licenses throughout. All of them do require that the copyright
+notice and license text be included, and that is exactly what this file is
+for.
 
-| Bestandteil | Lizenz | Wofür |
+## Embedded in the shipped file
+
+| Component | License | Purpose |
 |---|---|---|
-| [Feather Icons](https://feathericons.com/) | MIT (© Cole Bemis) | Die Symbole der Oberfläche. Als Schriftdatei über die Crate `iconflow` eingebettet — rund 58 KB der `.exe`. |
-| [`iconflow`](https://crates.io/crates/iconflow) | MIT | Verpackt Feather als Schrift und löst Namen zu Zeichen auf. |
-| [`egui` / `eframe` / `egui_extras`](https://github.com/emilk/egui) | MIT oder Apache-2.0 | Die Oberfläche und ihr Fenster. |
-| [`windows` / `windows-registry`](https://github.com/microsoft/windows-rs) | MIT oder Apache-2.0 | Die Windows-Schnittstellen: Registry, GDI, WinHTTP, Shell. |
-| [`serde` / `serde_json`](https://serde.rs/) | MIT oder Apache-2.0 | Lesen und Schreiben der JSON-Dateien. |
-| [`anyhow`](https://github.com/dtolnay/anyhow) · [`thiserror`](https://github.com/dtolnay/thiserror) | MIT oder Apache-2.0 | Fehlerbehandlung. |
-| [`chrono`](https://github.com/chronotope/chrono) | MIT oder Apache-2.0 | Zeitstempel der Sicherungen. |
-| [`dirs`](https://github.com/dirs-dev/dirs-rs) | MIT oder Apache-2.0 | Findet `%LOCALAPPDATA%`. |
-| [`rustc-hash`](https://github.com/rust-lang/rustc-hash) | Apache-2.0 oder MIT | Die schnellen Mengen und Tabellen im Bildpfad. |
-| [`raw-window-handle`](https://github.com/rust-windowing/raw-window-handle) | MIT, Apache-2.0 oder Zlib | Fenstergriff für die dunkle Titelleiste. |
-| [`read-fonts`](https://github.com/googlefonts/fontations) | MIT oder Apache-2.0 | Prüft im Test, ob ein Zeichen in einer Schrift wirklich vorhanden ist. |
-| [`winresource`](https://github.com/BenjaminRi/winresource) | MIT | Schreibt Version und Symbol in die Dateiressource. |
+| [Feather Icons](https://feathericons.com/) | MIT (© Cole Bemis) | The interface icons. Embedded as a font file via the `iconflow` crate, about 58 KB of the `.exe`. |
+| [`iconflow`](https://crates.io/crates/iconflow) | MIT | Packages Feather as a font and resolves names to glyphs. |
+| [`egui` / `eframe` / `egui_extras`](https://github.com/emilk/egui) | MIT or Apache-2.0 | The interface and its window. |
+| [`windows` / `windows-registry`](https://github.com/microsoft/windows-rs) | MIT or Apache-2.0 | The Windows interfaces: registry, GDI, WinHTTP, shell. |
+| [`serde` / `serde_json`](https://serde.rs/) | MIT or Apache-2.0 | Reading and writing the JSON files. |
+| [`anyhow`](https://github.com/dtolnay/anyhow) · [`thiserror`](https://github.com/dtolnay/thiserror) | MIT or Apache-2.0 | Error handling. |
+| [`chrono`](https://github.com/chronotope/chrono) | MIT or Apache-2.0 | Timestamps for the backups. |
+| [`dirs`](https://github.com/dirs-dev/dirs-rs) | MIT or Apache-2.0 | Finds `%LOCALAPPDATA%`. |
+| [`rustc-hash`](https://github.com/rust-lang/rustc-hash) | Apache-2.0 or MIT | The fast sets and maps in the image path. |
+| [`raw-window-handle`](https://github.com/rust-windowing/raw-window-handle) | MIT, Apache-2.0, or Zlib | Window handle for the dark title bar. |
+| [`read-fonts`](https://github.com/googlefonts/fontations) | MIT or Apache-2.0 | Checks in tests whether a glyph is actually present in a font. |
+| [`winresource`](https://github.com/BenjaminRi/winresource) | MIT | Writes version and icon into the file resource. |
 
-Die vollständigen Lizenztexte liegen in den Quellpaketen der jeweiligen Crates;
-`cargo vendor` oder ein Blick in `~/.cargo/registry` fördert sie zutage.
+The full license texts are included in the source packages of the respective
+crates; `cargo vendor` or a look into `~/.cargo/registry` will bring them up.
 
-## Benutzt, aber nicht mitgeliefert
+## Used but not shipped
 
-- **Segoe UI** und **Segoe UI Symbol** gehören zu Windows und werden von dort
-  geladen. Sie sind nicht Teil dieser Anwendung.
-- **`reg.exe`** ist das Sicherungswerkzeug von Windows und wird aufgerufen, nicht
-  eingebettet.
+- **Segoe UI** and **Segoe UI Symbol** belong to Windows and are loaded from
+  there. They are not part of this application.
+- **`reg.exe`** is Windows's own backup tool and is invoked, not embedded.
 
-## Das Logo
+## The logo
 
-Die Bildmarke oben rechts im Fenster stammt aus dem Projekt des Autors
-([corgan2222/Dashboard](https://github.com/corgan2222/Dashboard)) und gehört
-ihm; sie steht nicht unter der MIT-Lizenz dieses Programms. Wer `ctxmenu` forkt
-und weitergibt, ersetzt sie durch eine eigene — die Datei liegt unter
-`ctxmenu/assets/logo.rgba`.
+The logo in the top-right corner of the window comes from the author's own
+project ([corgan2222/Dashboard](https://github.com/corgan2222/Dashboard)) and
+belongs to him; it is not covered by this program's MIT license. Anyone who
+forks `ctxmenu` and redistributes it replaces it with one of their own: the
+file is located at `ctxmenu/assets/logo.rgba`.
