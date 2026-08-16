@@ -17,7 +17,6 @@ fn main() {
             .unwrap_or_else(|_| "Windows Context Menu Manager".into());
         res.set("FileDescription", &description);
         res.set("ProductName", "Kontextmenü-Manager");
-        res.compile()
-            .expect("Ressourcen-Kompilierung fehlgeschlagen");
+        res.compile().expect("compiling the resources failed");
     }
 }

@@ -1,4 +1,4 @@
-//! Browser öffnen und Dateien in die Zwischenablage legen.
+//! Opening the browser and putting files onto the clipboard.
 //!
 //! The clipboard is the part that makes web tools without an interface usable
 //! at all: Squoosh, the TinyPNG page, remove.bg — none of them has an endpoint

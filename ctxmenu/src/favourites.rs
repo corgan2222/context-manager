@@ -1,4 +1,4 @@
-//! Der Werkzeugkasten: Programme und Webtools, die man einmal einträgt.
+//! The toolbox: programs and web tools that are entered once.
 //!
 //! Favourites live *in this application*, not in the Explorer menu. They are a
 //! palette: a tool goes in once and stays, and from there it can be written

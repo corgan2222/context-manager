@@ -262,7 +262,7 @@ pub struct Strings {
     pub fmt_fav_place_intro: &'static str,
     pub fmt_fav_placed: &'static str,
 
-    // Aktionen, Spalten, Tooltips
+    // Actions, columns, tooltips
     pub act_hide: &'static str,
     pub act_show: &'static str,
     pub act_shift_only: &'static str,
@@ -365,10 +365,10 @@ pub struct Strings {
     /// Keys the backup found empty and the restore therefore took away again.
     pub fmt_restore_removed: &'static str,
 
-    // Die Aktionsleiste: was eine Gruppe von Schaltern steuert, wie ihre
-    // Segmente heißen und warum sie gerade nicht kann. Ohne Symbol — das ist
-    // keine Übersetzung, steht im Code neben dem Titel und wird über
-    // `UI_GLYPHS` auf eine vorhandene Glyphe geprüft.
+    // The action bar: what a group of switches controls, what its segments
+    // are called, and why it cannot right now. Without a symbol — that is
+    // not a translation, it stands in the code beside the title and is
+    // checked through `UI_GLYPHS` against a glyph that exists.
     pub group_selection: &'static str,
     pub group_visibility: &'static str,
     pub group_shift: &'static str,
@@ -422,7 +422,7 @@ pub struct Strings {
     pub fmt_selection_readonly: &'static str,
     pub fmt_mixed_share: &'static str,
 
-    // Der Detailbereich, solange nichts ausgewählt ist.
+    // The detail panel, for as long as nothing is selected.
     pub intro_title: &'static str,
     pub intro_step_one: &'static str,
     pub intro_step_two: &'static str,

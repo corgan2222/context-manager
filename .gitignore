@@ -1,28 +1,28 @@
-# Build-Artefakte
+# Build artefacts
 /target
 *.pdb
 
-# Laufzeitdaten des Werkzeugs
+# The tool's runtime data
 /backups
 /todo
 /tmp
-# Verwaltet /todo, das ebenfalls nicht ins Repositorium gehoert:
-# eine Arbeitsnotiz wie HANDOVER.md, kein Teil des Programms.
+# Manages /todo, which does not belong in the repository either:
+# a working note like HANDOVER.md, not part of the program.
 /tools/todo_erledigt.ps1
 
-# Enthält gültige API-Schlüssel (Kimi, DeepSeek, xAI) im Klartext.
-# Darf niemals committet werden, auch nicht in einem privaten Repo.
+# Holds valid API keys (Kimi, DeepSeek, xAI) in plain text.
+# Must never be committed, not even to a private repo.
 .mcp.json
 
-# Claude Code, lokal. Arbeitsnotizen, keine Projektdateien: sie bleiben auf
-# der Platte und aus der Versionsverwaltung heraus. Am 2026-08-14 auch
-# rückwirkend aus der Historie getilgt.
+# Claude Code, local. Working notes, not project files: they stay on the disk
+# and out of version control. On 2026-08-14 they were purged from the history
+# as well, after the fact.
 .claude/settings.local.json
 CLAUDE.md
 HANDOVER.md
 handover_mcp2.md
-# Am 2026-08-15 nach .claude/ gezogen: zurückgestellte Vorhaben sind eine
-# Arbeitsnotiz wie die HANDOVER, keine ausgelieferte Dokumentation.
+# Moved to .claude/ on 2026-08-15: deferred plans are a working note like the
+# HANDOVER, not shipped documentation.
 maybe_later.md
-# Testbild fuer den Webtool-Durchlauf; liegt beim Benutzer, nicht im Repo.
+# Test image for the web tool run; it lives with the user, not in the repo.
 test.png

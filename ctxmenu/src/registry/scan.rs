@@ -335,7 +335,7 @@ fn resolve_entries(
 /// Turns a program path into an icon reference.
 ///
 /// The explicit `,0` matters: an icon reference is split at its **last**
-/// comma, so a program whose name happens to contain one — `C:\\Werkzeug,
+/// comma, so a program whose name happens to contain one — `C:\\Tool,
 /// Version 2\\tool.exe` — would otherwise lose everything after it and be
 /// read as an index. Appending the index removes the ambiguity for every path.
 fn fallback_icon(program_key: &str) -> String {

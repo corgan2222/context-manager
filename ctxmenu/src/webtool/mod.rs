@@ -1,4 +1,4 @@
-//! Was passiert, wenn ein Webtool-Eintrag angeklickt wird.
+//! What happens when a web tool entry is clicked.
 //!
 //! A context menu entry can only start a program with a file name. It cannot
 //! upload anything, and a URL cannot fetch a local file — no browser permits a
@@ -8,11 +8,11 @@
 //!
 //! Three ways, because real web tools differ:
 //!
-//! | Betriebsart | Was passiert | Wofür |
+//! | Mode | What happens | What for |
 //! |---|---|---|
-//! | [`Open`](crate::favourites::WebMode::Open) | Adresse aus Platzhaltern bauen und öffnen | Suche, Nachschlagewerk — die Datei bleibt hier |
-//! | [`Clipboard`](crate::favourites::WebMode::Clipboard) | Datei in die Zwischenablage, dann Seite öffnen | Squoosh und alles ohne Schnittstelle: Strg+V genügt |
-//! | [`Upload`](crate::favourites::WebMode::Upload) | Datei per HTTP schicken, Ergebnis abholen | Tools mit echtem Endpunkt |
+//! | [`Open`](crate::favourites::WebMode::Open) | build the address from the placeholders and open it | search, reference works — the file stays here |
+//! | [`Clipboard`](crate::favourites::WebMode::Clipboard) | file onto the clipboard, then open the page | Squoosh and everything without an interface: Ctrl+V is enough |
+//! | [`Upload`](crate::favourites::WebMode::Upload) | send the file over HTTP, fetch the result back | tools with a real endpoint |
 //!
 //! Only the third one actually transfers the file, and only that one asks
 //! first.
@@ -153,7 +153,7 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
 ///   `{"url": "file:///C:/Users/…/setup.exe"}` in an answer is a foreign
 ///   service picking a program on this machine to have started.
 /// * Unencrypted `http://` only where the user said so. The tick box called
-///   "unverschlüsseltes http:// erlauben" used to be read by
+///   "allow unencrypted http://" used to be read by
 ///   [`crate::favourites::Favourite::problems`] alone, which advises and never
 ///   refuses, so the upload itself went out in the clear regardless. A service
 ///   in the local network is exactly what the tick box is for, and with it set

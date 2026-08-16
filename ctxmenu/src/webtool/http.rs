@@ -1,4 +1,4 @@
-//! Ein kleiner HTTP-Absender auf WinHTTP.
+//! A small HTTP sender built on WinHTTP.
 //!
 //! No HTTP crate: WinHTTP ships with Windows, uses the system certificate
 //! store and the system proxy settings, and costs nothing in binary size. The

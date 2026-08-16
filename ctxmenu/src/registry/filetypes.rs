@@ -122,7 +122,7 @@ pub const CURATED: &[FileTypeDef] = &[
     def(".xz", TypeGroup::Archives),
     def(".iso", TypeGroup::Archives),
     def(".cab", TypeGroup::Archives),
-    // Code und Konfiguration
+    // Code and configuration
     def(".py", TypeGroup::Code),
     def(".rs", TypeGroup::Code),
     def(".go", TypeGroup::Code),

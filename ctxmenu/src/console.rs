@@ -4,7 +4,8 @@
 //! double-clicking the app does not flash a console. The side
 //! effect is that the process starts with no standard handles at all, and the
 //! first `println!` then fails — which in Rust means a panic, not a silent
-//! drop. Measured on this machine before the fix:
+//! drop. Measured on this machine before the fix, on a German Windows, which
+//! is where the second line's wording comes from:
 //!
 //! ```text
 //! panicked at library\std\src\io\stdio.rs: failed printing to stdout:

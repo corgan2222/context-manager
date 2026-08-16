@@ -3100,7 +3100,7 @@ impl App {
         let _ = ctx;
     }
 
-    /// Der Werkzeugkasten.
+    /// The tool box.
     ///
     /// Deliberately not a tree and not a table: this list is short by nature —
     /// it holds what one person reaches for often — and its order is the
