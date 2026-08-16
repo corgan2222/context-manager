@@ -72,8 +72,8 @@ The most delicate part, so the strictest rules apply:
   enables nothing costs review time and adds risk.
 - **Features Windows doesn't offer.** Free reordering of menu entries, for
   example: measured, and the system only knows `Position=Top` and
-  `Position=Bottom`. What fails because of that is listed in the README
-  under "What it deliberately can't do."
+  `Position=Bottom`. What fails because of that is listed in the
+  [README](../README.md) under "What It Deliberately Cannot Do."
 - **Machine-generated translations.** Both languages are written by hand and
   are meant to read equally well.
 
@@ -87,4 +87,5 @@ What makes a report quick to act on:
 - The excerpt from `%LOCALAPPDATA%\ctxmenu\ctxmenu.log`: **review it first**,
   it names paths and file names from your own machine.
 
-A security vulnerability does **not** belong in an issue: see `SECURITY.md`.
+A security vulnerability does **not** belong in an issue: see
+[`SECURITY.md`](SECURITY.md).

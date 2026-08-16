@@ -2,7 +2,7 @@
 
 *[Deutsche Fassung](THIRD-PARTY-NOTICES_DE.md)*
 
-`ctxmenu` is licensed under the MIT license (see `LICENSE`). The finished
+`ctxmenu` is licensed under the MIT license (see [`LICENSE`](../LICENSE)). The finished
 `ctxmenu.exe` additionally contains code and data from third parties, which
 are subject to their own terms. This file lists them in full.
 
