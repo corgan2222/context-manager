@@ -7105,12 +7105,28 @@ fn type_group_label(
 /// File type categories that cannot be written to are mapped to the one that
 /// can: a ProgID is shared by several extensions, so an entry meant "for this
 /// kind of file" belongs under the extension it was reached from.
+///
+/// A ProgID's own `from_ext` is a poor guide to that, though: the scanner
+/// reads its shared `shell` key once and hands the resulting entry to every
+/// extension that lists it (ToDo 10), so `from_ext` only records whichever
+/// extension the scan happened to reach it through first — not necessarily
+/// the one on screen. The file type tab always knows which extension is
+/// selected, and that is the one a click on a shared entry means; it wins
+/// over the entry's own `from_ext` whenever it is available.
 fn category_for_new_entry(
     focused: Option<&ContextEntry>,
     tab: Tab,
     selected_ext: Option<&str>,
     selected_category: Option<&Category>,
 ) -> Category {
+    if let Some(entry) = focused
+        && let Category::ProgId { .. } = &entry.category
+        && tab == Tab::FileTypes
+        && let Some(ext) = selected_ext
+    {
+        return Category::ExtAssoc(ext.to_string());
+    }
+
     if let Some(entry) = focused
         && let Some(category) = creatable_category(&entry.category)
     {
@@ -8946,6 +8962,35 @@ mod tests {
         assert_eq!(
             category_for_new_entry(None, Tab::Programs, None, None),
             Category::Directory
+        );
+    }
+
+    /// A shared ProgID's `from_ext` names whichever extension the scan
+    /// reached it through first, which is not necessarily the one on screen
+    /// (ToDo 10). Regression guard: `.jpg` scanned first must not steal a
+    /// `.png` entry when the user is looking at `.png`.
+    #[test]
+    fn a_shared_progid_uses_the_extension_on_screen_not_the_stale_one() {
+        let mut entries = synthetic::scan_result(1).entries;
+        entries[0].category = Category::ProgId {
+            prog_id: "picviewer".into(),
+            // Stale on purpose: the dedup in `scan::scan` keeps whichever
+            // extension's source was processed first, which need not be the
+            // one the user has selected now.
+            from_ext: ".jpg".into(),
+        };
+
+        assert_eq!(
+            category_for_new_entry(Some(&entries[0]), Tab::FileTypes, Some(".png"), None),
+            Category::ExtAssoc(".png".into()),
+            "the extension selected in the tree wins over the entry's stale from_ext"
+        );
+
+        // Without a selected extension to prefer, the stale `from_ext` is
+        // still the best answer available.
+        assert_eq!(
+            category_for_new_entry(Some(&entries[0]), Tab::FileTypes, None, None),
+            Category::ExtAssoc(".jpg".into())
         );
     }
 
