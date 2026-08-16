@@ -1160,6 +1160,14 @@ impl App {
         let tr = strings_for(settings.language);
         let hwnd = theme::window_handle(cc);
 
+        // Unlike the favourites list below, a load failure here has to be
+        // kept rather than swallowed: `--tab services` opens straight on the
+        // services tab, so the tab-click handler that would otherwise call
+        // `reload_services` and surface the error never runs. Losing the
+        // message would leave a damaged `services.json` looking like an
+        // empty, healthy one.
+        let (services, service_error) = services_from_load(service::load());
+
         let mut app = Self {
             scan: None,
             visible_rows: Vec::new(),
@@ -1202,9 +1210,10 @@ impl App {
             favourite_error: None,
             favourite_focus: None,
             favourite_scroll: false,
-            // Same reasoning as the favourites: a small file, read once.
-            services: service::load().unwrap_or_default(),
-            service_error: None,
+            // Same reasoning as the favourites: a small file, read once. The
+            // error, unlike theirs, is kept -- see above.
+            services,
+            service_error,
             service_focus: None,
             service_tools: Vec::new(),
             service_grouping: None,
@@ -3027,16 +3036,7 @@ impl App {
     // -----------------------------------------------------------------------
 
     fn reload_services(&mut self) {
-        match service::load() {
-            Ok(list) => {
-                self.services = list;
-                self.service_error = None;
-            }
-            Err(error) => {
-                self.services.clear();
-                self.service_error = Some(format!("{error:#}"));
-            }
-        }
+        (self.services, self.service_error) = services_from_load(service::load());
     }
 
     /// Fetches one service's description on a thread.
@@ -3050,9 +3050,13 @@ impl App {
             return;
         };
         self.service_tools.clear();
-        self.service_picked.clear();
         self.service_open = None;
         self.service_error = None;
+        clear_service_inputs(
+            &mut self.service_picked,
+            &mut self.service_settings,
+            &mut self.service_fields,
+        );
 
         let (tx, rx) = channel();
         let ctx = ctx.clone();
@@ -3192,7 +3196,11 @@ impl App {
             // the worst possible reading of "remove this service".
             self.service_focus = None;
             self.service_tools.clear();
-            self.service_picked.clear();
+            clear_service_inputs(
+                &mut self.service_picked,
+                &mut self.service_settings,
+                &mut self.service_fields,
+            );
             if let Err(error) = service::save(&self.services) {
                 self.service_error = Some(format!("{error:#}"));
             }
@@ -6479,6 +6487,41 @@ fn blank_service() -> Service {
     }
 }
 
+/// Drops everything the settings form remembers by index into
+/// `service_tools`, so a value typed for one service's tool never resurfaces
+/// as the value for another service's identically-indexed tool.
+///
+/// `service_tools` always starts over from index 0 -- on a fresh fetch and on
+/// removing the focused service alike -- so this belongs wherever that
+/// happens, alongside the index it depends on: `service_picked` reads the
+/// same way and is cleared here too, rather than once more at each call site.
+fn clear_service_inputs(
+    picked: &mut rustc_hash::FxHashSet<usize>,
+    settings: &mut rustc_hash::FxHashMap<usize, String>,
+    fields: &mut rustc_hash::FxHashMap<(usize, String), String>,
+) {
+    picked.clear();
+    settings.clear();
+    fields.clear();
+}
+
+/// What the constructor keeps from loading `services.json`: the list, and an
+/// error to show if that failed.
+///
+/// Pulled out of `App::new` so the "a damaged file must not look like an
+/// empty, healthy one" rule has a test that never touches a real
+/// `%LOCALAPPDATA%\ctxmenu\services.json`. `reload_services` -- run when the
+/// user switches to the tab -- already gets this right; the constructor used
+/// to take a shortcut around it with `.unwrap_or_default()`, which is exactly
+/// how a load failure went unnoticed on `--tab services`, where the tab-click
+/// handler that calls `reload_services` never runs.
+fn services_from_load(loaded: anyhow::Result<Vec<Service>>) -> (Vec<Service>, Option<String>) {
+    match loaded {
+        Ok(list) => (list, None),
+        Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+    }
+}
+
 /// The tools of a service, grouped the way the service groups them.
 ///
 /// Order matters twice over: the groups appear in the order their first tool
@@ -8391,6 +8434,52 @@ mod tests {
 
         // But reachable, so nothing vanishes without a way back.
         assert_eq!(group_tools(&tools, "", &grouping, true).len(), 2);
+    }
+
+    #[test]
+    fn switching_services_clears_the_last_ones_typed_settings() {
+        // The bug: `service_settings`/`service_fields` are keyed by index
+        // into `service_tools`, and a freshly fetched service starts that
+        // indexing over from zero. Left standing, a value typed for tool 3
+        // of the old service would resurface as the value for tool 3 of the
+        // new one -- a field the user never touched.
+        let mut picked: rustc_hash::FxHashSet<usize> = [1, 3].into_iter().collect();
+        let mut settings: rustc_hash::FxHashMap<usize, String> = rustc_hash::FxHashMap::default();
+        settings.insert(3, "1920".into());
+        let mut fields: rustc_hash::FxHashMap<(usize, String), String> =
+            rustc_hash::FxHashMap::default();
+        fields.insert((3, "width".into()), "1920".into());
+        fields.insert((1, "format".into()), "png".into());
+
+        clear_service_inputs(&mut picked, &mut settings, &mut fields);
+
+        assert!(picked.is_empty());
+        assert!(
+            settings.is_empty(),
+            "a value typed for the old service's tool must not survive a switch"
+        );
+        assert!(
+            fields.is_empty(),
+            "a field typed for the old service's tool must not survive a switch"
+        );
+    }
+
+    #[test]
+    fn a_failed_service_load_is_kept_as_an_error_not_swallowed_into_an_empty_list() {
+        // The bug: the constructor used `service::load().unwrap_or_default()`
+        // and hardcoded `service_error: None`, so a damaged `services.json`
+        // looked exactly like an empty, healthy one -- and on `--tab
+        // services` nothing else ever calls `reload_services` to notice.
+        let (services, error) = services_from_load(Err(anyhow::anyhow!("kaputt")));
+        assert!(services.is_empty());
+        assert!(
+            error.is_some(),
+            "a load failure must be shown, not silently turned into an empty list"
+        );
+
+        let (services, error) = services_from_load(Ok(Vec::new()));
+        assert!(services.is_empty());
+        assert!(error.is_none(), "an empty list is not itself an error");
     }
 
     #[test]
