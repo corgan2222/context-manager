@@ -276,7 +276,7 @@ impl TryFrom<UncheckedTarget> for RegTarget {
 pub enum TargetError {
     #[error("\x1ekein bekannter Classes-Pfad\x1fnot a known classes path\x1d: {0}")]
     NotAClassesPath(String),
-    #[error("Sammelschlüssel, \x1ekein einzelner Eintrag\x1fcontainer key\x1d, not an entry: {0}")]
+    #[error("\x1eSammelschlüssel, kein einzelner Eintrag\x1fcontainer key, not an entry\x1d: {0}")]
     ContainerKey(String),
 }
 
