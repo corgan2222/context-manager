@@ -152,6 +152,25 @@ pub fn shown(text: &str) -> Cow<'_, str> {
     pick(text, language())
 }
 
+/// One cell of a table: cut to one language first, padded to `width` after.
+///
+/// The order is the whole reason this function exists. Everywhere else the cut
+/// happens on the way out, in [`crate::console::line`], and for a table that is
+/// one step too late. `format!("{:<22}", marked)` counts the three marker
+/// characters as text and pads to 22 with them counted in; the printer then
+/// removes them again, together with the half nobody asked for, so the column
+/// arrives short — and short by a different amount in each language. Measured
+/// on the scan header, `\x1eSchlüssel\x1fkey\x1d` in a 22-wide column: 16
+/// characters printed in German and 10 in English, where both should have been
+/// 22, so every row underneath stopped lining up.
+///
+/// Padded, never shortened. A heading wider than its column pushes the line to
+/// the right, which looks careless; a heading cut off in the middle cannot be
+/// read at all.
+pub fn column(text: &str, width: usize, language: Language) -> String {
+    format!("{:<width$}", pick(text, language))
+}
+
 /// The whole chain of an `anyhow::Error`, in one language.
 ///
 /// Convenience over [`pick`], not a second mechanism: `{error:#}` produces the
@@ -434,6 +453,44 @@ mod tests {
                 assert!(message.contains(word), "{word:?} was invented");
             }
         }
+    }
+
+    #[test]
+    fn a_column_is_cut_before_it_is_padded_and_not_the_other_way_round() {
+        // The bug the function was written against, stated as a number: the
+        // late cut takes the markers and the unwanted half out of a column
+        // that was already counted as full.
+        let heading = marked("Schlüssel", "key");
+        let too_late = format!("{heading:<22}");
+        assert_eq!(pick(&too_late, GERMAN).chars().count(), 16);
+        assert_eq!(pick(&too_late, ENGLISH).chars().count(), 10);
+
+        // Cut first, and both languages fill the column they were given.
+        for (language, word) in [(GERMAN, "Schlüssel"), (ENGLISH, "key")] {
+            let cell = column(&heading, 22, language);
+            assert_eq!(cell.chars().count(), 22, "{cell:?}");
+            assert!(cell.starts_with(word), "{cell:?}");
+            assert!(!cell.contains(is_marker), "{cell:?}");
+        }
+    }
+
+    #[test]
+    fn a_heading_wider_than_its_column_keeps_every_letter() {
+        // Widening the line is a blemish; a heading chopped in half is
+        // unreadable, so the column gives way rather than the word.
+        let heading = marked("Anzeigename", "Display name");
+
+        assert_eq!(column(&heading, 4, ENGLISH), "Display name");
+        assert_eq!(column(&heading, 4, GERMAN), "Anzeigename");
+    }
+
+    #[test]
+    fn a_column_without_any_marker_is_padded_like_any_other_text() {
+        // "Scope" and "Flags" are spelled the same in both languages and carry
+        // no group; they go through the same call so the header reads as one
+        // piece of code rather than two.
+        assert_eq!(column("Scope", 7, GERMAN), "Scope  ");
+        assert_eq!(column("Scope", 7, ENGLISH), "Scope  ");
     }
 
     #[test]
