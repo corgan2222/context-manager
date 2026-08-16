@@ -495,6 +495,17 @@ mod source {
         folded
     }
 
+    /// The first 40 characters after an unclosed marker, for the panic
+    /// message below.
+    ///
+    /// Counted in `char`s, not bytes: `&after[..40.min(after.len())]` looks
+    /// equivalent but panics whenever byte 40 lands inside a multi-byte
+    /// character — an umlaut, unremarkable in this project's German source —
+    /// which is exactly the moment this diagnostic is needed most.
+    fn near(after: &str) -> String {
+        after.chars().take(40).collect()
+    }
+
     fn sources() -> Vec<std::path::PathBuf> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut found = Vec::new();
@@ -527,7 +538,7 @@ mod source {
                     panic!(
                         "{}: a group is never closed near {:?}",
                         path.display(),
-                        &after[..40.min(after.len())]
+                        near(after)
                     )
                 });
                 assert!(
@@ -539,6 +550,23 @@ mod source {
                 rest = found.rest;
             }
         }
+    }
+
+    #[test]
+    fn the_diagnostic_snippet_survives_a_multi_byte_boundary_at_forty() {
+        // Regression: `&after[..40.min(after.len())]` panicked here instead
+        // of producing the message it was building, whenever byte 40 landed
+        // inside a multi-byte character. 39 ASCII bytes put the following
+        // "ä" exactly on that boundary.
+        let after = format!("{}ä {}", "a".repeat(39), "no closing marker follows");
+        assert!(
+            !after.is_char_boundary(40),
+            "test setup missed the byte-40 boundary"
+        );
+
+        let snippet = near(&after);
+        assert!(snippet.starts_with(&"a".repeat(39)));
+        assert!(snippet.contains('ä'));
     }
 
     #[test]

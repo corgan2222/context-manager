@@ -92,12 +92,18 @@ fn split_index(value: &str) -> (&str, i32) {
 
 fn unquote(value: &str) -> String {
     let trimmed = value.trim();
-    trimmed
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(trimmed)
-        .trim()
-        .to_string()
+    let inner = match trimmed.strip_prefix('"') {
+        // Only what sits between the quotes is the path. Whatever follows
+        // the closing quote — a trailing comma `split_index` could not read
+        // as an index, for one — is not part of it, so this looks for that
+        // quote rather than demanding it be the very last character.
+        Some(rest) => match rest.find('"') {
+            Some(end) => &rest[..end],
+            None => trimmed,
+        },
+        None => trimmed,
+    };
+    inner.trim().to_string()
 }
 
 #[cfg(test)]
@@ -148,6 +154,18 @@ mod tests {
         );
         assert_eq!(
             parsed(r#""C:\Program Files\Tool\t.exe""#),
+            (r"C:\Program Files\Tool\t.exe".to_string(), 0)
+        );
+    }
+
+    #[test]
+    fn a_trailing_comma_after_a_quoted_path_does_not_survive() {
+        // Regression: a quoted path is fully described between its own
+        // quotes, so a comma left behind after the closing quote -- one that
+        // `split_index` could not read as an index and so left attached --
+        // must not stay glued to the front and back of the path.
+        assert_eq!(
+            parsed(r#""C:\Program Files\Tool\t.exe","#),
             (r"C:\Program Files\Tool\t.exe".to_string(), 0)
         );
     }

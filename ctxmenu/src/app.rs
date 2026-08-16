@@ -1128,6 +1128,28 @@ struct Bench {
     last_focus: Option<Row>,
 }
 
+impl Bench {
+    /// Counts one frame off `remaining`, without ever wrapping past zero.
+    ///
+    /// `cli::parse` already refuses `--bench 0`, since a run over zero
+    /// frames measures nothing. This is the other half: the check sits
+    /// *before* the subtraction, not after, so that this counter is safe on
+    /// its own even so — for instance against one more frame still arriving
+    /// after the finished run below already asked the window to close.
+    /// Without it, `remaining -= 1` on an already-zero counter wrapped to
+    /// `usize::MAX` in release (where overflow checks are off), and the
+    /// benchmark never finished at all.
+    ///
+    /// Returns whether this frame was actually counted.
+    fn count_down(&mut self) -> bool {
+        if self.remaining == 0 {
+            return false;
+        }
+        self.remaining -= 1;
+        true
+    }
+}
+
 impl App {
     /// Everything the command line had to say about this run arrives in
     /// [`Start`]; `Start::default()` is the plain double-click.
@@ -1823,8 +1845,13 @@ impl App {
             return;
         }
 
+        if !bench.count_down() {
+            // The benchmark already finished on an earlier frame and asked
+            // the window to close (below); if egui still calls this once
+            // more before it actually does, there is nothing left to count.
+            return;
+        }
         bench.scroll += 7;
-        bench.remaining -= 1;
 
         // Every tenth frame, press the down arrow — through the same event
         // queue the window manager uses, so this exercises the real handler
@@ -8244,6 +8271,32 @@ mod tests {
 
     fn rows(indices: &[usize]) -> rustc_hash::FxHashSet<Row> {
         indices.iter().map(|index| Row::top(*index)).collect()
+    }
+
+    fn bench(remaining: usize) -> Bench {
+        Bench {
+            warmup: 0,
+            remaining,
+            scroll: 0,
+            keys_sent: 0,
+            cursor_walked: 0,
+            last_focus: None,
+        }
+    }
+
+    /// Regression for todo 22: `bench.remaining -= 1` ran unconditionally,
+    /// so a frame arriving once the counter already reached zero wrapped it
+    /// to `usize::MAX` in release, where overflow checks are off. That is
+    /// what made `--bench 0` hang forever instead of closing immediately.
+    #[test]
+    fn count_down_never_wraps_the_counter_past_zero() {
+        let mut b = bench(1);
+
+        assert!(b.count_down(), "one frame left: this one counts");
+        assert_eq!(b.remaining, 0);
+
+        assert!(!b.count_down(), "already at zero: nothing left to count");
+        assert_eq!(b.remaining, 0, "must stay at zero, not wrap to usize::MAX");
     }
 
     /// A report as the two halves of a split action hand one back.
