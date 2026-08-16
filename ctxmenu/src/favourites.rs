@@ -93,7 +93,12 @@ pub enum WebMode {
     Clipboard { url: String },
 
     /// Send the file and do something with what comes back.
-    Upload(Upload),
+    ///
+    /// Boxed because it is by far the largest of the three and every favourite
+    /// carries one of these, uploading or not: an address and a template are
+    /// two dozen bytes, an upload with its headers, form fields and way back
+    /// to a job is ten times that.
+    Upload(Box<Upload>),
 }
 
 /// An HTTP request that carries the file.
@@ -110,12 +115,62 @@ pub struct Upload {
     /// Additional plain form fields, for `multipart` only.
     #[serde(default)]
     pub fields: Vec<Header>,
+    /// How to ask after a job the service only took in.
+    ///
+    /// Absent for every tool that answers straight away, which is most of them,
+    /// and absent from every favourite written before this existed — so a file
+    /// without it reads exactly as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<Poll>,
     #[serde(flatten)]
     pub result: ResultAction,
 }
 
 fn default_method() -> String {
     "POST".into()
+}
+
+/// The way back to a result the service did not hand over at once.
+///
+/// A busy service may answer an upload with a receipt — `202`, or a `200`
+/// carrying `"async": true` — instead of the finished file. The receipt names
+/// the job, and this says where to ask after it. Measured on SnapOtter
+/// (2026-08-16): three identical requests answered `200`, `202`, `200`, so
+/// which one arrives is not a property of the endpoint and cannot be read out
+/// of a description beforehand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Poll {
+    /// Where to ask, with the job id in braces:
+    /// `/api/v1/jobs/{jobId}/progress`. A path under the service's own address
+    /// and never a whole one — the request carries this tool's headers, and a
+    /// key belongs on the host the file was sent to and nowhere else.
+    pub path: String,
+    /// Where the job id stands in the receipt, as a dotted path.
+    #[serde(default = "default_job_field")]
+    pub job: String,
+    /// Where the finished result stands in a progress frame.
+    ///
+    /// Empty means: in the same place the ordinary answer names it, under
+    /// `result` — a progress frame carries the tool's own answer there,
+    /// unchanged. So `"path": "downloadUrl"` above needs nothing here, and this
+    /// field is for a service that disagrees.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub result: String,
+}
+
+fn default_job_field() -> String {
+    "jobId".into()
+}
+
+impl Poll {
+    /// The plain form: a path, the usual field names.
+    pub fn at(path: &str) -> Self {
+        Poll {
+            path: path.to_string(),
+            job: default_job_field(),
+            result: String::new(),
+        }
+    }
 }
 
 /// A header or form field. A pair, but named, because a tuple in JSON reads
@@ -619,7 +674,7 @@ mod tests {
 
     #[test]
     fn an_unencrypted_address_is_refused_unless_it_was_chosen() {
-        let mut favourite = web(WebMode::Upload(Upload {
+        let mut favourite = web(WebMode::Upload(Box::new(Upload {
             endpoint: "http://tool.local/shrink".into(),
             method: default_method(),
             body: UploadBody::Multipart {
@@ -627,8 +682,9 @@ mod tests {
             },
             headers: Vec::new(),
             fields: Vec::new(),
+            poll: None,
             result: ResultAction::Report,
-        }));
+        })));
 
         assert!(
             favourite.problems().contains(&Fault::InsecureAddress),
@@ -682,14 +738,15 @@ mod tests {
             .transfers_the_file()
         );
         assert!(
-            web(WebMode::Upload(Upload {
+            web(WebMode::Upload(Box::new(Upload {
                 endpoint: "https://x.example".into(),
                 method: default_method(),
                 body: UploadBody::Raw,
                 headers: Vec::new(),
                 fields: Vec::new(),
+                poll: None,
                 result: ResultAction::Report,
-            }))
+            })))
             .transfers_the_file()
         );
     }
@@ -774,7 +831,7 @@ mod tests {
     fn the_saved_form_survives_a_round_trip() {
         let favourites = vec![
             program("Editor", "-n"),
-            web(WebMode::Upload(Upload {
+            web(WebMode::Upload(Box::new(Upload {
                 endpoint: "https://api.tinify.com/shrink".into(),
                 method: "POST".into(),
                 body: UploadBody::Raw,
@@ -783,13 +840,14 @@ mod tests {
                     value: "Basic …".into(),
                 }],
                 fields: Vec::new(),
+                poll: Some(Poll::at("/jobs/{id}/status")),
                 result: ResultAction::Save {
                     source: ResultSource::Json {
                         path: "output.url".into(),
                     },
                     suffix: ".min".into(),
                 },
-            })),
+            }))),
         ];
 
         let json = serde_json::to_string_pretty(&favourites).expect("serialises");
@@ -831,5 +889,91 @@ mod tests {
         // A minimal hand-written entry still ends up as a real upload, which
         // is the case that has to ask before it sends anything.
         assert!(list[0].transfers_the_file());
+        assert_eq!(
+            upload.poll, None,
+            "nothing was said about asking after a job, so nothing is assumed"
+        );
+    }
+
+    #[test]
+    fn a_file_written_before_polling_existed_still_reads_as_it_did() {
+        // Copied from the author's own favourites.json on 2026-08-16, one entry
+        // of the eight, shortened only in the key. This is the file every
+        // context menu entry on that machine reads on every click: a field
+        // added here that the old form cannot satisfy would take all eight
+        // entries out at once.
+        let json = r#"[{
+            "id": "snapotter__compress_image",
+            "name": "SnapOtter: Compress Image",
+            "tool": {
+                "kind": "web",
+                "mode": "upload",
+                "endpoint": "http://192.168.2.11:1349/api/v1/tools/image/compress",
+                "method": "POST",
+                "body": "multipart",
+                "field": "file",
+                "headers": [{ "name": "Authorization", "value": "Bearer si_test" }],
+                "fields": [{ "name": "settings", "value": "{\"mode\":\"targetSize\"}" }],
+                "result": "save",
+                "source": { "from": "json", "path": "downloadUrl" },
+                "suffix": ".neu",
+                "allow_insecure": true,
+                "confirmed": true
+            },
+            "note": "/api/v1/tools/image/compress"
+        }]"#;
+
+        let list: Vec<Favourite> = serde_json::from_str(json).expect("the old form still reads");
+        let Tool::Web(web) = &list[0].tool else {
+            panic!("expected a web tool");
+        };
+        let WebMode::Upload(upload) = &web.mode else {
+            panic!("expected an upload");
+        };
+
+        assert_eq!(upload.poll, None, "the old form says nothing about jobs");
+        assert_eq!(
+            upload.endpoint,
+            "http://192.168.2.11:1349/api/v1/tools/image/compress"
+        );
+        assert_eq!(upload.fields.len(), 1);
+        assert!(web.allow_insecure && web.confirmed);
+        assert_eq!(
+            upload.result,
+            ResultAction::Save {
+                source: ResultSource::Json {
+                    path: "downloadUrl".into()
+                },
+                suffix: ".neu".into()
+            }
+        );
+
+        // And written back out it is the same file: an entry that gains a key
+        // nobody asked for is one the user has to wonder about.
+        let again = serde_json::to_string(&list).expect("serialises");
+        assert!(
+            !again.contains("poll"),
+            "nothing was added to the saved form: {again}"
+        );
+    }
+
+    #[test]
+    fn one_line_is_enough_to_say_where_a_job_is_asked_after() {
+        let json = r#"{
+            "endpoint": "https://tool.example/upload",
+            "body": "multipart",
+            "poll": { "path": "/jobs/{jobId}/progress" },
+            "result": "report"
+        }"#;
+
+        let upload: Upload = serde_json::from_str(json).expect("reads");
+        let poll = upload.poll.expect("the poll block is there");
+        assert_eq!(poll.path, "/jobs/{jobId}/progress");
+        assert_eq!(poll.job, "jobId", "the usual name, filled in");
+        assert!(
+            poll.result.is_empty(),
+            "empty means: wherever the ordinary answer names it"
+        );
+        assert_eq!(poll, Poll::at("/jobs/{jobId}/progress"));
     }
 }

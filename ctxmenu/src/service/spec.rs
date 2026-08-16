@@ -26,6 +26,12 @@ pub struct Tool {
     /// host (`/api/v1`), or `/`. Empty when the description says nothing, which
     /// means the same as `/`.
     pub base: String,
+    /// Where this service takes questions about a job it has only taken in —
+    /// `/api/v1/jobs/{jobId}/progress`. A property of the whole description
+    /// rather than of one endpoint, carried here for the same reason as
+    /// [`Tool::base`]: this is what a favourite is built from. Empty when the
+    /// description offers no such path.
+    pub progress: String,
     /// Upper case, as the request will be sent.
     pub method: String,
     /// The group this belongs to, from `tags`. `None` lands under "other".
@@ -112,6 +118,7 @@ pub fn tools(spec: &Value) -> Vec<Tool> {
     };
 
     let base = base_url(spec);
+    let progress = progress_path(spec);
 
     let mut out = Vec::new();
     for (path, methods) in paths {
@@ -126,6 +133,7 @@ pub fn tools(spec: &Value) -> Vec<Tool> {
             }
             if let Some(mut tool) = read_operation(spec, path, method, operation) {
                 tool.base.clone_from(&base);
+                tool.progress.clone_from(&progress);
                 out.push(tool);
             }
         }
@@ -194,9 +202,11 @@ fn read_operation(root: &Value, path: &str, method: &str, operation: &Value) -> 
 
     Some(Tool {
         path: path.to_string(),
-        // Filled in by `tools`, which is where the whole description is in
-        // view; one endpoint knows nothing about the servers block.
+        // Both filled in by `tools`, which is where the whole description is in
+        // view; one endpoint knows nothing about the servers block, and nothing
+        // about the path its service takes questions on.
         base: String::new(),
+        progress: String::new(),
         method: method.to_uppercase(),
         tag: operation
             .get("tags")
@@ -536,6 +546,36 @@ fn answers_asynchronously(operation: &Value) -> bool {
         .get("responses")
         .and_then(Value::as_object)
         .is_some_and(|responses| responses.contains_key("202"))
+}
+
+/// The path this description offers for asking after a job it only took in.
+///
+/// Deliberately a rule about shape rather than a name to look for: a `GET`
+/// whose path carries a variable — the job id — and whose last segment is
+/// `progress` or `status`. On the test service that is
+/// `/api/v1/jobs/{jobId}/progress`; on the next one it will be
+/// `/v2/tasks/{taskId}/status`, and both fit the same sentence.
+///
+/// Empty when the description offers nothing of the sort, and empty is an
+/// answer: a service that never says where to ask cannot be asked, and a tool
+/// of it that queues a job says so instead of guessing at an address.
+pub fn progress_path(spec: &Value) -> String {
+    let Some(paths) = spec.get("paths").and_then(Value::as_object) else {
+        return String::new();
+    };
+
+    paths
+        .iter()
+        .filter(|(path, methods)| {
+            path.contains('{') && methods.get("get").is_some_and(|get| !get.is_null())
+        })
+        .map(|(path, _)| path)
+        .find(|path| {
+            let tail = last_segment(path).to_ascii_lowercase();
+            tail == "progress" || tail == "status"
+        })
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn last_segment(path: &str) -> &str {
@@ -1399,6 +1439,51 @@ mod tests {
                 "/tools/image/list": { "get": { "responses": { "200": {} } } }
             }
         })
+    }
+
+    #[test]
+    fn the_way_back_to_a_job_is_recognised_by_its_shape_not_by_its_name() {
+        // What the test service writes, and the shape the rule is about: a GET,
+        // a variable in the path, and the word at the end.
+        let snapotter = serde_json::json!({ "paths": {
+            "/api/v1/tools/image/compress": { "post": { "responses": { "200": {} } } },
+            "/api/v1/jobs/{jobId}/progress": { "get": { "summary": "Job progress (SSE)" } }
+        }});
+        assert_eq!(progress_path(&snapotter), "/api/v1/jobs/{jobId}/progress");
+
+        // A different service, the same sentence.
+        let other = serde_json::json!({ "paths": {
+            "/v2/tasks/{taskId}/status": { "get": { "responses": { "200": {} } } }
+        }});
+        assert_eq!(progress_path(&other), "/v2/tasks/{taskId}/status");
+
+        // Nothing of the sort is an answer, not a reason to guess: this
+        // description says nowhere to ask, so nobody is asked.
+        assert_eq!(progress_path(&spec()), "");
+        assert_eq!(progress_path(&serde_json::json!({})), "");
+        // A progress path without a job in it addresses no particular job, and
+        // one that is not fetched with GET is not a question.
+        assert_eq!(
+            progress_path(&serde_json::json!({ "paths": {
+                "/jobs/progress": { "get": {} },
+                "/jobs/{jobId}/progress": { "post": {} }
+            }})),
+            ""
+        );
+
+        // And it travels with every tool of that description, the way the
+        // servers block does -- that is what a favourite is built from.
+        let carried = tools(&serde_json::json!({ "paths": {
+            "/tools/compress": { "post": {
+                "requestBody": { "content": { "multipart/form-data": { "schema": {
+                    "properties": { "file": { "type": "string", "format": "binary" } }
+                }}}},
+                "responses": { "200": {} }
+            }},
+            "/jobs/{jobId}/progress": { "get": {} }
+        }}));
+        assert_eq!(carried.len(), 1);
+        assert_eq!(carried[0].progress, "/jobs/{jobId}/progress");
     }
 
     #[test]

@@ -6760,7 +6760,7 @@ fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool, field_width: f
                 web.mode = match index {
                     0 => WebMode::Clipboard { url },
                     1 => WebMode::Open { url },
-                    _ => WebMode::Upload(Upload {
+                    _ => WebMode::Upload(Box::new(Upload {
                         endpoint: url,
                         method: "POST".into(),
                         body: UploadBody::Multipart {
@@ -6768,8 +6768,9 @@ fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool, field_width: f
                         },
                         headers: Vec::new(),
                         fields: Vec::new(),
+                        poll: None,
                         result: ResultAction::Report,
-                    }),
+                    })),
                 };
             }
         }
@@ -8324,6 +8325,7 @@ mod tests {
         spec::Tool {
             path: format!("/api/v1/tools/{}", summary.to_lowercase()),
             base: "/".into(),
+            progress: String::new(),
             method: "POST".into(),
             tag: tag.map(str::to_string),
             summary: summary.into(),

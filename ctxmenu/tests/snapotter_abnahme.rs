@@ -95,6 +95,55 @@ fn the_endpoint_of_a_known_tool_is_unchanged() {
     assert_eq!(upload.method, "POST");
 }
 
+/// The way back to a job the service only took in.
+///
+/// Measured on 2026-08-16: the same upload of the same picture was answered
+/// `202 {"jobId": …, "async": true}` in four of six rounds and with the finished
+/// result in two, so this is not a property of the endpoint and cannot be read
+/// off its own responses. What the description does say is where a job is asked
+/// after — `/api/v1/jobs/{jobId}/progress`, a `GET` answered as Server-Sent
+/// Events — and every favourite built from this service carries it. Should that
+/// path move or stop being recognised, two thirds of the clicks go back to
+/// failing.
+#[test]
+fn every_tool_knows_where_a_queued_job_is_asked_after() {
+    let description = snapotter();
+    assert_eq!(
+        spec::progress_path(&description),
+        "/api/v1/jobs/{jobId}/progress"
+    );
+
+    let tools = spec::tools(&description);
+    let compress = tools
+        .iter()
+        .find(|t| t.path == "/api/v1/tools/image/compress")
+        .expect("the compress endpoint is in this description");
+
+    let favourite = service::favourite_for(&service_entry(), compress, None, ".min");
+    let Tool::Web(web) = &favourite.tool else {
+        panic!("a service tool is always a web tool");
+    };
+    let WebMode::Upload(upload) = &web.mode else {
+        panic!("a service tool always uploads");
+    };
+
+    let poll = upload
+        .poll
+        .as_ref()
+        .expect("this description says where to ask");
+    assert_eq!(poll.path, "/api/v1/jobs/{jobId}/progress");
+    assert_eq!(poll.job, "jobId");
+
+    // Every one of them, not just the one that was looked at.
+    for tool in &tools {
+        assert_eq!(
+            tool.progress, "/api/v1/jobs/{jobId}/progress",
+            "{} would have nowhere to ask after a job",
+            tool.path
+        );
+    }
+}
+
 /// No address may grow a double slash or lose its host.
 #[test]
 fn every_endpoint_stays_a_single_well_formed_address() {
