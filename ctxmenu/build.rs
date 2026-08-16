@@ -16,7 +16,11 @@ fn main() {
         let description = std::env::var("CARGO_PKG_DESCRIPTION")
             .unwrap_or_else(|_| "Windows Context Menu Manager".into());
         res.set("FileDescription", &description);
-        res.set("ProductName", "Kontextmenü-Manager");
+        // English, not the bilingual window title: the file properties dialog
+        // has no language switch, so whichever language goes in here is the
+        // one every Explorer user sees, regardless of `--lang` or the saved
+        // setting. English also matches a public repository's audience.
+        res.set("ProductName", "Context Menu Manager");
         res.compile().expect("compiling the resources failed");
     }
 }
