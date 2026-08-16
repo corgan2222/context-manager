@@ -6,6 +6,9 @@
 /backups
 /todo
 /tmp
+# Verwaltet /todo, das ebenfalls nicht ins Repositorium gehoert:
+# eine Arbeitsnotiz wie HANDOVER.md, kein Teil des Programms.
+/tools/todo_erledigt.ps1
 
 # Enthält gültige API-Schlüssel (Kimi, DeepSeek, xAI) im Klartext.
 # Darf niemals committet werden, auch nicht in einem privaten Repo.
