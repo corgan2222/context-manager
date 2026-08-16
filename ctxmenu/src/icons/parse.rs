@@ -33,11 +33,6 @@ impl IconRef {
     pub fn cache_key(&self) -> String {
         format!("{}|{}", self.path.to_lowercase(), self.index)
     }
-
-    /// Is this a resource ID rather than a positional index?
-    pub fn is_resource_id(&self) -> bool {
-        self.index < 0
-    }
 }
 
 /// Parses a raw `Icon` value.
@@ -135,7 +130,6 @@ mod tests {
         // It is a resource ID, and the extraction APIs want it unchanged.
         let r = parse(r"C:\windows\system32\shell32.dll,-244").expect("parses");
         assert_eq!(r.index, -244);
-        assert!(r.is_resource_id());
     }
 
     #[test]
