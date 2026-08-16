@@ -185,29 +185,156 @@ fn target_behind_interpreter(stem: &str, rest: &str) -> Option<String> {
     // the LAST argument. Observed on this machine as
     // `regsvr32.exe /n /i:"%1" scrobj.dll` under scriptletfile.
     if stem == "regsvr32" {
-        return tokens(rest)
-            .into_iter()
-            .rev()
-            .map(|t| t.trim_matches('"').to_string())
-            .find(|t| !t.is_empty() && !t.starts_with('/') && !t.starts_with('-'));
+        return target_from_the_end(rest);
     }
 
     // Everything else: the first argument that looks like a file rather than
     // a switch. `-File script.ps1` and `/c program.exe` both land here.
-    for token in tokens(rest) {
+    target_from_the_start(rest)
+}
+
+/// Searches from the front for the argument behind an interpreter that names
+/// a real target — `cmd /c program.exe`, `wscript script.vbs`, and so on.
+/// Skips switches and non-file words such as the `cd` in
+/// `cmd /c cd /d "..." && "...\run.bat"` along the way.
+///
+/// An unquoted path with spaces was split into several tokens by [`tokens`],
+/// with no quotes left to say where it ends. This recombines them the same
+/// way `split_argv0` recombines argv[0] (ToDo 16): extend one word at a time
+/// and remember the longest prefix that is confirmed to exist as a FILE,
+/// never a directory — `Path::exists()` cannot tell those apart, which is
+/// ToDo 15. When nothing on disk confirms anything (a registry entry can
+/// point at a program that was since uninstalled), the longest prefix that
+/// merely *looks* like a path, by its extension, is used instead of trusting
+/// a bare fragment.
+fn target_from_the_start(rest: &str) -> Option<String> {
+    let toks = tokens(rest);
+    let mut i = 0;
+    while i < toks.len() {
+        let token = &toks[i];
+        if token.starts_with('-') || token.starts_with('/') {
+            i += 1;
+            continue;
+        }
+        let trimmed = token.trim_matches('"');
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if token.starts_with('"') {
+            // Quoting already marks the boundary; nothing to recombine.
+            if is_executable_file(trimmed) || has_program_extension(trimmed) {
+                return Some(trimmed.to_string());
+            }
+            i += 1;
+            continue;
+        }
+
+        let (best_confirmed, best_guess) = extend_forward(&toks, i);
+        if let Some(end) = best_confirmed.or(best_guess) {
+            return Some(toks[i..=end].join(" "));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Searches from the back for the DLL argument of `regsvr32`, which always
+/// comes last, after its switches. Applies the same word-by-word
+/// recombination as [`target_from_the_start`] (ToDo 16 covers this branch
+/// too — the same reversed search over the same tokens loses the same
+/// spaces), just walking towards the front instead of away from it.
+fn target_from_the_end(rest: &str) -> Option<String> {
+    let toks = tokens(rest);
+    let mut i = toks.len();
+    while i > 0 {
+        i -= 1;
+        let token = &toks[i];
         if token.starts_with('-') || token.starts_with('/') {
             continue;
         }
-        let candidate = token.trim_matches('"');
-        if candidate.is_empty() {
+        let trimmed = token.trim_matches('"');
+        if trimmed.is_empty() {
             continue;
         }
-        if Path::new(candidate).exists() || has_program_extension(candidate) {
-            return Some(candidate.to_string());
-        }
-    }
 
+        if token.starts_with('"') {
+            return Some(trimmed.to_string());
+        }
+
+        let (best_confirmed, best_guess) = extend_backward(&toks, i);
+        return match best_confirmed.or(best_guess) {
+            Some(start) => Some(toks[start..=i].join(" ")),
+            // Nothing confirms or even suggests a longer prefix — trust the
+            // bare last word, as before: a bare DLL name such as
+            // "scrobj.dll" has no directory in it to probe.
+            None => Some(trimmed.to_string()),
+        };
+    }
     None
+}
+
+/// Extends `toks[start]` forward through the following tokens for as long as
+/// they are neither quoted nor switches, tracking the longest prefix that is
+/// confirmed to exist and, separately, the longest prefix that only looks
+/// like a path by its extension. Both are indices into `toks`, inclusive.
+fn extend_forward(toks: &[String], start: usize) -> (Option<usize>, Option<usize>) {
+    let mut best_confirmed = None;
+    let mut best_guess = None;
+    let mut candidate = toks[start].clone();
+    update_best(&candidate, start, &mut best_confirmed, &mut best_guess);
+
+    let mut end = start;
+    while end + 1 < toks.len() {
+        let next = &toks[end + 1];
+        if next.starts_with('"') || next.starts_with('-') || next.starts_with('/') {
+            break;
+        }
+        end += 1;
+        candidate.push(' ');
+        candidate.push_str(&toks[end]);
+        update_best(&candidate, end, &mut best_confirmed, &mut best_guess);
+    }
+    (best_confirmed, best_guess)
+}
+
+/// The mirror image of [`extend_forward`], prepending instead of appending —
+/// what `regsvr32`'s trailing DLL argument needs.
+fn extend_backward(toks: &[String], start: usize) -> (Option<usize>, Option<usize>) {
+    let mut best_confirmed = None;
+    let mut best_guess = None;
+    let mut candidate = toks[start].clone();
+    update_best(&candidate, start, &mut best_confirmed, &mut best_guess);
+
+    let mut begin = start;
+    while begin > 0 {
+        let prev = &toks[begin - 1];
+        if prev.starts_with('"') || prev.starts_with('-') || prev.starts_with('/') {
+            break;
+        }
+        begin -= 1;
+        let prefix = &toks[begin];
+        candidate = format!("{prefix} {candidate}");
+        update_best(&candidate, begin, &mut best_confirmed, &mut best_guess);
+    }
+    (best_confirmed, best_guess)
+}
+
+/// Records `index` under whichever tier `candidate` qualifies for: confirmed
+/// if it names a real file (never a directory, per [`is_executable_file`]),
+/// guessed if it merely ends in a known program extension.
+fn update_best(
+    candidate: &str,
+    index: usize,
+    best_confirmed: &mut Option<usize>,
+    best_guess: &mut Option<usize>,
+) {
+    if is_executable_file(candidate) {
+        *best_confirmed = Some(index);
+    } else if has_program_extension(candidate) {
+        *best_guess = Some(index);
+    }
 }
 
 /// Splits on spaces but keeps quoted runs together.
@@ -482,6 +609,52 @@ mod tests {
             parsed.target, dir,
             "an existing directory must not be accepted as the program"
         );
+    }
+
+    #[test]
+    fn a_directory_behind_cmd_does_not_win_over_the_real_target() {
+        // ToDo 15: `cmd /c cd /d "install dir" && "install dir\run.exe"` is a
+        // common shape, and the general branch used Path::exists() — which
+        // answers "true" for the directory the `cd` changes into just as
+        // readily as for a real program.
+        let dir = r"C:\Program Files\Windows Defender";
+        let exe = r"C:\Program Files\Windows Defender\MpCmdRun.exe";
+        if !Path::new(exe).is_file() {
+            return;
+        }
+        let command = format!(r#"cmd.exe /c cd /d "{dir}" && "{exe}" -Scan"#);
+        let parsed = parse(&command).expect("parses");
+        assert_eq!(parsed.target, exe);
+        assert_eq!(parsed.via_interpreter.as_deref(), Some("cmd.exe"));
+    }
+
+    #[test]
+    fn cmd_recombines_an_unquoted_target_with_spaces() {
+        // ToDo 16: `tokens()` splits an unquoted path at every space with no
+        // quotes left to mark where it ends, so `"Files\Windows Defender\
+        // MpCmdRun.exe"` — a fragment — used to win purely because it ends
+        // in ".exe".
+        let exe = r"C:\Program Files\Windows Defender\MpCmdRun.exe";
+        if !Path::new(exe).is_file() {
+            return;
+        }
+        let command = format!("cmd.exe /c {exe} %1");
+        let parsed = parse(&command).expect("parses");
+        assert_eq!(parsed.target, exe);
+    }
+
+    #[test]
+    fn regsvr32_recombines_an_unquoted_dll_path_with_spaces() {
+        // Same class of bug as the two tests above, hitting the reversed
+        // search regsvr32 uses instead: the DLL is the LAST argument, and an
+        // unquoted path with spaces still splits into fragments there.
+        let dll = r"C:\Program Files\Windows Defender\MpClient.dll";
+        if !Path::new(dll).is_file() {
+            return;
+        }
+        let command = format!(r#"regsvr32.exe /n /i:"%1" {dll}"#);
+        let parsed = parse(&command).expect("parses");
+        assert_eq!(parsed.target, dll);
     }
 
     #[test]

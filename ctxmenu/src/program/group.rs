@@ -133,26 +133,81 @@ pub fn build(scan: &ScanResult, names: &mut NameResolver) -> Vec<ProgramGroup> {
 /// "Assistent für die BitLocker-Laufwerkverschlüsselung", and in System32 the
 /// product name "Microsoft (R) Windows (R) Operating System" is shared by 25
 /// binaries. Two identical rows in a list of programs are worse than a longer
-/// caption, so the file name is appended — but only where it is needed, since
-/// most names are fine as they are.
+/// caption, so path is appended — but only where it is needed, since most
+/// names are fine as they are.
+///
+/// The file name alone is not always enough (ToDo 24): two installs of the
+/// same program under `...\Program Files\Tool\tool.exe` and `...\Program
+/// Files (x86)\Tool\tool.exe`, as many installers create, share both the
+/// file name and its immediate parent folder name. `shortest_distinguishing_suffixes`
+/// climbs the path one level at a time, per cluster of colliding names,
+/// until every member tells the others apart.
 fn disambiguate(groups: &mut [ProgramGroup]) {
     let mut seen: FxHashMap<String, usize> = FxHashMap::default();
     for group in groups.iter() {
         *seen.entry(group.display_name.to_lowercase()).or_insert(0) += 1;
     }
 
-    for group in groups.iter_mut() {
-        if seen
-            .get(&group.display_name.to_lowercase())
-            .is_some_and(|count| *count > 1)
-        {
-            let file = std::path::Path::new(&group.key)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| group.key.clone());
-            group.display_name = format!("{} ({file})", group.display_name);
+    // Grouped by colliding name rather than handled one group at a time:
+    // the right suffix length for one member of a cluster depends on what
+    // the *other* members look like, not just on whether the base name is
+    // shared.
+    let mut clusters: FxHashMap<String, Vec<usize>> = FxHashMap::default();
+    for (index, group) in groups.iter().enumerate() {
+        let base = group.display_name.to_lowercase();
+        if seen.get(&base).is_some_and(|count| *count > 1) {
+            clusters.entry(base).or_default().push(index);
         }
     }
+
+    for indices in clusters.into_values() {
+        let suffixes = shortest_distinguishing_suffixes(&indices, groups);
+        for (index, suffix) in indices.into_iter().zip(suffixes) {
+            groups[index].display_name = format!("{} ({suffix})", groups[index].display_name);
+        }
+    }
+}
+
+/// For one cluster of groups whose display name collides, finds for each
+/// member the shortest trailing run of path components — file name, then its
+/// parent folder, then the one above that — which tells every member of the
+/// cluster apart.
+///
+/// One more level is not always enough on the first try: two installs of the
+/// same program often share both the file name and the immediate parent
+/// folder name too. The search keeps climbing until every suffix in the
+/// cluster is unique, which is guaranteed to happen by the time it reaches
+/// the full path, since the underlying keys are themselves distinct.
+fn shortest_distinguishing_suffixes(indices: &[usize], groups: &[ProgramGroup]) -> Vec<String> {
+    let components: Vec<Vec<String>> = indices
+        .iter()
+        .map(|&i| {
+            std::path::Path::new(&groups[i].key)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect()
+        })
+        .collect();
+    let max_len = components.iter().map(Vec::len).max().unwrap_or(0);
+
+    for take in 1..=max_len {
+        let suffixes: Vec<String> = components
+            .iter()
+            .map(|parts| {
+                let start = parts.len().saturating_sub(take);
+                parts[start..].join("\\")
+            })
+            .collect();
+        let unique: std::collections::HashSet<&String> = suffixes.iter().collect();
+        if unique.len() == suffixes.len() {
+            return suffixes;
+        }
+    }
+
+    // Either every path ran out of components, or (impossible for distinct
+    // keys) even the full path collided — fall back to the whole path, which
+    // is unique by construction.
+    components.iter().map(|parts| parts.join("\\")).collect()
 }
 
 /// Short, readable origin of an entry, for the group summary.
@@ -211,6 +266,33 @@ mod tests {
 
         let mut names = NameResolver::new();
         assert!(build(&scan, &mut names).is_empty());
+    }
+
+    #[test]
+    fn colliding_names_get_as_much_path_as_needed_to_tell_them_apart() {
+        // ToDo 24: two installs of the same program under "Program Files"
+        // and "Program Files (x86)", as many installers create, share both
+        // the file name and the immediate parent folder name "tool" — the
+        // file name alone was not enough to tell them apart.
+        let mut scan = synthetic::scan_result(2);
+        scan.entries[0].program_key = Some(r"c:\program files\tool\tool.exe".to_string());
+        scan.entries[1].program_key = Some(r"c:\program files (x86)\tool\tool.exe".to_string());
+
+        let mut names = NameResolver::new();
+        let groups = build(&scan, &mut names);
+
+        assert_eq!(groups.len(), 2, "two distinct keys must stay two groups");
+        assert_eq!(
+            groups[0].display_name.split(" (").next(),
+            groups[1].display_name.split(" (").next(),
+            "the test is only meaningful if both names collided to begin with"
+        );
+        assert_ne!(
+            groups[0].display_name, groups[1].display_name,
+            "both are called \"tool\" with the same immediate parent folder \
+             name \"tool\" too — appending just the file name does not tell \
+             them apart"
+        );
     }
 
     #[test]
