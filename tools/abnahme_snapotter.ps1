@@ -1,20 +1,19 @@
 <#
 .SYNOPSIS
-    Sends a real file to the real service and checks that the result comes back.
+    Sends real files to the real service and checks that the results come back.
 
 .DESCRIPTION
-    The one test that cannot be faked: it drives `ctxmenu --favourite` exactly
-    the way a right-click in Explorer does, against the SnapOtter instance the
-    program was built against, and looks at what lands on disk.
-
-    Everything else in the test suite reads a saved description. This one proves
-    that sending and receiving still work end to end.
+    The one test that cannot be faked. Everything else in the suite reads a saved
+    description; this drives `ctxmenu favourite run` against the SnapOtter
+    instance the program was built against and looks at what lands on disk.
 
     Run it before and after any change to `webtool/` or `service/`.
 
-    The `--favourite` mode ends with a message box, which would block a script.
-    So: start it, wait for the result file, then close the process. The file is
-    written before the box appears.
+    Why several rounds: the service decides per request whether to answer 200
+    with a `downloadUrl` or 202 with a job id, and it is not deterministic.
+    Measured on 2026-08-16: three identical requests gave 200, 202, 200. One
+    round proves nothing, so this sends the same file several times and reports
+    how many rounds came back with a file.
 
 .PARAMETER Exe
     Which binary to test. Defaults to the release build.
@@ -22,94 +21,104 @@
 .PARAMETER Favourite
     Which favourite id to run. Must exist in the user's favourites.json.
 
-.PARAMETER TimeoutSeconds
-    How long to wait for the result file.
+.PARAMETER Rounds
+    How many times to send. Six is enough to hit the asynchronous branch at
+    least once with high probability.
 
 .EXAMPLE
     pwsh tools\abnahme_snapotter.ps1
-    pwsh tools\abnahme_snapotter.ps1 -Exe target\x86_64-pc-windows-msvc\debug\ctxmenu.exe
+    pwsh tools\abnahme_snapotter.ps1 -Exe D:\...\_wt\_target\...\ctxmenu.exe -Rounds 3
 #>
 [CmdletBinding()]
 param(
     [string]$Exe = 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe',
     [string]$Favourite = 'snapotter__compress_image',
-    [int]$TimeoutSeconds = 90
+    [int]$Rounds = 6
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-function Fail($message) {
-    Write-Host "FEHLGESCHLAGEN / FAILED: $message" -ForegroundColor Red
+if (-not (Test-Path $Exe)) {
+    Write-Host "FEHLGESCHLAGEN / FAILED: no binary at $Exe" -ForegroundColor Red
     exit 1
 }
 
-if (-not (Test-Path $Exe)) {
-    Fail "no binary at $Exe -- build it first (cargo build --release)"
+$source = Join-Path $root 'test.png'
+if (-not (Test-Path $source)) {
+    Write-Host "FEHLGESCHLAGEN / FAILED: no test.png at $source" -ForegroundColor Red
+    exit 1
 }
 
-# The source picture. test.png is in the repository and is a real photograph,
-# large enough that a compressor has something to do.
-$source = Join-Path $root 'test.png'
-if (-not (Test-Path $source)) { Fail "no test.png at $source" }
-
-# Its own directory under tmp, so nothing lands next to the user's files and a
-# leftover from a previous run cannot be mistaken for a result.
 $work = Join-Path $root 'tmp\abnahme\lauf'
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 New-Item -ItemType Directory -Force $work | Out-Null
 
-$input = Join-Path $work 'abnahme.png'
-Copy-Item $source $input
-$inputSize = (Get-Item $input).Length
-Write-Host "Eingabe / input : $input ($([math]::Round($inputSize/1KB)) KB)"
-Write-Host "Favorit / id    : $Favourite"
-Write-Host "Programm / exe  : $Exe"
+Write-Host "Programm / exe : $Exe"
+Write-Host "Favorit / id   : $Favourite"
+Write-Host "Runden / rounds: $Rounds"
+Write-Host ""
 
-# The result lands beside the input, with the suffix the favourite carries.
-$before = @(Get-ChildItem $work -File | ForEach-Object { $_.Name })
-
-$started = Get-Date
-$process = Start-Process -FilePath $Exe -ArgumentList @('--favourite', $Favourite, $input) `
-    -PassThru -WindowStyle Hidden
-
-$result = $null
-while (((Get-Date) - $started).TotalSeconds -lt $TimeoutSeconds) {
-    Start-Sleep -Milliseconds 400
-    $fresh = @(Get-ChildItem $work -File | Where-Object { $before -notcontains $_.Name })
-    if ($fresh.Count -gt 0) { $result = $fresh[0]; break }
-    if ($process.HasExited -and $process.ExitCode -ne 0) { break }
-}
-
-$elapsed = ((Get-Date) - $started).TotalSeconds
-
-# The message box keeps the process alive; it has said everything it is going to.
-if (-not $process.HasExited) { $process | Stop-Process -Force }
-
-if (-not $result) {
-    Fail "no result file after $([math]::Round($elapsed,1)) s -- the service did not answer, or the favourite is broken"
-}
-
-$resultSize = $result.Length
-if ($resultSize -eq 0) { Fail "the result file is empty" }
-
-# A PNG starts with these eight bytes. A JSON error page does not.
-$magic = [System.IO.File]::ReadAllBytes($result.FullName)[0..7]
 $png = @(137, 80, 78, 71, 13, 10, 26, 10)
-$isPng = -not (Compare-Object $magic $png)
+$good = 0
+$async = 0
+$other = 0
 
-Write-Host ""
-Write-Host "Ergebnis / result : $($result.Name) ($([math]::Round($resultSize/1KB)) KB)"
-Write-Host "Dauer / took      : $([math]::Round($elapsed,1)) s"
-Write-Host "Gueltiges PNG     : $isPng"
-Write-Host "Verkleinert auf   : $([math]::Round(100 * $resultSize / $inputSize, 1)) % der Eingabe"
+foreach ($round in 1..$Rounds) {
+    $input = Join-Path $work "runde$round.png"
+    Copy-Item $source $input
 
-if (-not $isPng) {
-    $head = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($result.FullName))
-    Fail "the answer is not a PNG. First bytes: $($head.Substring(0, [Math]::Min(200, $head.Length)))"
+    $started = Get-Date
+    # `favourite run` is the same code path as a click in the Explorer menu, but
+    # it reports on the console instead of in a message box, so a script can read it.
+    $output = & $Exe favourite run $Favourite $input 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $took = ((Get-Date) - $started).TotalSeconds
+
+    $result = Get-ChildItem $work -File |
+        Where-Object { $_.Name -like "runde$round.*" -and $_.Name -ne "runde$round.png" } |
+        Select-Object -First 1
+
+    if ($code -eq 0 -and $result) {
+        $magic = [System.IO.File]::ReadAllBytes($result.FullName)[0..7]
+        if (Compare-Object $magic $png) {
+            Write-Host ("  Runde {0}: Datei zurueck, aber kein PNG" -f $round) -ForegroundColor Red
+            $other++
+        }
+        else {
+            $good++
+            Write-Host ("  Runde {0}: OK  {1} KB in {2:N1} s" -f $round,
+                [math]::Round($result.Length / 1KB), $took) -ForegroundColor Green
+        }
+    }
+    elseif ($output -match 'Auftragsnummer|queued the job|async') {
+        $async++
+        Write-Host ("  Runde {0}: der Dienst hat den Auftrag nur eingereiht (202) / queued" -f $round) -ForegroundColor Yellow
+    }
+    else {
+        $other++
+        Write-Host ("  Runde {0}: FEHLER / error: {1}" -f $round, $output.Trim()) -ForegroundColor Red
+    }
 }
 
 Write-Host ""
-Write-Host "BESTANDEN / PASSED: senden und empfangen funktionieren." -ForegroundColor Green
-exit 0
+Write-Host ("Ergebnis / result: {0} von {1} Runden brachten eine Datei zurueck." -f $good, $Rounds)
+if ($async -gt 0) {
+    Write-Host ("{0} Runden endeten mit einer Auftragsnummer, die dieses Programm nicht abholt." -f $async) -ForegroundColor Yellow
+}
+if ($other -gt 0) {
+    Write-Host ("{0} Runden liefen in einen anderen Fehler." -f $other) -ForegroundColor Red
+}
+
+Write-Host ""
+if ($good -eq $Rounds) {
+    Write-Host "BESTANDEN / PASSED: jede Runde kam zurueck." -ForegroundColor Green
+    exit 0
+}
+if ($good -gt 0 -and $other -eq 0) {
+    Write-Host "TEILWEISE / PARTIAL: senden und empfangen gehen, aber der asynchrone Fall fehlt noch." -ForegroundColor Yellow
+    exit 2
+}
+Write-Host "FEHLGESCHLAGEN / FAILED." -ForegroundColor Red
+exit 1
