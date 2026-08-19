@@ -119,30 +119,29 @@ fn execute(address: &str) -> Result<()> {
 /// no window, no terminal, and nowhere for `errln!` to go. For a failed upload
 /// this is the difference between "nothing happened" and knowing why.
 ///
-/// A Windows notification, not a dialog. The registry command of a web tool
+/// A Windows toast, not a dialog. The registry command of a web tool
 /// favourite ends in `"%1"`, so ten selected files start ten of these
 /// processes — and ten message boxes used to stack up, each waiting for its
-/// own click. See [`crate::notify`] for why the notification goes out through
-/// a tray icon rather than WinRT, and for what was measured.
+/// own click. See [`crate::notify`] for the toast itself and for what was
+/// measured.
 ///
 /// # When the message box still appears
 ///
-/// Only when the shell refuses the notification outright: Explorer restarting,
-/// or a desktop with no notification area. Then a modal window is the last
-/// channel left, and better than silence.
+/// Only when the notification platform refuses the toast outright: no WinRT,
+/// or a desktop with no notification platform at all. Then a modal window is
+/// the last channel left, and better than silence.
 ///
-/// Deliberately *not* a fallback: a notification the shell accepted but does
-/// not draw, because the user switched on Focus Assist. `Shell_NotifyIconW`
-/// answers `true` either way, so this cannot tell the two apart without
-/// staying alive for seconds to watch for the balloon's callbacks — and ten
-/// processes that each linger for seconds is its own kind of nuisance.
+/// Deliberately *not* a fallback: a toast the platform accepted but does not
+/// put on screen, because the user switched Focus Assist on. That is the user
+/// asking for quiet, and answering a request for quiet with a modal window is
+/// the very thing this was changed to stop.
 ///
-/// Nor should it try. Focus Assist is the user asking for quiet, and answering
-/// a request for quiet with a modal window is the very thing this was changed
-/// to stop. What that costs is real and worth knowing: a balloon is transient,
-/// so one that is never drawn is not waiting in the Action Center either (see
-/// [`crate::notify`]). The record that survives is the log — `main` writes
-/// every `--favourite` error there before calling this.
+/// This is where the toast earns its place over the tray balloon it replaced.
+/// A balloon is transient: one Windows chose not to draw was gone, and the
+/// only record left was the log. A toast is stored whether it is drawn or not,
+/// so a suppressed message is still in the Action Center when somebody looks —
+/// which is the whole reason [`crate::notify`] was rewritten. The log stays as
+/// well: `main` writes every `--favourite` error there before calling this.
 pub fn report(title: &str, text: &str, kind: Report) {
     // Neither channel has a window behind it to ask which language is on
     // screen, so both ask the process (see `crate::bilingual`).
@@ -157,7 +156,7 @@ pub fn report(title: &str, text: &str, kind: Report) {
     if let Err(error) = crate::notify::show(&caption, &body, level) {
         crate::log::write(
             crate::log::Kind::Error,
-            &format!("notification refused, falling back to a dialog: {error:#}"),
+            &format!("toast refused, falling back to a dialog: {error:#}"),
         );
         message_box(&caption, &body, kind);
     }
