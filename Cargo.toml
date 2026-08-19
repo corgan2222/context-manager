@@ -71,6 +71,7 @@ features = [
     "Win32_System_Console",
     "Win32_System_Registry",
     "Win32_System_Environment",
+    "Win32_System_LibraryLoader",      # GetModuleHandleW: the notification host window and its icon
     "Win32_System_SystemServices",     # LANG_GERMAN
     "Win32_System_Threading",          # GetGuiResources, for the GDI leak test
 ]
