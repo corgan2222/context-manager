@@ -285,6 +285,54 @@ pub fn from_dropped_file(path: &std::path::Path, category: Category) -> NewEntry
     }
 }
 
+/// The name the example entry carries, in both languages.
+///
+/// Marked rather than picked here, because this module never learns which
+/// language is on screen — see `bilingual`. The one place the example's
+/// wording is written down.
+pub const EXAMPLE_NAME: &str = "\x1eBeispiel: mit Editor öffnen\x1fExample: open with Notepad\x1d";
+
+/// The program the example runs.
+///
+/// Notepad, spelled through `%SystemRoot%`: it is on every Windows, it is on
+/// the drive Windows was installed to even when that is not `C:`, and a reader
+/// recognises it as an example rather than as something this program set up
+/// for them. It is also harmless if the form is accepted by mistake — the
+/// worst it can do is open a text editor.
+pub const EXAMPLE_PROGRAM: &str = r"%SystemRoot%\System32\notepad.exe";
+
+/// The form `--new <category>` opens: filled in, and nothing written.
+///
+/// A form that opens empty is exactly the problem `--service` was added to
+/// solve on the services tab — a picture of a dialog with nothing in it shows
+/// the frame and none of the point. So the example is filled in here, in one
+/// place, and the fields say out loud that they are an example.
+///
+/// `%V` in the two background categories and `%1` everywhere else, for the
+/// same reason as [`from_dropped_file`]: `%1` is empty on a folder background,
+/// and `check` would rightly warn about it.
+///
+/// Nothing is written. This builds a value; the user still has to press the
+/// button in the form.
+pub fn example_entry(category: Category, language: crate::settings::Language) -> NewEntry {
+    let placeholder = match is_background(&category) {
+        true => "%V",
+        false => "%1",
+    };
+    let display_name = crate::bilingual::pick(EXAMPLE_NAME, language).into_owned();
+
+    NewEntry {
+        key_name: suggest_key_name(&display_name),
+        display_name,
+        command: format!(r#""{EXAMPLE_PROGRAM}" "{placeholder}""#),
+        icon: Some(EXAMPLE_PROGRAM.to_string()),
+        category,
+        position: None,
+        extended: false,
+        children: Vec::new(),
+    }
+}
+
 /// The key name this program uses for its own context menu entry.
 ///
 /// Fixed rather than derived from the display name: the entry has to be found
@@ -944,6 +992,50 @@ mod tests {
                     .iter()
                     .any(|p| matches!(p.fault(), Fault::PercentOneInBackground))
             );
+        }
+    }
+
+    #[test]
+    fn the_example_form_is_complete_in_both_languages() {
+        use crate::settings::Language;
+
+        for language in [Language::German, Language::English] {
+            let example = example_entry(Category::Directory, language);
+
+            // A picture of the form is the point, so nothing in it may be
+            // empty and nothing may carry a complaint underneath it.
+            assert!(!example.display_name.trim().is_empty());
+            assert!(!example.key_name.trim().is_empty());
+            assert!(example.command.contains("notepad.exe"), "{example:?}");
+            assert!(
+                check(&example).is_empty(),
+                "{language:?}: {:?}",
+                check(&example)
+            );
+            // The marked form belongs in the source, never in a field the
+            // user reads.
+            assert!(
+                !example.display_name.contains(crate::bilingual::is_marker),
+                "{}",
+                example.display_name
+            );
+        }
+
+        // Two languages, two names -- otherwise the English picture would
+        // show a German example.
+        assert_ne!(
+            example_entry(Category::Directory, Language::German).display_name,
+            example_entry(Category::Directory, Language::English).display_name
+        );
+
+        // Same placeholder rule as a dropped file, and for the same reason.
+        for category in [Category::DirectoryBackground, Category::DesktopBackground] {
+            let example = example_entry(category.clone(), Language::English);
+            assert!(
+                example.command.contains("%V") && !example.command.contains("%1"),
+                "{category:?} needs %V"
+            );
+            assert!(check(&example).is_empty(), "{:?}", check(&example));
         }
     }
 

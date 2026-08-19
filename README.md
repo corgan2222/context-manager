@@ -346,6 +346,8 @@ ctxmenu favourite add --name "PNG verkleinern"
 ctxmenu favourite place <id> --ext .png
 ctxmenu favourite run <id> <file>        run it like a click
 ctxmenu --tab services                   open the window on a specific tab
+ctxmenu --service snapotter              services tab, that service selected and loaded
+ctxmenu --new directory                  the editor for a new entry, filled with an example
 ctxmenu --lang en scan                   this run in English, saved setting untouched
 ctxmenu --version                        which version this is
 ctxmenu --help                           the complete list

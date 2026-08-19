@@ -104,15 +104,17 @@ literal `"de,en"` and fails its `ValidateSet`.
 
 ## What still needs work before a release
 
-1. **The services tab shows an empty panel.** `--tab services` opens the list
-   with the service selected by nobody, so the picture shows one name on the
-   left and "pick a service" on the right. It is the tab that carries the
-   program's most distinctive feature and currently its least useful picture.
-   Needs an argument along the lines of `--service <id>` that selects and loads
-   one, the way `--ext` already preselects an extension.
-2. **No dialogs.** The editor, the confirmation before a write, and the About
-   window are all reachable only by clicking. Any of them would make a better
-   picture than a tab. Same shape of fix: an argument that opens one.
+1. **The shot list does not use the two new arguments yet.** Since 2026-08-19
+   there is `--service <id>`, which selects a service and loads its tool list
+   the way `--ext` preselects an extension, and `--new <category>`, which opens
+   the editor filled in with an example. `$shots` still uses neither:
+   `07-dienste` starts with `--tab services` and therefore still shows "pick a
+   service" on the right. Switching that entry over needs an id out of one's own
+   `services.json` and a service that answers — otherwise the picture carries
+   the error message instead of the tools.
+2. **Two dialogs are still out of reach.** The confirmation before a write and
+   the About window are reachable only by clicking. Same shape of fix as
+   `--new`: an argument that opens one.
 3. **The backups tab is full of test leftovers.** 1274 of the 1289 directories
    under `%LOCALAPPDATA%\ctxmenu\backups` came from test runs. `08-sicherungen`
    shows them above the user's real backups. Run
