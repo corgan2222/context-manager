@@ -10,299 +10,266 @@
 //! reads that as "once per file": ten selected files start ten processes.
 //! Every one of them used to finish with a `MessageBoxW`, so ten modal windows
 //! piled up on top of each other and each one had to be clicked away by hand.
-//! A notification is handed to the shell and forgotten; nothing waits for a
+//! A notification is handed to the platform and forgotten; nothing waits for a
 //! click, and ten of them do not stack.
 //!
-//! # Why the tray icon and not the WinRT toast
+//! # Why a WinRT toast and not a tray balloon
 //!
-//! The obvious route, `ToastNotificationManager::CreateToastNotifier(aumid)`,
-//! wants a registered AppUserModelID, and an AUMID wants a shortcut in the
-//! Start menu or a packaged identity. This program is a single portable `.exe`
-//! that installs nothing — that is a promise the README makes — so it has
-//! neither. `Shell_NotifyIconW` with `NIF_INFO` needs no identity at all: the
-//! shell hands the balloon to the Windows 10 notification platform and files
-//! it under an identity of its own making.
+//! The first version of this file used `Shell_NotifyIconW` with `NIF_INFO`,
+//! because a balloon needs no identity of any kind and this program installs
+//! nothing. It worked as far as the shell's own door, and that turned out to
+//! be the wrong door.
 //!
-//! Measured on this machine (Windows 10 Pro 19045) with a prototype that
-//! logged every return value and every callback the shell sent back:
+//! **A `NIF_INFO` balloon is transient: it is never written to the Action
+//! Center.** Measured by reading the shell's own `wpndatabase.db`, with a
+//! WinRT toast fired into the same query as a control -- the control turns up
+//! in the store within seconds, the balloon never does. So a balloon Windows
+//! chooses not to draw is not merely unseen, it is *gone*. On this machine
+//! Focus Assist stands at `Microsoft.QuietHoursProfile.AlarmsOnly`, which is
+//! exactly that case: ten files go out, one fails, and the only surviving
+//! record is the log file. That is not a report, that is a receipt nobody was
+//! handed.
 //!
-//! * `NIM_ADD`, `NIM_SETVERSION` and `NIM_MODIFY(NIF_INFO)` all answered
-//!   `true` from a plain `.exe` in a temp directory — no shortcut, no AUMID,
-//!   no package. The shell takes the balloon from a program it knows nothing
-//!   about.
-//! * Ten processes at once: ten `NIM_ADD` and ten `NIM_MODIFY` answered
-//!   `true`, and the shell sent back all ten `NIN_BALLOONSHOW` within 660 ms.
-//!   They do not collide, because no GUID is set — the identity of an icon is
-//!   `(hWnd, uID)`, and each process brings its own window.
-//! * **The balloon outlives its icon, so the process may exit at once.**
-//!   Deleting the icon 6 ms after `NIM_MODIFY` did not silence it: the shell
-//!   still answered `NIN_BALLOONSHOW` 21 ms later. It has the text before
-//!   `Shell_NotifyIconW` returns. Hence no message pump here, no artificial
-//!   sleep, and nothing that could change an `ExitCode` or leave a process
-//!   behind.
+//! A toast behaves the other way round. Suppressed or not, it is stored, and
+//! it is still there the next time somebody opens the Action Center. That
+//! single difference is the reason for this rewrite.
 //!
-//! # What a balloon is not: a message that waits
+//! # No registered AppUserModelID is needed
 //!
-//! A `NIF_INFO` balloon is **transient**. It is shown and then it is over; it
-//! is never written to the Action Center store, so there is nothing to scroll
-//! back to. Measured by reading the shell's own `wpndatabase.db`, with a real
-//! WinRT toast fired into the same query as a control: the control turns up in
-//! the store within seconds, the balloon never does — neither while the tray
-//! icon still exists nor afterwards.
+//! The documented route to a toast wants an AUMID, and an AUMID is usually
+//! earned with a shortcut in the Start menu or a packaged identity -- neither
+//! of which a single portable `.exe` has, or should acquire. It turns out not
+//! to matter. Measured on this machine (Windows 10 Pro 19045) by counting
+//! `ToastNotificationManager::History::GetHistory(aumid)` before and after:
 //!
-//! The consequence is worth stating plainly, because it decides what
-//! [`crate::webtool::shell::report`] does with a failure: **a balloon Windows
-//! chooses not to draw is gone.** With Focus Assist switched on the shell
-//! still answers `true` and the platform still records the attempt, but the
-//! user sees nothing and has nothing to look up afterwards. That is why the
-//! caller writes every error to the log before it gets here — the log, not the
-//! Action Center, is what survives a notification nobody saw.
+//! ```text
+//! ctxmenu.ContextMenuManager (nowhere registered)  history 2 -> 3
+//! PowerShell                 (properly registered) history 4 -> 5
+//! ```
 //!
-//! Not verified on this machine: that the balloon is *drawn* when Windows is
-//! willing to draw it. Focus Assist was switched on throughout, and it
-//! swallowed a properly registered WinRT toast in exactly the same way, so
-//! there was no state in which either channel could be photographed. What was
-//! confirmed is everything up to the shell's own door.
+//! `CreateToastNotifierWithId` takes an invented identifier, and the toast
+//! reaches the store just the same. Nothing is installed for this to work.
 //!
-//! # A message-only window is enough
+//! What the invented identifier does *not* bring along is a name. Read back
+//! through `UserNotificationListener`, the toasts filed under an unregistered
+//! AUMID carry `DisplayName = ""` -- the Action Center has nothing to write
+//! above the message. Hence [`name_the_sender`], and see there for why one
+//! small registry value is worth it.
 //!
-//! The window exists only to be an address: `Shell_NotifyIconW` needs an
-//! `HWND` to hang the icon on. `HWND_MESSAGE` gives one that is never drawn,
-//! never appears on the taskbar and never steals focus — which is exactly what
-//! a program started by a right-click needs.
+//! # COM initialises itself here
+//!
+//! Nothing in this program calls `CoInitializeEx` or `RoInitialize`, and
+//! nothing needs to: `windows_core`'s `load_factory` asks
+//! `RoGetActivationFactory` for the class, and on `CO_E_NOTINITIALIZED` it
+//! calls `CoIncrementMTAUsage` itself and retries. The first WinRT call in the
+//! process puts the process into the multithreaded apartment, which is where
+//! `ToastNotificationManager` wants to be anyway. An apartment call of our own
+//! could only make that worse -- a thread already in an STA cannot be moved,
+//! and in GUI mode `run_native` owns the main thread.
+//!
+//! # The process may exit as soon as `Show` returns
+//!
+//! `Show` is a synchronous call into the notification platform: by the time it
+//! comes back, the toast is stored and no longer this process's business.
+//! Hence no message pump here, no artificial sleep, and nothing that could
+//! change an `ExitCode` or leave a process behind -- the same property the
+//! balloon had, kept for the same reason.
 
-use anyhow::{Context as _, Result, bail};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_INFO, NIF_TIP, NIIF_ERROR, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, HICON, HWND_MESSAGE, IDI_APPLICATION,
-    IDI_INFORMATION, LoadIconW, RegisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW,
-};
-use windows::core::{PCWSTR, w};
+use anyhow::{Context as _, Result};
+use windows::Data::Xml::Dom::XmlDocument;
+use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+use windows::core::HSTRING;
+use windows_registry::CURRENT_USER;
 
 /// Which of the two things happened.
 ///
 /// The same split the message box drew with `MB_ICONINFORMATION` and
-/// `MB_ICONERROR`, so a failed upload still looks different from a finished
-/// one at a glance.
+/// `MB_ICONERROR`, and it still draws it -- [`crate::webtool::shell::report`]
+/// falls back to a dialog and picks its icon from this. On the toast itself it
+/// buys less; see [`payload`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     Info,
     Error,
 }
 
-/// The class name of the invisible window the icon hangs on.
-const CLASS: PCWSTR = w!("ctxmenu_notify_host");
-
-/// How many `u16` the shell reads out of each field of `NOTIFYICONDATAW`.
+/// The identity every toast from this program is filed under.
 ///
-/// Written down rather than taken from the struct so the truncation can be
-/// tested without building a `NOTIFYICONDATAW` — and so a reader can see what
-/// the numbers are. They are fixed by the Win32 header.
-const TITLE_CAPACITY: usize = 64;
-const TEXT_CAPACITY: usize = 256;
-const TIP_CAPACITY: usize = 128;
+/// Invented, and deliberately so -- see the module documentation. The shape is
+/// the conventional `CompanyName.ProductName`; what matters is only that it
+/// stays the same, because the history, the user's per-app notification
+/// settings and the display name below all hang off this exact string.
+const AUMID: &str = "ctxmenu.ContextMenuManager";
+
+/// The name the Action Center writes above the message.
+const DISPLAY_NAME: &str = "ctxmenu";
+
+/// Where Windows looks that name up.
+const AUMID_KEY: &str = r"SOFTWARE\Classes\AppUserModelId\ctxmenu.ContextMenuManager";
+
+/// How much of each text survives into the toast.
+///
+/// Not a struct field this time -- the balloon's 64 and 256 `u16` were fixed
+/// by `NOTIFYICONDATAW`, and a toast has no such array. What it has is a
+/// documented 5 KB limit on the whole XML payload, and an over-long payload is
+/// refused outright, which would land the caller in the message box this file
+/// exists to avoid. So the guard stays, with room the balloon never had.
+///
+/// The arithmetic behind the numbers: [`escaped`] can turn one character into
+/// five bytes (`&amp;`), so the worst case is `(64 + 512) * 5` plus about 120
+/// bytes of markup -- under 3 KB, with the limit still a long way off.
+const TITLE_LIMIT: usize = 64;
+const TEXT_LIMIT: usize = 512;
 
 /// Shows one Windows notification. Both texts are already cut to one language.
 ///
-/// An `Err` means the shell refused the notification — during a restart of
-/// Explorer, or on a desktop that has no notification area at all. The caller
-/// is expected to have something else to say it with; see
+/// An `Err` means the notification platform refused it outright: no WinRT, or
+/// a desktop with no notification platform at all. It does *not* mean the user
+/// failed to see it -- a toast the platform accepted and then suppressed still
+/// went to the Action Center. The caller has something else to say it with for
+/// the first case and deliberately nothing for the second; see
 /// [`crate::webtool::shell::report`].
 pub fn show(title: &str, text: &str, level: Level) -> Result<()> {
-    let host = Host::new()?;
+    name_the_sender();
 
-    let mut data = NOTIFYICONDATAW {
-        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: host.window,
-        // No `NIF_GUID` on purpose. A GUID would give every one of the ten
-        // processes the same identity, and the second one would be told the
-        // icon already exists. Without it the shell keys on `(hWnd, uID)`, and
-        // each process brings its own window.
-        uID: 1,
-        uFlags: NIF_ICON | NIF_TIP,
-        hIcon: icon(),
-        ..Default::default()
-    };
-    data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-    fill(&mut data.szTip, "ctxmenu", TIP_CAPACITY);
+    let document = XmlDocument::new().context("\x1eXmlDocument\x1fXmlDocument\x1d")?;
+    document
+        .LoadXml(&HSTRING::from(payload(title, text, level)))
+        .context("\x1eToast-XML abgelehnt\x1ftoast XML refused\x1d")?;
 
-    // The documented order, and it matters: the icon has to exist before a
-    // balloon can be attached to it, and the version has to be declared before
-    // the shell knows which behaviour is being asked for.
-    if !unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool() {
-        bail!("\x1eShell_NotifyIcon NIM_ADD abgelehnt\x1frefused NIM_ADD\x1d");
-    }
+    let toast = ToastNotification::CreateToastNotification(&document)
+        .context("\x1eCreateToastNotification\x1fCreateToastNotification\x1d")?;
 
-    // From here on the icon exists, so every way out has to take it with it.
-    let _icon = TrayIcon(data);
+    // `WithId`, not the bare `CreateToastNotifier`: the argument-less one asks
+    // the process for its own AppUserModelID, and a portable `.exe` has none.
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
+        .context("\x1eCreateToastNotifier\x1fCreateToastNotifier\x1d")?
+        .Show(&toast)
+        .context("\x1eToast abgelehnt\x1ftoast refused\x1d")?;
 
-    // Not fatal on its own: without it the shell falls back to the old
-    // behaviour, which still shows the balloon.
-    let _ = unsafe { Shell_NotifyIconW(NIM_SETVERSION, &data) };
-
-    data.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
-    fill(&mut data.szInfoTitle, title, TITLE_CAPACITY);
-    fill(&mut data.szInfo, text, TEXT_CAPACITY);
-    data.dwInfoFlags = match level {
-        Level::Info => NIIF_INFO,
-        Level::Error => NIIF_ERROR,
-    };
-
-    if !unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool() {
-        bail!("\x1eShell_NotifyIcon NIM_MODIFY abgelehnt\x1frefused NIM_MODIFY\x1d");
-    }
-
-    // `_icon` and `host` are dropped here, which removes the icon and the
-    // window. That is deliberate and measured: the shell has the text by now,
-    // and holding on any longer would only leave an icon in the tray for a
-    // process that has nothing left to do.
     Ok(())
 }
 
-/// This program's own icon, so the notification is recognisable.
+/// Gives the Action Center a name to put above the message.
 ///
-/// Resource 1 is what `winresource` writes `assets/app.ico` to. If it is ever
-/// numbered differently, or the icon is missing from a build, the notification
-/// is still worth more than the icon on it — hence the two fallbacks rather
-/// than an error.
-fn icon() -> HICON {
-    unsafe {
-        if let Ok(instance) = GetModuleHandleW(None)
-            // `MAKEINTRESOURCE`: a resource is named either by a string or by a
-            // number squeezed into the pointer itself. `without_provenance` says
-            // that in Rust's own words -- this is a bare address that is never
-            // dereferenced, not a pointer to a `u16` somewhere.
-            && let Ok(own) = LoadIconW(
-                Some(instance.into()),
-                PCWSTR(std::ptr::without_provenance(1)),
-            )
-        {
-            return own;
-        }
-        LoadIconW(None, IDI_INFORMATION)
-            .or_else(|_| LoadIconW(None, IDI_APPLICATION))
-            .unwrap_or_default()
+/// Without this the sender line is empty, because an AUMID that is registered
+/// nowhere has nothing to be looked up in -- measured through
+/// `UserNotificationListener`, which reports `DisplayName = ""` for the toasts
+/// filed under it. An unnamed message in a list of named ones reads like a
+/// fault, and the whole point of moving to a toast was that somebody finds it
+/// there later.
+///
+/// This is the one registry write in this program that changes nothing about a
+/// context menu, so it is worth being explicit about its shape:
+///
+/// * **HKCU only.** Nothing here is machine-wide and nothing here needs
+///   elevation.
+/// * **One value.** `DisplayName`, and not `IconUri` -- an icon would have to
+///   be a `.png` lying on disk, and putting a file somewhere permanent is
+///   exactly the installing this program promises not to do.
+/// * **Idempotent, and quiet when there is nothing to do.** Ten processes
+///   start at once for ten selected files; the read comes first so that nine
+///   of them write nothing.
+/// * **Failure is ignored on purpose.** The name is decoration. A message with
+///   no sender is worth more than no message, and this must never be the
+///   reason [`show`] returns an `Err` and summons a dialog.
+///
+/// It is the ordinary way an unpackaged program does this. Firefox, HandBrake,
+/// TreeSize and PowerToys all carry the same key on this machine, each with
+/// the same single `DisplayName` value.
+fn name_the_sender() {
+    if let Ok(key) = CURRENT_USER.open(AUMID_KEY)
+        && let Ok(name) = key.get_string("DisplayName")
+        && name == DISPLAY_NAME
+    {
+        return;
+    }
+
+    let _ = CURRENT_USER
+        .create(AUMID_KEY)
+        .and_then(|key| key.set_string("DisplayName", DISPLAY_NAME));
+}
+
+/// The toast as the notification platform wants it: one XML document.
+///
+/// `ToastGeneric` with two `<text>` elements -- the first is drawn as the
+/// heading, the second as the body, and both are what the Action Center keeps.
+///
+/// `duration="long"` is all [`Level`] can buy here. The toast platform has no
+/// per-message error icon; the picture beside a toast comes from the sender's
+/// registered `IconUri` and is the same for every message it sends. So an
+/// error stays on screen for the long interval instead of the short one, and
+/// in the Action Center the two look alike and the text carries the difference
+/// -- which it can, because the caller writes it.
+fn payload(title: &str, text: &str, level: Level) -> String {
+    let duration = match level {
+        Level::Info => "",
+        Level::Error => " duration=\"long\"",
+    };
+
+    format!(
+        "<toast{duration}><visual><binding template=\"ToastGeneric\">\
+         <text>{}</text><text>{}</text>\
+         </binding></visual></toast>",
+        escaped(capped(title, TITLE_LIMIT)),
+        escaped(capped(text, TEXT_LIMIT)),
+    )
+}
+
+/// `text` cut to at most `limit` characters, on a character boundary.
+///
+/// Cut along `chars`, never along bytes: half a UTF-8 sequence is not a string
+/// at all, and `&str` will not even hold one.
+fn capped(text: &str, limit: usize) -> &str {
+    match text.char_indices().nth(limit) {
+        Some((byte, _)) => &text[..byte],
+        None => text,
     }
 }
 
-/// Copies `text` into one of the fixed-size fields, NUL-terminated.
-fn fill(field: &mut [u16], text: &str, capacity: usize) {
-    let units = clipped(text, capacity);
-    field[..units.len()].copy_from_slice(&units);
-}
-
-/// `text` as NUL-terminated UTF-16, never longer than `capacity` units.
+/// `text` as XML character data, with everything a parser cannot hold removed
+/// rather than passed on.
 ///
-/// The shell reads a fixed number of `u16` out of each field and stops at the
-/// first zero, so a text that does not fit has to be shortened here rather
-/// than run past the end of the array. Cut along `chars`, never along `u16`:
-/// an emoji or anything else outside the basic plane is a surrogate *pair*,
-/// and half a pair is not a character — it arrives on screen as a replacement
-/// box, which is a worse way to lose the last letter than simply not showing
-/// it.
-fn clipped(text: &str, capacity: usize) -> Vec<u16> {
-    let room = capacity.saturating_sub(1);
-    let mut out: Vec<u16> = Vec::with_capacity(capacity);
+/// Two jobs, and the second one is the one that would have bitten:
+///
+/// * The three markup characters become entities. Not `"` and `'` -- this text
+///   only ever lands between tags, never inside an attribute, where they would
+///   need escaping and where nothing here goes.
+/// * Characters XML 1.0 forbids are dropped. The C0 block is not decoration
+///   here: `crate::bilingual` marks its two languages with the information
+///   separators U+001E, U+001F and U+001D, and a stray one that outlived the
+///   cut would make `LoadXml` reject the *whole document*. One unbalanced
+///   marker in one message, and the user gets the message box this file exists
+///   to avoid -- for ten files at once. A character quietly missing from a
+///   sentence is the cheaper failure by a wide margin.
+fn escaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
 
     for character in text.chars() {
-        if out.len() + character.len_utf16() > room {
-            break;
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            character if allowed(character) => out.push(character),
+            _ => {}
         }
-        let mut buffer = [0u16; 2];
-        out.extend_from_slice(character.encode_utf16(&mut buffer));
     }
 
-    out.push(0);
     out
 }
 
-/// Hands every message straight back to Windows.
+/// Whether XML 1.0 allows this character at all.
 ///
-/// A thunk rather than `DefWindowProcW` itself: the `windows` crate exposes
-/// that one as a Rust function, and a window class wants a raw `system` one.
-/// Nothing here reacts to a message — no `NIF_MESSAGE` is asked for and
-/// nothing pumps this queue, because the shell has the text before
-/// `Shell_NotifyIconW` returns.
-unsafe extern "system" fn procedure(
-    window: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    unsafe { DefWindowProcW(window, message, wparam, lparam) }
-}
-
-/// The invisible window the icon is addressed by, destroyed on the way out.
-struct Host {
-    window: HWND,
-}
-
-impl Host {
-    fn new() -> Result<Self> {
-        unsafe {
-            let instance = GetModuleHandleW(None).context("GetModuleHandleW")?;
-
-            // Registering the same class twice fails, and this may be called
-            // more than once in a process. The failure is ignored rather than
-            // guarded by a flag: the only reason it can fail here is that the
-            // class is already there, which is precisely the state wanted.
-            let class = WNDCLASSW {
-                lpfnWndProc: Some(procedure),
-                hInstance: instance.into(),
-                lpszClassName: CLASS,
-                ..Default::default()
-            };
-            let _ = RegisterClassW(&class);
-
-            let window = CreateWindowExW(
-                WINDOW_EX_STYLE(0),
-                CLASS,
-                w!("ctxmenu"),
-                WINDOW_STYLE(0),
-                0,
-                0,
-                0,
-                0,
-                // Message-only: never drawn, never on the taskbar, never in
-                // the way of whatever the user is doing.
-                Some(HWND_MESSAGE),
-                None,
-                Some(instance.into()),
-                None,
-            )
-            .context("\x1eunsichtbares Fenster\x1fmessage-only window\x1d")?;
-
-            Ok(Self { window })
-        }
-    }
-}
-
-impl Drop for Host {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = DestroyWindow(self.window);
-        }
-    }
-}
-
-/// Holds the added icon and removes it however this function is left.
-///
-/// Without it an early return between `NIM_ADD` and the end would leave an
-/// icon in the notification area belonging to a process that has already
-/// exited — the ghost icon that only disappears once the mouse passes over it.
-struct TrayIcon(NOTIFYICONDATAW);
-
-impl Drop for TrayIcon {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_DELETE, &self.0);
-        }
-    }
+/// The `Char` production of the specification, section 2.2. Rust has already
+/// ruled out the surrogate range for us -- a `char` cannot hold one -- so what
+/// is left to exclude is most of C0 and the two non-characters at the end of
+/// the basic plane.
+fn allowed(character: char) -> bool {
+    matches!(character,
+        '\t' | '\n' | '\r'
+        | ' '..='\u{d7ff}'
+        | '\u{e000}'..='\u{fffd}'
+        | '\u{10000}'..='\u{10ffff}')
 }
 
 #[cfg(test)]
@@ -310,63 +277,116 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_short_text_is_copied_with_its_terminator() {
-        assert_eq!(clipped("ok", 64), vec![b'o' as u16, b'k' as u16, 0]);
-        assert_eq!(clipped("", 64), vec![0]);
+    fn a_short_text_is_left_alone() {
+        assert_eq!(capped("ok", 64), "ok");
+        assert_eq!(capped("", 64), "");
+        assert_eq!(escaped("ok"), "ok");
     }
 
     #[test]
-    fn a_long_text_is_cut_to_the_field() {
-        // 300 characters into the 256-unit body field: 255 of them plus the
-        // terminator, and not one unit more -- the shell reads a fixed number
-        // of u16 out of that array.
-        let long = "a".repeat(300);
-        let units = clipped(&long, TEXT_CAPACITY);
-        assert_eq!(units.len(), TEXT_CAPACITY);
-        assert_eq!(units.last(), Some(&0));
-        assert!(units[..units.len() - 1].iter().all(|&u| u == b'a' as u16));
+    fn a_long_text_is_cut_to_the_limit() {
+        let long = "a".repeat(700);
+        assert_eq!(capped(&long, TEXT_LIMIT).len(), TEXT_LIMIT);
+        assert_eq!(capped(&long, TITLE_LIMIT).len(), TITLE_LIMIT);
     }
 
     #[test]
-    fn a_surrogate_pair_is_never_cut_in_half() {
-        // Every character here is two u16, so an odd amount of room has to
-        // leave one unit unused rather than write half a character. A lone
-        // surrogate is not text: it reaches the screen as a replacement box.
-        let text = "\u{1F600}\u{1F600}\u{1F600}";
-        let units = clipped(text, 6); // room for 5 units = two pairs and a gap
-        assert_eq!(units.len(), 5, "two pairs plus the terminator");
-        assert_eq!(units.last(), Some(&0));
-        for unit in &units[..4] {
-            assert!(
-                (0xD800..=0xDFFF).contains(unit),
-                "the two pairs survive whole"
-            );
-        }
+    fn the_cut_lands_on_a_character_and_not_in_the_middle_of_one() {
+        // Every character here is four bytes in UTF-8, so a byte-wise cut
+        // would not even produce a `&str`. Counting characters must give the
+        // limit, and counting bytes must give four times as much.
+        let text = "\u{1F600}".repeat(100);
+        let cut = capped(&text, 10);
+        assert_eq!(cut.chars().count(), 10);
+        assert_eq!(cut.len(), 40);
     }
 
     #[test]
     fn german_text_survives_the_cut() {
-        // The body is measured in u16, not in bytes: umlauts are one unit
-        // each, so a sentence that fits must not be shortened for being
-        // multi-byte in UTF-8.
+        // Measured in characters, not in bytes: umlauts are two bytes each in
+        // UTF-8, and a sentence that fits must not be shortened for that.
         let text = "Öffnen fehlgeschlagen: Größe überschritten";
-        let units = clipped(text, TEXT_CAPACITY);
-        assert_eq!(units.len(), text.chars().count() + 1);
+        assert_eq!(capped(text, TEXT_LIMIT), text);
     }
 
     #[test]
-    fn a_capacity_of_one_still_terminates() {
-        // Not a real field size, but the arithmetic must not underflow.
-        assert_eq!(clipped("text", 1), vec![0]);
-        assert_eq!(clipped("text", 0), vec![0]);
+    fn the_three_markup_characters_become_entities() {
+        assert_eq!(
+            escaped("a & b < c > d"),
+            "a &amp; b &lt; c &gt; d",
+            "an ampersand in a URL is the everyday case"
+        );
+        assert_eq!(
+            escaped(r#"He said "hi" and 'bye'"#),
+            r#"He said "hi" and 'bye'"#,
+            "quotes stay: this text never lands in an attribute"
+        );
     }
 
     #[test]
-    fn the_title_field_is_smaller_than_the_body() {
-        // A reminder in test form: the two fields do not share a limit, and
-        // filling a title with the body's capacity would write past its end.
-        const { assert!(TITLE_CAPACITY < TEXT_CAPACITY) };
-        let long = "b".repeat(100);
-        assert_eq!(clipped(&long, TITLE_CAPACITY).len(), TITLE_CAPACITY);
+    fn a_stray_bilingual_marker_never_reaches_the_parser() {
+        // The regression this guards: U+001E, U+001F and U+001D are how
+        // `crate::bilingual` marks its two languages. One that outlived the
+        // cut would make `LoadXml` reject the whole document, and the user
+        // would get ten message boxes instead of one toast.
+        let text = format!("kaputt{}Rest", crate::bilingual::OPEN);
+        assert_eq!(escaped(&text), "kaputtRest");
+
+        for marker in [
+            crate::bilingual::OPEN,
+            crate::bilingual::SPLIT,
+            crate::bilingual::CLOSE,
+        ] {
+            assert!(!allowed(marker), "{marker:?} is not XML character data");
+        }
+    }
+
+    #[test]
+    fn tab_and_the_two_line_breaks_are_kept() {
+        // The only C0 characters XML allows, and a multi-line body is the
+        // normal shape of an error message here.
+        assert_eq!(escaped("a\tb\nc\rd"), "a\tb\nc\rd");
+        assert_eq!(escaped("a\u{0}b\u{7}c\u{b}d"), "abcd");
+    }
+
+    #[test]
+    fn a_payload_names_the_template_and_carries_both_texts() {
+        let xml = payload("Fertig", "3 Dateien gesendet", Level::Info);
+        assert!(xml.starts_with("<toast>"), "{xml}");
+        assert!(xml.contains(r#"template="ToastGeneric""#), "{xml}");
+        assert!(xml.contains("<text>Fertig</text>"), "{xml}");
+        assert!(xml.contains("<text>3 Dateien gesendet</text>"), "{xml}");
+        assert!(xml.ends_with("</toast>"), "{xml}");
+    }
+
+    #[test]
+    fn only_an_error_asks_to_stay_on_screen() {
+        assert!(!payload("t", "b", Level::Info).contains("duration"));
+        assert!(
+            payload("t", "b", Level::Error).contains(r#"<toast duration="long">"#),
+            "an error is worth the long interval"
+        );
+    }
+
+    #[test]
+    fn a_payload_stays_far_below_the_platforms_limit() {
+        // The worst case the arithmetic beside `TEXT_LIMIT` describes: every
+        // character escaping to five bytes. 5 KB is where the platform stops
+        // accepting a payload.
+        let title = "&".repeat(500);
+        let text = "&".repeat(5000);
+        let xml = payload(&title, &text, Level::Error);
+        assert!(xml.len() < 3072, "{} bytes", xml.len());
+    }
+
+    #[test]
+    fn the_key_path_and_the_identifier_cannot_drift_apart() {
+        // Two constants that have to agree: the notifier is created with
+        // `AUMID`, and Windows looks the name up under a path that spells the
+        // same string out again.
+        assert_eq!(
+            AUMID_KEY,
+            format!(r"SOFTWARE\Classes\AppUserModelId\{AUMID}")
+        );
     }
 }
