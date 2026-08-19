@@ -23,6 +23,7 @@ pub mod i18n;
 pub mod icons;
 pub mod log;
 pub mod model;
+pub mod notify;
 pub mod program;
 pub mod registry;
 pub mod service;

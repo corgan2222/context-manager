@@ -116,19 +116,62 @@ fn execute(address: &str) -> Result<()> {
 /// Says something to a user who has no console.
 ///
 /// The `--favourite` mode is started by a click in the Explorer menu: there is
-/// no window, no terminal, and nowhere for `errln!` to go. A message box is
-/// the only channel that exists, and for a failed upload it is the difference
-/// between "nothing happened" and knowing why.
+/// no window, no terminal, and nowhere for `errln!` to go. For a failed upload
+/// this is the difference between "nothing happened" and knowing why.
+///
+/// A Windows notification, not a dialog. The registry command of a web tool
+/// favourite ends in `"%1"`, so ten selected files start ten of these
+/// processes — and ten message boxes used to stack up, each waiting for its
+/// own click. See [`crate::notify`] for why the notification goes out through
+/// a tray icon rather than WinRT, and for what was measured.
+///
+/// # When the message box still appears
+///
+/// Only when the shell refuses the notification outright: Explorer restarting,
+/// or a desktop with no notification area. Then a modal window is the last
+/// channel left, and better than silence.
+///
+/// Deliberately *not* a fallback: a notification the shell accepted but does
+/// not draw, because the user switched on Focus Assist. `Shell_NotifyIconW`
+/// answers `true` either way, so this cannot tell the two apart without
+/// staying alive for seconds to watch for the balloon's callbacks — and ten
+/// processes that each linger for seconds is its own kind of nuisance.
+///
+/// Nor should it try. Focus Assist is the user asking for quiet, and answering
+/// a request for quiet with a modal window is the very thing this was changed
+/// to stop. What that costs is real and worth knowing: a balloon is transient,
+/// so one that is never drawn is not waiting in the Action Center either (see
+/// [`crate::notify`]). The record that survives is the log — `main` writes
+/// every `--favourite` error there before calling this.
 pub fn report(title: &str, text: &str, kind: Report) {
+    // Neither channel has a window behind it to ask which language is on
+    // screen, so both ask the process (see `crate::bilingual`).
+    let caption = crate::bilingual::shown(title).into_owned();
+    let body = crate::bilingual::shown(text).into_owned();
+
+    let level = match kind {
+        Report::Info => crate::notify::Level::Info,
+        Report::Error => crate::notify::Level::Error,
+    };
+
+    if let Err(error) = crate::notify::show(&caption, &body, level) {
+        crate::log::write(
+            crate::log::Kind::Error,
+            &format!("notification refused, falling back to a dialog: {error:#}"),
+        );
+        message_box(&caption, &body, kind);
+    }
+}
+
+/// The old channel, kept for the case where the notification cannot be shown.
+fn message_box(caption: &str, body: &str, kind: Report) {
     use windows::Win32::UI::WindowsAndMessaging::{
         MB_ICONERROR, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST, MESSAGEBOX_STYLE,
         MessageBoxW,
     };
 
-    // A message box has no window behind it to ask which language is on
-    // screen, so it asks the process (see `crate::bilingual`).
-    let caption = wide(&crate::bilingual::shown(title));
-    let body = wide(&crate::bilingual::shown(text));
+    let caption = wide(caption);
+    let body = wide(body);
     let icon = match kind {
         Report::Info => MB_ICONINFORMATION,
         Report::Error => MB_ICONERROR,
