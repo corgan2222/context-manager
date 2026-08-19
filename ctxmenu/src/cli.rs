@@ -100,6 +100,14 @@ Verwendung:
                             services, backups
   ctxmenu --search <text>   Fenster mit gesetzter Suche öffnen
   ctxmenu --ext .png        Fenster auf dem Dateityp-Reiter, Endung gewählt
+  ctxmenu --service <id>    Fenster auf dem Dienste-Reiter, dieser Dienst
+                            gewählt und seine Werkzeugliste geladen; die
+                            Kennung steht in services.json
+  ctxmenu --new <kategorie> Fenster mit offenem Editor für einen neuen
+                            Eintrag dieser Kategorie, mit Beispiel gefüllt:
+                            allfiles, allfilesystemobjects, directory,
+                            directorybackground, folder, desktopbackground,
+                            drive. Geschrieben wird nichts
   ctxmenu --lang de|en [...]
                             Diesen Lauf in dieser Sprache: das Fenster ebenso
                             wie jeder Unterbefehl. Steht vor dem Befehl; die
@@ -173,6 +181,14 @@ Usage:
   ctxmenu --search <text>   open the window with the search box filled
   ctxmenu --ext .png        open the file type tab with that extension
                             selected
+  ctxmenu --service <id>    open the services tab with that service selected
+                            and its tool list loaded; the id is the one in
+                            services.json
+  ctxmenu --new <category>  open the window with the editor for a new entry
+                            in that category, filled in with an example:
+                            allfiles, allfilesystemobjects, directory,
+                            directorybackground, folder, desktopbackground,
+                            drive. Nothing is written
   ctxmenu --lang de|en [...]
                             run in that language: the window and every
                             subcommand alike. Goes in front of the command;
@@ -268,7 +284,8 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                 ..Default::default()
             }));
         }
-        "--synthetic" | "--bench" | "--tab" | "--search" | "--ext" | "--lang" | "--window" => {
+        "--synthetic" | "--bench" | "--tab" | "--search" | "--ext" | "--lang" | "--window"
+        | "--service" | "--new" => {
             let mut start = crate::app::Start::default();
             let mut rest = args.iter();
 
@@ -281,6 +298,28 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
                     "--ext" => {
                         start.ext = Some(value.to_lowercase());
                         start.tab = crate::app::Tab::FileTypes;
+                    }
+                    // Which service exists is only known once `services.json`
+                    // has been read, and reading a file here would make the
+                    // parser depend on the machine it runs on. So the id
+                    // travels as it was typed and the window says whether it
+                    // means anything — see `service::index_of`.
+                    "--service" => {
+                        start.service = Some(value.clone());
+                        start.tab = crate::app::Tab::Services;
+                    }
+                    "--new" => {
+                        start.new_entry = Some(
+                            Category::from_slug(value)
+                                .filter(crate::registry::create::category_is_creatable)
+                                .with_context(|| {
+                                    format!(
+                                        "\x1eUnbekannte Kategorie\x1funknown category\x1d: \
+                                         {value}\n\x1eMöglich sind\x1favailable\x1d: {}",
+                                        creatable_slugs()
+                                    )
+                                })?,
+                        );
                     }
                     "--tab" => {
                         start.tab = crate::app::Tab::from_slug(value).with_context(|| {
@@ -596,6 +635,21 @@ fn parse_window_size(value: &str) -> Result<(i32, i32)> {
         number(width)?.max(MIN_WINDOW.0),
         number(height)?.max(MIN_WINDOW.1),
     ))
+}
+
+/// The category names `--new` accepts, for the message a typo gets.
+///
+/// Read off `Category::BASE` and put through the same check the argument
+/// itself uses, so a category that stops being creatable stops being offered
+/// in the same breath. A list written out by hand would be the second place to
+/// forget.
+fn creatable_slugs() -> String {
+    Category::BASE
+        .iter()
+        .filter(|category| crate::registry::create::category_is_creatable(category))
+        .map(Category::slug)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn run_scan(args: ScanArgs) -> Result<()> {
@@ -1825,6 +1879,8 @@ mod tests {
             "--tab",
             "--search",
             "--ext",
+            "--service",
+            "--new",
             "--lang",
             "--window",
             "--synthetic",
@@ -1893,6 +1949,72 @@ mod tests {
         // Zero synthetic rows is a perfectly fine (if boring) scan, and
         // unrelated to the counter this guards -- only --bench is refused.
         assert_eq!(start_of(&["--synthetic", "0"]).synthetic, Some(0));
+    }
+
+    #[test]
+    fn a_service_is_named_by_its_id_and_brings_its_own_tab() {
+        // Implicitly, the way --ext does: naming a service and then having to
+        // name the tab it lives on as well would be one argument too many for
+        // a script and a trap for everybody else.
+        let start = start_of(&["--service", "snapotter"]);
+        assert_eq!(start.service.as_deref(), Some("snapotter"));
+        assert_eq!(start.tab, crate::app::Tab::Services);
+
+        // Passed on as typed. Whether it exists is a question about
+        // services.json, and a parser that read that file would answer
+        // differently on every machine -- including in this test.
+        assert_eq!(
+            start_of(&["--service", "Nobody"]).service.as_deref(),
+            Some("Nobody")
+        );
+        assert!(parse_args(&["--service"]).is_err());
+
+        // Together with the rest of a screenshot run.
+        let start = start_of(&["--service", "snapotter", "--window", "2400x1500"]);
+        assert_eq!(start.service.as_deref(), Some("snapotter"));
+        assert_eq!(start.size, Some((2400, 1500)));
+    }
+
+    #[test]
+    fn a_new_entry_names_a_category_that_can_actually_be_created() {
+        let start = start_of(&["--new", "directory"]);
+        assert_eq!(start.new_entry, Some(Category::Directory));
+        // The same names `scan --category` takes, through the same conversion.
+        assert_eq!(
+            start_of(&["--new", "DesktopBackground"]).new_entry,
+            Some(Category::DesktopBackground)
+        );
+        // Nothing else is preselected: the editor is a window above whatever
+        // tab the run would have opened on anyway.
+        assert_eq!(start.tab, crate::app::Tab::Categories);
+
+        // A category exists but cannot be written to: Windows' own verb store
+        // is read-only, so offering to create an entry in it would be a lie.
+        let Err(error) = parse_args(&["--new", "commandstore"]) else {
+            panic!("commandstore cannot be created in");
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("commandstore"), "{message}");
+        // And the message says what would have worked.
+        assert!(message.contains("directory"), "{message}");
+
+        assert!(parse_args(&["--new", "nonsense"]).is_err());
+        assert!(parse_args(&["--new"]).is_err());
+    }
+
+    #[test]
+    fn the_creatable_categories_are_read_off_the_model() {
+        let slugs = creatable_slugs();
+        for category in Category::BASE {
+            assert!(
+                slugs.contains(&category.slug()),
+                "{slugs} omits {}",
+                category.slug()
+            );
+        }
+        // Not a list of everything the model knows: what cannot be created
+        // has no business in a message about creating something.
+        assert!(!slugs.contains("commandstore"), "{slugs}");
     }
 
     fn favourite_args(args: &[&str]) -> Result<FavouriteCommand> {

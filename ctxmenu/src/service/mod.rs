@@ -61,6 +61,42 @@ pub fn load() -> Result<Vec<Service>> {
     serde_json::from_str(&text).with_context(|| format!("{}", path.display()))
 }
 
+/// Which entry of the list carries this id.
+///
+/// For `--service <id>`, where the id is typed by a human and a typo has to
+/// say what would have worked instead: a list that answers "unknown" and
+/// nothing else leaves the reader opening `services.json` in an editor to find
+/// out what its own ids are. Case is ignored, the way every other identifier
+/// on this command line is — `Tab::from_slug` and `Category::from_slug` both
+/// lower-case first, and a service called `SnapOtter` is worth as little
+/// typing as a tab called `Services`.
+///
+/// Kept here rather than in the window, because it looks at a list and at
+/// nothing else: no file, no network, no state.
+pub fn index_of(services: &[Service], id: &str) -> Result<usize> {
+    let wanted = id.trim();
+    if let Some(index) = services
+        .iter()
+        .position(|service| service.id.eq_ignore_ascii_case(wanted))
+    {
+        return Ok(index);
+    }
+
+    if services.is_empty() {
+        anyhow::bail!(
+            "\x1eKein Dienst mit der Kennung\x1fno service with the id\x1d {wanted}: \
+             \x1ees ist überhaupt keiner eingerichtet\x1fthere is none set up at all\x1d"
+        );
+    }
+
+    let known: Vec<&str> = services.iter().map(|service| service.id.as_str()).collect();
+    anyhow::bail!(
+        "\x1eKein Dienst mit der Kennung\x1fno service with the id\x1d {wanted}. \
+         \x1eVorhanden\x1favailable\x1d: {}",
+        known.join(", ")
+    )
+}
+
 /// Whether text already on disk still parses as a service list.
 ///
 /// Pulled out of `save` so the corrupted-file guard has a test that never
@@ -706,5 +742,39 @@ mod tests {
         // The right shape of JSON but the wrong type -- an object where the
         // list belongs -- is just as unreadable as a service list.
         assert!(!readable(r#"{"not":"a list"}"#));
+    }
+
+    #[test]
+    fn a_service_is_found_by_its_id_whatever_the_case() {
+        let mut second = service();
+        second.id = "otherhouse".into();
+        let services = vec![service(), second];
+
+        assert_eq!(index_of(&services, "snapotter").unwrap(), 0);
+        assert_eq!(index_of(&services, "SnapOtter").unwrap(), 0);
+        // A trailing space survives a copied command line more often than
+        // anyone would like.
+        assert_eq!(index_of(&services, " otherhouse ").unwrap(), 1);
+    }
+
+    #[test]
+    fn an_unknown_id_says_which_ones_there_are() {
+        let services = vec![service()];
+        let message = format!("{:#}", index_of(&services, "snapotters").unwrap_err());
+
+        // The typo is echoed, and so is the id that would have worked --
+        // without them the reader has to open services.json to find out.
+        assert!(message.contains("snapotters"), "{message}");
+        assert!(message.contains("snapotter"), "{message}");
+
+        // Nothing set up at all is its own answer: a list of available ids
+        // would be an empty one, which says nothing.
+        let message = format!("{:#}", index_of(&[], "snapotter").unwrap_err());
+        assert!(message.contains("snapotter"), "{message}");
+        assert!(
+            crate::bilingual::pick(&message, crate::settings::Language::English)
+                .contains("none set up"),
+            "{message}"
+        );
     }
 }

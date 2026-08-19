@@ -108,15 +108,17 @@ wörtlichen `"de,en"` und scheitert an seinem `ValidateSet`.
 
 ## Was vor einem Release noch zu tun ist
 
-1. **Der Dienste-Reiter zeigt eine leere Fläche.** `--tab services` öffnet die
-   Liste, ohne dass ein Dienst gewählt ist; das Bild zeigt links einen Namen und
-   rechts „Links einen Dienst wählen". Ausgerechnet der Reiter mit dem
-   auffälligsten Merkmal hat das schwächste Bild. Es fehlt ein Argument in der
-   Art `--service <id>`, das einen auswählt und lädt, so wie `--ext` schon eine
-   Endung vorwählt.
-2. **Keine Dialoge.** Editor, die Rückfrage vor dem Schreiben und das
-   Über-Fenster sind nur per Klick erreichbar. Jedes davon gäbe ein besseres
-   Bild als ein Reiter. Gleiche Form der Lösung: ein Argument, das eines öffnet.
+1. **Die Liste kennt die zwei neuen Zustände noch nicht.** Seit 2026-08-19 gibt
+   es `--service <id>` — wählt den Dienst und lädt seine Werkzeugliste, so wie
+   `--ext` eine Endung vorwählt — und `--new <kategorie>`, das den Editor mit
+   einem Beispiel gefüllt öffnet. `$shots` benutzt beide noch nicht: `07-dienste`
+   startet weiter mit `--tab services` und zeigt deshalb rechts „Links einen
+   Dienst wählen". Wer den Eintrag umstellt, braucht dafür eine Kennung aus der
+   eigenen `services.json` und einen Dienst, der antwortet — sonst steht im Bild
+   die Fehlermeldung statt der Werkzeuge.
+2. **Zwei Dialoge fehlen weiter.** Die Rückfrage vor dem Schreiben und das
+   Über-Fenster sind nach wie vor nur per Klick erreichbar. Gleiche Form der
+   Lösung wie bei `--new`: ein Argument, das eines öffnet.
 3. **Der Sicherungen-Reiter ist voller Testreste.** 1274 der 1289 Verzeichnisse
    unter `%LOCALAPPDATA%\ctxmenu\backups` stammen aus Testläufen.
    `08-sicherungen` zeigt sie über den echten Sicherungen. Vor dem Release-Satz

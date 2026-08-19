@@ -341,6 +341,8 @@ ctxmenu favourite add --name "PNG verkleinern"
 ctxmenu favourite place <kennung> --ext .png
 ctxmenu favourite run <kennung> <datei>  ausführen wie ein Klick
 ctxmenu --tab dienste                    Fenster auf einem bestimmten Reiter öffnen
+ctxmenu --service snapotter              Dienste-Reiter, dieser Dienst gewählt und geladen
+ctxmenu --new directory                  Editor für einen neuen Eintrag, mit Beispiel gefüllt
 ctxmenu --lang en scan                   diesen Lauf auf Englisch, Einstellung bleibt
 ctxmenu --version                        welche Fassung das ist
 ctxmenu --help                           die vollständige Liste

@@ -81,6 +81,19 @@ pub struct Start {
     /// be measured at all: without a selection it shows nothing, and its one
     /// real fault was invisible from outside.
     pub ext: Option<String>,
+    /// The service to select and load, by the `id` it carries in
+    /// `services.json`. The same reason as `ext`, on the tab that needed it
+    /// most: without a selection the services tab shows one name on the left
+    /// and a sentence asking for a click on the right, which is a picture of
+    /// nothing. The id and not a position in the list, because a position
+    /// moves as soon as a service is added and an id never does.
+    pub service: Option<String>,
+    /// Open the editor on a new entry in this category, filled in with
+    /// [`create::example_entry`]. The one form this program has offered itself
+    /// to a right-click and to nothing else, so it could not be photographed
+    /// at all. Opening it writes nothing: the button inside it still has to be
+    /// pressed.
+    pub new_entry: Option<Category>,
     /// Flip the system theme once while running and report whether the window
     /// followed. Restores the setting afterwards.
     pub theme_probe: bool,
@@ -1498,6 +1511,35 @@ impl App {
         }
 
         app.reload_backups();
+
+        // `--service <id>`: the same two steps a click on the name takes, so
+        // the tab opens with a service selected and its tools on their way in.
+        // An id nobody knows is reported and nothing else: the window stays
+        // open, on the services tab, with the message where the fetch error
+        // would be — and a run that cannot reach the service at all ends in
+        // the same place, through `poll_services`.
+        if let Some(id) = start.service.as_deref() {
+            match service::index_of(&app.services, id) {
+                Ok(index) => app.select_service(index, &cc.egui_ctx),
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    // On the console as well as in the window: this argument
+                    // is used by scripts, and a script reads stderr rather
+                    // than a panel.
+                    crate::errln!("{message}");
+                    app.service_error = Some(message);
+                }
+            }
+        }
+
+        // `--new <category>`: the editor, filled in with the example. Opening
+        // a dialog is all it does; every path that writes runs from a button
+        // inside the form.
+        if let Some(category) = start.new_entry.clone() {
+            let example = create::example_entry(category, app.settings.language);
+            app.open_editor(example);
+        }
+
         app
     }
 
@@ -3286,6 +3328,19 @@ impl App {
         (self.services, self.service_error) = services_from_load(service::load());
     }
 
+    /// What clicking a service's name does: mark it, and go and read what it
+    /// offers.
+    ///
+    /// One function rather than the two lines at each call site, because
+    /// `--service` has to do exactly what the click does — a second copy that
+    /// set the focus and forgot the fetch would show a selected service with
+    /// an empty panel beside it, which is the picture this argument exists to
+    /// get rid of.
+    fn select_service(&mut self, index: usize, ctx: &egui::Context) {
+        self.service_focus = Some(index);
+        self.start_service_fetch(index, ctx);
+    }
+
     /// Fetches one service's description on a thread.
     ///
     /// On a thread because it is six requests in the worst case over a network
@@ -3453,9 +3508,8 @@ impl App {
             }
         }
         if let Some(index) = fetch {
-            self.service_focus = Some(index);
             let ctx = ui.ctx().clone();
-            self.start_service_fetch(index, &ctx);
+            self.select_service(index, &ctx);
         }
     }
 
@@ -5554,17 +5608,31 @@ impl App {
     /// The one path every "new entry" reaches: the button in the tab row, and
     /// the right-click menus in all three trees and under the table.
     fn open_editor_for(&mut self, category: Category) {
+        let category = creatable_category(&category).unwrap_or_else(|| self.category_for_new());
+        self.open_editor(NewEntry {
+            category,
+            key_name: String::new(),
+            display_name: String::new(),
+            command: String::new(),
+            icon: None,
+            position: None,
+            extended: false,
+            children: Vec::new(),
+        });
+    }
+
+    /// Puts a form on screen, however it was filled in.
+    ///
+    /// Empty from a right-click, filled in from a dropped file, filled in with
+    /// an example from `--new`: three ways to arrive, one dialog. The record
+    /// of earlier entries is read here and once — it is a file, and no file
+    /// belongs in the frame path.
+    ///
+    /// Nothing is written. `create::write` is reached from the button inside
+    /// the form and from nowhere else.
+    fn open_editor(&mut self, entry: NewEntry) {
         self.dialog = Some(Dialog::Editor {
-            entry: Box::new(NewEntry {
-                category: creatable_category(&category).unwrap_or_else(|| self.category_for_new()),
-                key_name: String::new(),
-                display_name: String::new(),
-                command: String::new(),
-                icon: None,
-                position: None,
-                extended: false,
-                children: Vec::new(),
-            }),
+            entry: Box::new(entry),
             recorded: create::recorded().unwrap_or_default(),
             existing: None,
         });
@@ -5615,11 +5683,7 @@ impl App {
             .and_then(|category| creatable_category(&category))
             .unwrap_or_else(|| self.category_for_new());
 
-        self.dialog = Some(Dialog::Editor {
-            entry: Box::new(create::from_dropped_file(&path, category)),
-            recorded: create::recorded().unwrap_or_default(),
-            existing: None,
-        });
+        self.open_editor(create::from_dropped_file(&path, category));
     }
 
     /// File types, grouped, with the number of entries each one adds.
