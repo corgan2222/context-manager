@@ -381,6 +381,20 @@ not exist here, 15 of them in the empty 32-bit view.
 
 The log is linked from the About window.
 
+One more file is written, and it is the only one outside that folder:
+
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\ctxmenu.lnk
+```
+
+A shortcut to the running `.exe`, created the first time a favourite reports
+its result. Windows only draws a notification of a desktop program on screen
+if a Start menu shortcut carries the same identifier the notification was sent
+under; without it the message is filed silently. Delete it and nothing breaks:
+the result of every favourite still reaches the Action Center either way, and
+the next run writes the shortcut again. It is also rewritten whenever the
+`.exe` moves, so the entry never points at a file that is no longer there.
+
 The keys in `favourites.json` and `services.json` sit there in plain text,
 protected only by the permissions on your user profile, the same as in an
 `.npmrc` or a `.gitconfig`. Anyone who does not want that should use a
