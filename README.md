@@ -1,4 +1,4 @@
-# ctxmenu: Context Menu Manager
+# ctxmenu: Windows Context Menu Manager
 
 *[Deutsche Fassung](docs/README_DE.md)*
 
@@ -13,7 +13,7 @@ It also works the other way: custom entries, submenus, a toolbox of programs
 and web services, all the way to **two hundred menu entries from a single
 address** when a web application describes itself through OpenAPI.
 
-Windows 10 and 11, 64-bit. A single `.exe` of 6.5 MB, no installation, no
+Windows 10 and 11, 64-bit. A single `.exe` written in Rust, no installation, no
 runtime library, no background service.
 
 *Interface in German and English, switchable at runtime; this README is

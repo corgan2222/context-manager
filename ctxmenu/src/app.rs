@@ -3637,7 +3637,7 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (tag, indices) in groups {
+                for (position, (tag, indices)) in groups.into_iter().enumerate() {
                     let picked = indices
                         .iter()
                         .filter(|index| self.service_picked.contains(index))
@@ -3649,7 +3649,12 @@ impl App {
 
                     egui::CollapsingHeader::new(title)
                         .id_salt(("svc-group", &tag))
-                        .default_open(false)
+                        // The first group open, the rest closed, the way the
+                        // file type tab already opens Images. Seven closed
+                        // headers and nothing else was the whole panel after a
+                        // service loaded: a reader saw that 180 tools exist
+                        // without seeing a single one of them.
+                        .default_open(position == 0)
                         .show(ui, |ui| {
                             // A whole category at once: the reason for grouping
                             // in the first place.

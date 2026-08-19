@@ -1,4 +1,4 @@
-# ctxmenu — Kontextmenü-Manager
+# ctxmenu: Windows-Kontextmenü-Manager
 
 *[English version](../README.md)*
 
@@ -13,7 +13,7 @@ Werkzeugkasten aus Programmen und Web-Diensten — bis hin zu **zweihundert
 Menüeinträgen aus einer einzigen Adresse**, wenn eine Webanwendung sich selbst
 über OpenAPI beschreibt.
 
-Windows 10 und 11, 64 Bit. Eine einzelne `.exe` von 6,5 MB, ohne Installation,
+Windows 10 und 11, 64 Bit. Eine einzelne `.exe`, in Rust geschrieben, ohne Installation,
 ohne Laufzeitbibliothek, ohne Dienst im Hintergrund.
 
 *A manager for the Windows context menu. German and English interface,

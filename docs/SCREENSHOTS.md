@@ -23,8 +23,9 @@ Output goes to `tmp\screenshots\`. That folder is in `.gitignore`: the pictures
 are artefacts, and the ones a release actually uses get copied to `docs\images\`
 by hand.
 
-Runtime is about four minutes for all eighteen, because each picture starts the
-program from scratch.
+Runtime is 56 seconds for the ten English pictures, measured on 2026-08-19,
+because each one starts the program from scratch. Both languages take twice
+that.
 
 ## What it photographs
 
@@ -32,23 +33,33 @@ Nine views, in the order a reader should meet the program.
 
 | Name | Started with | For |
 |---|---|---|
-| `01-uebersicht` | `--tab categories` | The one picture that has to say what this is |
-| `02-eintrag-im-detail` | `--tab categories --search 7-Zip` | Registry path, scope, program, flags |
-| `03-suche` | `--tab categories --search git` | Finding the one entry that bothers you |
-| `04-dateitypen` | `--tab filetypes --ext .png` | The resolution chain, which no other tool shows |
-| `05-programme` | `--tab programs` | Twenty keys of one program as one row |
-| `06-favoriten` | `--tab favourites` | Programs and web tools the user put there |
-| `07-dienste` | `--tab services` | An OpenAPI description turned into entries |
-| `08-sicherungen` | `--tab backups` | The promise that makes the rest safe to use |
-| `09-viele-eintraege` | `--synthetic 2000` | The performance claim, with the row count visible |
+| `01-overview` | `--tab categories` | The one picture that has to say what this is |
+| `02-entry-detail` | `--tab categories --search 7-Zip` | Registry path, scope, program, flags |
+| `03-search` | `--tab categories --search git` | Finding the one entry that bothers you |
+| `04-new-entry` | `--new directory` | The form that puts a program of your own into the menu |
+| `05-file-types` | `--tab filetypes --ext .png` | The resolution chain, which no other tool shows |
+| `06-programs` | `--tab programs` | Twenty keys of one program as one row |
+| `07-favourites` | `--tab favourites` | Programs and web tools the user put there |
+| `08-services` | `--service snapotter` | An OpenAPI description turned into entries, with the tools on screen |
+| `09-backups` | `--tab backups` | The promise that makes the rest safe to use |
+| `10-many-entries` | `--tab categories --synthetic 2000` | The performance claim, with the row count visible |
 
 The list lives at the top of the script as data, with a `Use` line per entry.
 Adding a view means adding four lines there, nothing else.
 
 ## What makes the pictures repeatable
 
-Measured across two runs with everything below in place: **every picture
-identical to the pixel.**
+Measured on 2026-08-19 with everything below in place: **ten out of ten
+identical to the pixel**, including `08-services`, which fetches its tool list
+over HTTP.
+
+One thing had to be fixed before that number meant anything. This build of
+ImageMagick is Q16-HDRI and reports `-metric AE` as a fraction rather than a
+count, so two runs of the same shot came back as `0.294118 (8.4501e-08)` with
+the status bar and the scroll bar already cut away. The old check treated
+anything above zero as a change and then printed it as "0 pixels different":
+a phantom difference on every run, and a comparison nobody would keep
+trusting. The threshold is one whole pixel now.
 
 * **`--window 2400x1500`** fixes the size, so nothing reflows between runs.
   Physical pixels: at 150% scaling this machine turns that into 1600x1000
@@ -65,8 +76,9 @@ identical to the pixel.**
   does not matter. The generator is deterministic: same number, same rows, on
   any machine.
 * **Waiting for the right line on stderr.** Views with a table report
-  `startup_to_first_list_ms`; the four without one (programs, favourites,
-  services, backups) never do and report only `window_placed`. Each entry says
+  `startup_to_first_list_ms`; the five without one (the new-entry dialog,
+  programs, favourites, services, backups) never do and report only
+  `window_placed`. Each entry says
   which line to wait for, then waits again for the icon worker.
 * **Two strips are cut away before comparing**, because both change on their
   own and would report a difference on every picture:
@@ -104,28 +116,36 @@ literal `"de,en"` and fails its `ValidateSet`.
 
 ## What still needs work before a release
 
-1. **The shot list does not use the two new arguments yet.** Since 2026-08-19
-   there is `--service <id>`, which selects a service and loads its tool list
-   the way `--ext` preselects an extension, and `--new <category>`, which opens
-   the editor filled in with an example. `$shots` still uses neither:
-   `07-dienste` starts with `--tab services` and therefore still shows "pick a
-   service" on the right. Switching that entry over needs an id out of one's own
-   `services.json` and a service that answers — otherwise the picture carries
-   the error message instead of the tools.
-2. **Two dialogs are still out of reach.** The confirmation before a write and
+1. **German is switched off, and the set is English only.** `-Languages`
+   defaults to `en` while the layout is still being worked on, which halves the
+   runtime. Every title in `$shots` is still written in both, so
+   `-Languages de,en` gives the full set back. Turn it on again for the release
+   set, and then look at the German pictures: German words are longer, and a
+   column that fits in English can still wrap.
+2. **`08-services` depends on something outside this machine.** It is the only
+   shot that does. `--service snapotter` fetches the description over HTTP, and
+   if the service does not answer, the picture carries the red error line
+   instead of the tools; the id has to exist in one's own `services.json` as
+   well. Anyone reproducing this set needs that service reachable, or has to
+   swap the entry for one of their own.
+3. **`--new` takes a category, not a file extension.** `--new ext:.png` is
+   refused, because `Category::from_slug` also feeds `create --category`, which
+   writes, and widening it would widen a write path for the sake of a picture.
+   So the entry-creation shot can only show one of the seven base categories.
+4. **Two dialogs are still out of reach.** The confirmation before a write and
    the About window are reachable only by clicking. Same shape of fix as
    `--new`: an argument that opens one.
-3. **The backups tab is full of test leftovers.** 1274 of the 1289 directories
-   under `%LOCALAPPDATA%\ctxmenu\backups` came from test runs. `08-sicherungen`
+5. **The backups tab is full of test leftovers.** 1274 of the 1289 directories
+   under `%LOCALAPPDATA%\ctxmenu\backups` came from test runs. `09-backups`
    shows them above the user's real backups. Run
    `tools\backups_aufraeumen.ps1 -Apply` before taking the release set.
-4. **Nothing is annotated.** For the README, some pictures want a callout or a
+6. **Nothing is annotated.** For the README, some pictures want a callout or a
    cropped detail. ImageMagick is installed and the script already uses it for
    the comparison, so `magick ... -annotate` is a small step from here.
-5. **The video is not started.** ffmpeg is installed. The pieces for a
+7. **The video is not started.** ffmpeg is installed. The pieces for a
    walkthrough are here (deterministic states, fixed window, both languages),
    but nothing yet drives a sequence and records it. The natural shape is a
    list of steps like the `$shots` list, with a duration per step.
-6. **Only this machine.** Everything above was measured on four 3840x2160
+8. **Only this machine.** Everything above was measured on four 3840x2160
    screens at 150%. A run on a single 1920x1080 screen at 100% has not been
    tried, and `--window 2400x1500` does not fit there.

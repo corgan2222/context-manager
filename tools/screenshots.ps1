@@ -1,6 +1,7 @@
-<#
+﻿<#
 .SYNOPSIS
-    Takes the same set of screenshots every time, in German and in English.
+    Takes the same set of screenshots every time. English only by default;
+    German is a switch away and comes back for the release set.
 
 .DESCRIPTION
     For the README on GitHub and as raw material for a walkthrough video.
@@ -46,7 +47,10 @@
     Where the pictures go. Default tmp\screenshots.
 
 .PARAMETER Languages
-    Which languages to shoot. Default both.
+    Which languages to shoot. Default English alone, because that is what the
+    README on GitHub shows and shooting one language halves the runtime while
+    the layout is still being worked on. Every title below is written in both,
+    so -Languages de,en gives the full set back without another edit.
 
 .PARAMETER Only
     Shoot only the entries whose name matches this wildcard.
@@ -57,14 +61,17 @@
 
 .EXAMPLE
     pwsh tools\screenshots.ps1
-    pwsh tools\screenshots.ps1 -Only programs -Languages de
+    pwsh tools\screenshots.ps1 -Only '08-*'
+    pwsh tools\screenshots.ps1 -Languages de,en
     pwsh tools\screenshots.ps1 -Compare
 #>
 [CmdletBinding()]
 param(
     [string]$Exe = 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe',
     [string]$Out = 'tmp\screenshots',
-    [ValidateSet('de', 'en')][string[]]$Languages = @('de', 'en'),
+    # English alone by default. The German titles are still in the list, so
+    # the release set is one -Languages de,en away.
+    [ValidateSet('de', 'en')][string[]]$Languages = @('en'),
     [string]$Only = '*',
     # In PHYSICAL pixels. At 150% scaling this machine turns 2400x1500 into
     # 1600x1000 logical points, which is what the interface was laid out for.
@@ -115,35 +122,47 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
 # ---------------------------------------------------------------------------
 $shots = @(
     @{
-        Name  = '01-uebersicht'
+        Name  = '01-overview'
         Title = @{ de = 'Alle Einträge auf einen Blick'; en = 'Every entry at a glance' }
         Use   = 'README top: the one picture that has to say what this is'
         Args  = @('--tab', 'categories')
         Wait  = 2500
     }
     @{
-        Name  = '02-eintrag-im-detail'
+        Name  = '02-entry-detail'
         Title = @{ de = 'Ein Eintrag, aufgeschlüsselt'; en = 'One entry, taken apart' }
         Use   = 'README: registry path, scope, program, what the flags mean'
         Args  = @('--tab', 'categories', '--search', '7-Zip')
         Wait  = 2500
     }
     @{
-        Name  = '03-suche'
+        Name  = '03-search'
         Title = @{ de = 'Suchen und filtern'; en = 'Search and filter' }
         Use   = 'README + video: how you find the one entry that bothers you'
         Args  = @('--tab', 'categories', '--search', 'git')
         Wait  = 2000
     }
     @{
-        Name  = '04-dateitypen'
+        Name  = '04-new-entry'
+        Title = @{ de = 'Einen eigenen Eintrag anlegen'; en = 'Adding an entry of your own' }
+        Use   = 'README: the form that puts a program of your own into the menu'
+        # Opens the editor straight away, filled with an example. Nothing is
+        # written: the dialog waits for a click this script never makes.
+        Args  = @('--new', 'directory')
+        Wait  = 4000
+        # A dialog over the table. Waiting for window_placed rather than for
+        # the list keeps this working if the dialog ever stops loading one.
+        Ready = 'window_placed'
+    }
+    @{
+        Name  = '05-file-types'
         Title = @{ de = 'Wo ein Dateityp seine Einträge herhat'; en = 'Where a file type gets its entries' }
         Use   = 'README: the resolution chain, the part no other tool shows'
         Args  = @('--tab', 'filetypes', '--ext', '.png')
         Wait  = 3000
     }
     @{
-        Name  = '05-programme'
+        Name  = '06-programs'
         Title = @{ de = 'Nach Programm gruppiert'; en = 'Grouped by program' }
         Use   = 'README: twenty keys of one program as one row, with its icon'
         Args  = @('--tab', 'programs')
@@ -152,7 +171,7 @@ $shots = @(
         Ready = 'window_placed'
     }
     @{
-        Name  = '06-favoriten'
+        Name  = '07-favourites'
         Title = @{ de = 'Eigene Werkzeuge im Menü'; en = 'Your own tools in the menu' }
         Use   = 'README: programs and web tools the user put there'
         Args  = @('--tab', 'favourites')
@@ -161,16 +180,21 @@ $shots = @(
         Ready = 'window_placed'
     }
     @{
-        Name  = '07-dienste'
+        Name  = '08-services'
         Title = @{ de = 'Ein Webdienst wird zum Menü'; en = 'A web service becomes a menu' }
         Use   = 'README headline: an OpenAPI description turned into entries'
-        Args  = @('--tab', 'services')
-        Wait  = 4000
-        # No entry table here, so no startup_to_first_list_ms is ever printed.
+        # With the service picked, not just the tab open. Without it the panel
+        # says "pick a service on the left", and the tab carrying this
+        # program's most distinctive feature had its least useful picture.
+        Args  = @('--service', 'snapotter')
+        # The longest wait in the list, and the only one that depends on
+        # something outside this machine: the description is fetched over HTTP
+        # and the tools are grouped once it arrives.
+        Wait  = 8000
         Ready = 'window_placed'
     }
     @{
-        Name  = '08-sicherungen'
+        Name  = '09-backups'
         Title = @{ de = 'Jede Änderung ist gesichert'; en = 'Every change is backed up' }
         Use   = 'README: the promise that makes the rest safe to use'
         Args  = @('--tab', 'backups')
@@ -179,7 +203,7 @@ $shots = @(
         Ready = 'window_placed'
     }
     @{
-        Name  = '09-viele-eintraege'
+        Name  = '10-many-entries'
         Title = @{ de = 'Auch mit tausenden Zeilen flüssig'; en = 'Still smooth at thousands of rows' }
         Use   = 'README: the performance claim, with the row count visible'
         Args  = @('--tab', 'categories', '--synthetic', '2000')
@@ -426,7 +450,13 @@ if ($Compare) {
         # "3065" or "3065.24 (0.000874784)" depending on build: take the leading number.
         $pixels = if ($out -match '(\d+(?:\.\d+)?)') { [double]$Matches[1] } else { -1 }
 
-        if ($pixels -le 0) {
+        # Under one whole pixel there is nothing anyone could see. This build
+        # of ImageMagick is Q16-HDRI and reports AE as a fraction rather than
+        # a count: measured between two runs of the same shot, with the status
+        # bar and the scroll bar already cut away, "0.294118 (8.4501e-08)".
+        # The old check (> 0) called that a change and then printed it as
+        # "0 Bildpunkte anders", so every run reported one phantom difference.
+        if ($pixels -lt 1) {
             Write-Host ("  {0,-28} gleich / identical" -f $fresh.Name) -ForegroundColor Green
             Remove-Item $diffFile -ErrorAction SilentlyContinue
         }
