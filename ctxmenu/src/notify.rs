@@ -34,12 +34,12 @@
 //! it is still there the next time somebody opens the Action Center. That
 //! single difference is the reason for this rewrite.
 //!
-//! # No registered AppUserModelID is needed
+//! # An invented AppUserModelID gets the message stored, and no further
 //!
 //! The documented route to a toast wants an AUMID, and an AUMID is usually
 //! earned with a shortcut in the Start menu or a packaged identity -- neither
-//! of which a single portable `.exe` has, or should acquire. It turns out not
-//! to matter. Measured on this machine (Windows 10 Pro 19045) by counting
+//! of which a single portable `.exe` has. For *storage* it turns out not to
+//! matter. Measured on this machine (Windows 10 Pro 19045) by counting
 //! `ToastNotificationManager::History::GetHistory(aumid)` before and after:
 //!
 //! ```text
@@ -48,32 +48,58 @@
 //! ```
 //!
 //! `CreateToastNotifierWithId` takes an invented identifier, and the toast
-//! reaches the store just the same. Nothing is installed for this to work.
+//! reaches the store just the same.
 //!
-//! What the invented identifier does *not* bring along is a name. Read back
-//! through `UserNotificationListener`, the toasts filed under an unregistered
-//! AUMID carry `DisplayName = ""` -- the Action Center has nothing to write
-//! above the message. Hence [`name_the_sender`], and see there for why one
-//! small registry value is worth it.
+//! For *appearing on screen* it does not do. Measured on 2026-08-19 with Focus
+//! Assist off, `ToastEnabled` at 1 and the per-app switches written by hand:
+//! the same toast never drew a banner under this identifier and did draw one
+//! under PowerShell's. What PowerShell has and an unregistered identifier does
+//! not is a Start menu shortcut naming it in `System.AppUserModel.ID`. Hence
+//! [`crate::startmenu`], which writes exactly that one file -- and see there
+//! for the price, for how long the shell takes to notice, and for what it
+//! keeps afterwards.
+//!
+//! What the invented identifier does *not* bring along either is a name. Read
+//! back through `UserNotificationListener`, the toasts filed under an
+//! unregistered AUMID carry `DisplayName = ""` -- the Action Center has
+//! nothing to write above the message. Hence [`name_the_sender`], and see
+//! there for why one small registry value is worth it.
 //!
 //! # COM initialises itself here
 //!
-//! Nothing in this program calls `CoInitializeEx` or `RoInitialize`, and
-//! nothing needs to: `windows_core`'s `load_factory` asks
+//! Nothing on the WinRT side of this file calls `CoInitializeEx` or
+//! `RoInitialize`, and nothing needs to: `windows_core`'s `load_factory` asks
 //! `RoGetActivationFactory` for the class, and on `CO_E_NOTINITIALIZED` it
 //! calls `CoIncrementMTAUsage` itself and retries. The first WinRT call in the
 //! process puts the process into the multithreaded apartment, which is where
 //! `ToastNotificationManager` wants to be anyway. An apartment call of our own
 //! could only make that worse -- a thread already in an STA cannot be moved,
-//! and in GUI mode `run_native` owns the main thread.
+//! and in GUI mode `run_native` owns the main thread. [`crate::startmenu`]
+//! does need a real apartment for `IShellLink`, and gives it back before
+//! returning, so by the time the lines below run the thread is again in none.
 //!
-//! # The process may exit as soon as `Show` returns
+//! # `Show` returns before the banner has been drawn
 //!
-//! `Show` is a synchronous call into the notification platform: by the time it
-//! comes back, the toast is stored and no longer this process's business.
-//! Hence no message pump here, no artificial sleep, and nothing that could
-//! change an `ExitCode` or leave a process behind -- the same property the
-//! balloon had, kept for the same reason.
+//! By the time `Show` comes back the toast is *stored*: the history has it and
+//! the Action Center will show it whenever somebody looks. Drawing the banner
+//! is not finished at that point, and a process that ends here loses it.
+//! Measured on 2026-08-20 by firing the same toast from a test process that
+//! was terminated the instant `Show` returned:
+//!
+//! ```text
+//! terminated straight after Show           history grew, no banner   (2 of 2)
+//! one more platform call, then terminated  history grew, banner      (2 of 2)
+//! ```
+//!
+//! Hence the discarded `Setting()` in [`show`]. It is not a sleep and not a
+//! guess at a duration: it is one synchronous question to the same service,
+//! and the answer cannot come back before the service has worked through what
+//! `Show` handed it. `--favourite` is exactly the process this saves -- after
+//! the toast it does nothing but return from `main`.
+//!
+//! Still no message pump, no artificial sleep, and nothing that could change
+//! an `ExitCode` or leave a process behind -- the properties the balloon had,
+//! kept for the same reasons.
 
 use anyhow::{Context as _, Result};
 use windows::Data::Xml::Dom::XmlDocument;
@@ -132,6 +158,12 @@ const TEXT_LIMIT: usize = 512;
 pub fn show(title: &str, text: &str, level: Level) -> Result<()> {
     name_the_sender();
 
+    // The other half of the same identity: the registry value above gives the
+    // sender a name, this gives it the registration Windows wants before it
+    // will draw a banner. Both are decoration on the delivery and neither may
+    // fail loudly -- see there.
+    crate::startmenu::ensure(AUMID);
+
     let document = XmlDocument::new().context("\x1eXmlDocument\x1fXmlDocument\x1d")?;
     document
         .LoadXml(&HSTRING::from(payload(title, text, level)))
@@ -142,10 +174,18 @@ pub fn show(title: &str, text: &str, level: Level) -> Result<()> {
 
     // `WithId`, not the bare `CreateToastNotifier`: the argument-less one asks
     // the process for its own AppUserModelID, and a portable `.exe` has none.
-    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
-        .context("\x1eCreateToastNotifier\x1fCreateToastNotifier\x1d")?
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
+        .context("\x1eCreateToastNotifier\x1fCreateToastNotifier\x1d")?;
+
+    notifier
         .Show(&toast)
         .context("\x1eToast abgelehnt\x1ftoast refused\x1d")?;
+
+    // One more question to the platform, and the answer is thrown away: what
+    // is wanted is the round trip. See the module documentation -- without it
+    // this process is gone before the banner is drawn, and the message reaches
+    // the Action Center and nothing else.
+    let _ = notifier.Setting();
 
     Ok(())
 }

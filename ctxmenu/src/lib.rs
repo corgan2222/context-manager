@@ -29,6 +29,7 @@ pub mod registry;
 pub mod service;
 pub mod settings;
 pub mod smoke;
+pub mod startmenu;
 pub mod synthetic;
 pub mod theme;
 pub mod update;

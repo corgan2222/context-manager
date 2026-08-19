@@ -63,6 +63,14 @@ features = [
 
     "Win32_Foundation",
     "Win32_Globalization",             # GetUserDefaultUILanguage
+    # The Start menu shortcut that makes a toast appear on screen rather than
+    # only in the Action Center: IShellLinkW and IPersistFile write the file,
+    # IPropertyStore puts the AppUserModelID on it, and a PROPVARIANT is how
+    # that one property travels. See ctxmenu/src/startmenu.rs.
+    "Win32_System_Com",                # CoInitializeEx, CoCreateInstance, IPersistFile
+    "Win32_System_Com_StructuredStorage", # PROPVARIANT
+    "Win32_System_Variant",            # VT_LPWSTR
+    "Win32_UI_Shell_PropertiesSystem", # IPropertyStore
     "Win32_Graphics_Dwm",              # dark title bar
     "Win32_Graphics_Gdi",              # icon extraction: DIB, DC, bitmaps
     "Win32_Networking_WinHttp",        # web tools: send a file to a URL

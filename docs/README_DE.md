@@ -375,6 +375,21 @@ auf dieser Maschine 26 von 46 Schlüsseln, 1,2 MB, unter einer Sekunde. Die
 
 Das Protokoll ist im Über-Fenster verlinkt.
 
+Eine Datei kommt noch dazu, und sie ist die einzige außerhalb dieses Ordners:
+
+```
+%APPDATA%\Microsoft\Windows\Startmenü\Programme\ctxmenu.lnk
+```
+
+Eine Verknüpfung auf die laufende `.exe`, angelegt beim ersten Favoriten, der
+sein Ergebnis meldet. Windows zeigt die Meldung eines Desktop-Programms nur
+dann auf dem Bildschirm, wenn eine Verknüpfung im Startmenü dieselbe Kennung
+trägt, unter der die Meldung verschickt wurde; ohne sie wird sie stillschweigend
+abgelegt. Löschen Sie sie, geht nichts kaputt: Das Ergebnis jedes Favoriten
+landet so oder so im Info-Center, und der nächste Lauf legt die Verknüpfung
+wieder an. Neu geschrieben wird sie auch, wenn die `.exe` umzieht, damit der
+Eintrag nie auf eine Datei zeigt, die es nicht mehr gibt.
+
 Die Schlüssel in `favourites.json` und `services.json` liegen dort im Klartext,
 geschützt nur durch die Rechte auf Ihrem Benutzerprofil — wie in einer
 `.npmrc` oder `.gitconfig` auch. Wer das nicht möchte, benutzt für dieses
