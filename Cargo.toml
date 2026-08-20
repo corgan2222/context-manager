@@ -17,8 +17,15 @@ resolver = "3"
 # is now followed to its result, which turned the services tab from working in
 # two clicks out of six into working in six, plus --lang and --window on the
 # command line. New abilities; nothing stored changed shape, and a favourite
-# written by 1.1.0 still loads.
-version = "1.2.0"
+# written by 1.1.0 still loads. 1.3.0 on 2026-08-20: --service and --new open
+# a state that used to need a mouse click, the console speaks English where it
+# only spoke German, and a favourite reports through a Windows notification
+# instead of a modal window -- ten selected files used to mean ten stacked
+# dialogs. New abilities and a changed channel, but nothing stored changed
+# shape. What is new on disk is one shortcut in the Start menu, which is what
+# makes Windows draw the notification at all, and the program writes it again
+# by itself if the exe moves.
+version = "1.3.0"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
