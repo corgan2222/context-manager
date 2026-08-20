@@ -1058,8 +1058,8 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
 ///
 /// [`crate::registry::plan::Action::label`] stays German, and deliberately so:
 /// it names the backup directory under `%LOCALAPPDATA%\ctxmenu\backups`, where
-/// directories written by earlier versions have to stay recognisable and
-/// `tools\backups_aufraeumen.ps1` tells real backups from test ones by that
+/// directories written by earlier versions have to stay recognisable and a
+/// maintenance script tells real backups from test ones by that
 /// name. The window keeps a translation of its own for the same reason
 /// (`app::action_label`); this is the console's.
 fn action_label(action: &crate::registry::plan::Action) -> &'static str {

@@ -101,7 +101,8 @@ The most delicate part, so the strictest rules apply:
   as a single entry beneath a Classes root shouldn't be constructible at
   all.
 - **Write attempts against `HKLM` belong in a throwaway VM**, not on the
-  development machine. A script under `tools\` sets one up.
+  development machine. Hyper-V with an unattended install is enough; the
+  tests that matter are the ones that write.
 
 ## What tends to get rejected
 

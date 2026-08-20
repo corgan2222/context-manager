@@ -148,7 +148,7 @@ jobs:
       - name: Sign the checksums
         shell: pwsh
         env:
-          # The private half of the pair `tools\new-release-key.ps1` made. The
+          # The private half of the release signing pair. The
           # public half is committed at ctxmenu\release-signing.pub.pem and is
           # compiled into every binary, which is what lets an installed copy
           # tell a release of this project from a release of somebody who got
@@ -161,8 +161,10 @@ jobs:
             throw ('the RELEASE_SIGNING_KEY secret is not set. Every released copy of ctxmenu ' +
               'refuses an update whose checksums.txt is not signed, so a release built without ' +
               'this secret is one nobody can install -- which is why this fails here rather than ' +
-              'publishing it. Create the pair with tools\new-release-key.ps1 and paste the ' +
-              'private half into the repository secret of that name.')
+              'publishing it. Generate an RSA-4096 pair, paste the private half into the ' +
+              'repository secret of that name, and commit the public half to ' +
+              'ctxmenu\release-signing.pub.pem. Replacing an existing pair takes self-update ' +
+              'away from every copy already shipped.')
           }
 
           $checksums = 'release-assets\checksums.txt'
