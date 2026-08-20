@@ -82,11 +82,16 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      # `files` rather than `types: [rust]`: a dependency bump touches
+      # Cargo.toml and no .rs at all, and that is exactly the change worth
+      # compiling before it leaves. A push that touches none of these skips
+      # both hooks, which is the point -- editing the README should not cost a
+      # minute.
       - id: cargo-clippy
         name: cargo clippy -D warnings
         language: system
         entry: cargo clippy --all-targets -- -D warnings
-        types: [rust]
+        files: '(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^\.cargo/)'
         pass_filenames: false
         stages: [pre-push]
 
@@ -94,6 +99,6 @@ repos:
         name: cargo test
         language: system
         entry: cargo test
-        types: [rust]
+        files: '(\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^\.cargo/)'
         pass_filenames: false
         stages: [pre-push]
