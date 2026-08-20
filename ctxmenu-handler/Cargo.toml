@@ -1,0 +1,41 @@
+# The IExplorerCommand handler behind ctxmenu's entries in the new
+# Windows 11 menu. A separate crate because it is a DLL the shell loads,
+# not part of the window: it must stay small, start fast, and never pull
+# the interface stack into dllhost.
+[package]
+name = "ctxmenu-handler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows 11 context menu handler for ctxmenu"
+
+[lib]
+name = "ctxmenu_handler"
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+windows-registry = { workspace = true }
+
+[dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",                # CreateProcessW's attribute parameters
+    "Win32_System_Com",
+    "Win32_System_Environment",
+    "Win32_System_Registry",         # SHELLEXECUTEINFOW carries an HKEY
+    "Win32_System_SystemServices",   # SFGAO_FOLDER
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",  # SW_SHOWNORMAL for ShellExecuteExW
+]
+
+# The #[implement] macro expands to ::windows_core paths, so the crate has
+# to be a direct dependency, not only windows' own.
+[dependencies.windows-core]
+version = "0.62"

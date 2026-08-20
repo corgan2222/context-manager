@@ -12,7 +12,7 @@
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, Scope};
+use crate::model::{Category, ContextEntry, EntryKind, FileTypeInfo, ScanProgress, Scope};
 use crate::registry::paths::RegTarget;
 use crate::registry::scan::{self, ScanOptions};
 use crate::registry::{backup, write};
@@ -44,6 +44,15 @@ pub enum Command {
     Create(Box<crate::registry::create::NewEntry>),
     /// List what this tool created, from entries.json.
     Created,
+    /// List the entries of the new Windows 11 menu, read from package
+    /// manifests. Works on Windows 10 too — the packages exist there, only
+    /// the menu that reads them does not.
+    Packaged {
+        json: bool,
+    },
+    /// Install, remove or report the Windows 11 handler package that puts
+    /// this tool's own entries into the upper menu.
+    Handler(HandlerCommand),
     /// The tool box. Subcommands, because five of them as top level verbs
     /// would crowd out the ones that scan.
     Favourite(FavouriteCommand),
@@ -51,6 +60,12 @@ pub enum Command {
     Help,
     /// Which build this is — the question every bug report starts with.
     Version,
+}
+
+pub enum HandlerCommand {
+    Install,
+    Remove,
+    Status,
 }
 
 pub enum FavouriteCommand {
@@ -139,6 +154,10 @@ Verwendung:
                             Untereintrag, getrennt am ersten senkrechten
                             Strich; --sub-icon gilt dem davorstehenden --sub
   ctxmenu created           Selbst angelegte Einträge auflisten
+  ctxmenu packaged [--json] Einträge des neuen Windows-11-Menüs auflisten
+  ctxmenu handler [install|remove|status]
+                            Eigene Einträge auch oben im neuen Windows-11-Menü
+                            anbieten; install braucht einmal Adminrechte
   ctxmenu favourites        Favoriten auflisten
   ctxmenu favourite add --name <text>
         --exe <pfad> [--args <zeile>]                  Programm
@@ -220,6 +239,10 @@ Usage:
                             child, split at the first vertical bar; --sub-icon
                             applies to the --sub before it
   ctxmenu created           list entries created by this tool
+  ctxmenu packaged [--json]  list the entries of the new Windows 11 menu
+  ctxmenu handler [install|remove|status]
+                            offer own entries in the upper Windows 11 menu
+                            too; install needs admin rights once
   ctxmenu favourites        list favourites
   ctxmenu favourite add --name <text>
         --exe <path> [--args <line>]                   a program
@@ -409,6 +432,22 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             });
         }
         "created" => return Ok(Command::Created),
+        "packaged" => {
+            return Ok(Command::Packaged {
+                json: args[1..].iter().any(|arg| arg == "--json"),
+            });
+        }
+        "handler" => {
+            return Ok(Command::Handler(match args.get(1).map(String::as_str) {
+                Some("install") => HandlerCommand::Install,
+                Some("remove") => HandlerCommand::Remove,
+                Some("status") | None => HandlerCommand::Status,
+                Some(other) => bail!(
+                    "\x1ehandler kennt install, remove und status, nicht\
+                     \x1fhandler knows install, remove and status, not\x1d: {other}"
+                ),
+            }));
+        }
         "favourites" | "favoriten" => {
             return Ok(Command::Favourite(FavouriteCommand::List));
         }
@@ -652,6 +691,19 @@ fn creatable_slugs() -> String {
         .join(", ")
 }
 
+/// How many of the examined file types Windows actually knows.
+///
+/// `ScanResult::file_types` keeps one entry per requested extension,
+/// registered or not — "no entries" and "not looked at" must stay
+/// distinguishable — so the vector's length counts the walk. Only the
+/// resolution knows about registration.
+fn registered_file_types(file_types: &[FileTypeInfo]) -> usize {
+    file_types
+        .iter()
+        .filter(|info| info.resolution.registered)
+        .count()
+}
+
 pub fn run_scan(args: ScanArgs) -> Result<()> {
     let started = std::time::Instant::now();
 
@@ -699,7 +751,7 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
             "\x1e{walked} Dateitypen untersucht, {found} davon registriert\
               \x1f{walked} file types examined, {found} of them registered\x1d",
             walked = args.options.file_types.len(),
-            found = result.file_types.len()
+            found = registered_file_types(&result.file_types)
         );
     }
     crate::outln!();
@@ -1001,6 +1053,9 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
             target: target.clone(),
             action,
             clsid: None,
+            // The apply path reaches packaged entries only through the
+            // window; a hand-typed registry path never names one.
+            packaged: false,
         }],
     );
 
@@ -1137,6 +1192,94 @@ pub fn run_created() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// What the new Windows 11 menu shows, read the way `registry::packaged`
+/// reads it. The `--json` form is the acceptance path: the same call in the
+/// test VM, compared against what the menu really shows.
+pub fn run_packaged(json: bool) -> Result<()> {
+    let menu = crate::registry::packaged::scan();
+
+    if json {
+        crate::outln!("{}", serde_json::to_string_pretty(&menu)?);
+        return Ok(());
+    }
+
+    if menu.packages.is_empty() {
+        crate::outln!(
+            "\x1eKein Paket mit Menüeinträgen gefunden\
+             \x1fno package with menu entries found\x1d"
+        );
+        return Ok(());
+    }
+
+    for package in &menu.packages {
+        crate::outln!("{:<28} {}", package.display_name, package.full_name);
+        for verb in &package.verbs {
+            let state = if verb.blocked_machine {
+                "\x1egesperrt (Maschine)\x1fblocked (machine)\x1d"
+            } else if verb.blocked_user {
+                "\x1eausgeblendet\x1fhidden\x1d"
+            } else {
+                "\x1esichtbar\x1fvisible\x1d"
+            };
+            // The state comes last so its two-language form cannot skew the
+            // column widths; `console::line` picks the language on output.
+            crate::outln!(
+                "    {:<22} {:<28} {}",
+                verb.id,
+                verb.item_types.join(", "),
+                state
+            );
+        }
+    }
+    crate::outln!(
+        "\x1eÜbersprungen (kein Manifest lesbar): {}\
+         \x1fskipped (no readable manifest): {}\x1d",
+        menu.skipped,
+        menu.skipped
+    );
+    Ok(())
+}
+
+/// `ctxmenu handler install|remove|status` — the Windows 11 package that
+/// serves this tool's own entries to the upper menu.
+pub fn run_handler(what: HandlerCommand) -> Result<()> {
+    match what {
+        HandlerCommand::Status => {
+            crate::outln!(
+                "{}",
+                match crate::handler::is_installed() {
+                    true => {
+                        "\x1eEingerichtet: eigene Einträge erscheinen im neuen Menü\
+                         \x1finstalled: own entries appear in the new menu\x1d"
+                    }
+                    false => "\x1enicht eingerichtet\x1fnot installed\x1d",
+                }
+            );
+            Ok(())
+        }
+        HandlerCommand::Install => match crate::handler::install()? {
+            true => {
+                crate::outln!("\x1eEingerichtet\x1finstalled\x1d");
+                Ok(())
+            }
+            false => {
+                crate::outln!("\x1eAbgebrochen\x1fcancelled\x1d");
+                Ok(())
+            }
+        },
+        HandlerCommand::Remove => match crate::handler::remove()? {
+            true => {
+                crate::outln!("\x1eEntfernt\x1fremoved\x1d");
+                Ok(())
+            }
+            false => {
+                crate::outln!("\x1eAbgebrochen\x1fcancelled\x1d");
+                Ok(())
+            }
+        },
+    }
 }
 
 /// `ctxmenu favourite <was> …`
@@ -1589,7 +1732,7 @@ fn count_all(entries: &[ContextEntry]) -> usize {
         .iter()
         .map(|e| match &e.kind {
             EntryKind::Verb { sub_commands, .. } => 1 + count_all(sub_commands),
-            EntryKind::ShellEx { .. } => 1,
+            EntryKind::ShellEx { .. } | EntryKind::PackagedVerb { .. } => 1,
         })
         .sum()
 }
@@ -1599,6 +1742,7 @@ fn print_entry(entry: &ContextEntry, indent: usize) {
     let detail = match &entry.kind {
         EntryKind::Verb { command, .. } => command.clone().unwrap_or_else(|| "—".into()),
         EntryKind::ShellEx { clsid, .. } => clsid.clone(),
+        EntryKind::PackagedVerb { package_name, .. } => package_name.clone(),
     };
 
     crate::outln!(
@@ -2202,5 +2346,37 @@ mod tests {
         assert_eq!(truncate("kurz", 10), "kurz");
         assert_eq!(truncate("äöüäöüäöü", 4), "äöü…");
         assert_eq!(truncate("abcdef", 6), "abcdef");
+    }
+
+    /// `found = result.file_types.len()` reported every examined type as
+    /// registered, because the scan keeps unregistered extensions in the
+    /// tree on purpose. Regression guard for the count asking the
+    /// resolution instead.
+    #[test]
+    fn only_registered_file_types_are_counted() {
+        let info = |registered| FileTypeInfo {
+            group: crate::registry::filetypes::group_of(".ctxmenu_probe"),
+            resolution: crate::registry::filetypes::Resolution {
+                registered,
+                ..Default::default()
+            },
+            entry_indices: Vec::new(),
+        };
+        assert_eq!(registered_file_types(&[info(true), info(false)]), 1);
+    }
+
+    /// A made-up extension really arrives as an unregistered
+    /// `FileTypeInfo` — without that, the count above could never meet its
+    /// counterexample in a real scan.
+    #[test]
+    fn an_unregistered_extension_is_examined_but_not_registered() {
+        let options = ScanOptions {
+            categories: Some(vec![Category::Directory]),
+            file_types: vec![".ctxmenu_selftest_missing".into()],
+            ..ScanOptions::default()
+        };
+        let result = scan::scan(&options, |_| {});
+        assert_eq!(result.file_types.len(), 1, "examined stays examined");
+        assert_eq!(registered_file_types(&result.file_types), 0);
     }
 }

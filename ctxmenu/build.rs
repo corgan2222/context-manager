@@ -2,6 +2,8 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/app.ico");
     println!("cargo:rerun-if-changed=assets/app.manifest");
 
+    build_handler_dll();
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/app.ico");
@@ -23,4 +25,51 @@ fn main() {
         res.set("ProductName", "Context Menu Manager");
         res.compile().expect("compiling the resources failed");
     }
+}
+
+/// Builds `ctxmenu_handler.dll` and hands its path to `include_bytes!`.
+///
+/// The window carries the handler inside itself — the promise is one `.exe`
+/// with no installer, and the DLL is written to `%LOCALAPPDATA%` when the
+/// user turns the Windows 11 entries on. A cdylib cannot be an ordinary
+/// dependency, so this is cargo inside cargo, with two guards that matter:
+///
+/// * Its own `--target-dir` under `OUT_DIR`. Sharing the outer target
+///   directory would deadlock on cargo's build lock — and a shared target
+///   directory is exactly the trap `.claude`'s worktree rule exists for.
+/// * Always `--release`: the DLL is an artefact the shell loads, not a
+///   debug target of its own; a debug build of the window still embeds the
+///   optimised handler.
+///
+/// `rerun-if-changed` keeps this from running on every build: cargo skips
+/// the whole script while the handler's sources are untouched.
+fn build_handler_dll() {
+    println!("cargo:rerun-if-changed=../ctxmenu-handler/src");
+    println!("cargo:rerun-if-changed=../ctxmenu-handler/Cargo.toml");
+    println!("cargo:rerun-if-changed=../ctxmenu-handler/AppxManifest.xml");
+    println!("cargo:rerun-if-changed=../ctxmenu-handler/handler.msix");
+
+    let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+    let target_dir = std::path::Path::new(&out_dir).join("handler-target");
+    let target = std::env::var("TARGET").expect("cargo sets TARGET while running a build script");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+
+    let status = std::process::Command::new(&cargo)
+        .args(["build", "--release", "-p", "ctxmenu-handler", "--target"])
+        .arg(&target)
+        .arg("--target-dir")
+        .arg(&target_dir)
+        // The outer invocation may have set this; letting it through would
+        // point the inner build back at the shared directory.
+        .env_remove("CARGO_TARGET_DIR")
+        .status()
+        .expect("running cargo for the handler DLL");
+    assert!(status.success(), "the handler DLL did not build");
+
+    let dll = target_dir
+        .join(&target)
+        .join("release")
+        .join("ctxmenu_handler.dll");
+    assert!(dll.exists(), "expected the DLL at {}", dll.display());
+    println!("cargo:rustc-env=CTXMENU_HANDLER_DLL={}", dll.display());
 }

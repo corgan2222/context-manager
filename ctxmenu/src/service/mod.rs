@@ -39,6 +39,12 @@ pub struct Service {
     /// same shape everywhere, and asking once beats asking a hundred times.
     #[serde(default)]
     pub result_path: String,
+    /// `file,index` in the usual Windows notation, or a path to an `.ico` —
+    /// the same shape a favourite's icon has, because that is where it goes:
+    /// every tool taken over from this service inherits it. One setting per
+    /// service, for the same reason as `result_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// `%LOCALAPPDATA%\ctxmenu\services.json`
@@ -147,10 +153,15 @@ pub fn save(services: &[Service]) -> Result<()> {
 /// itself.
 pub struct Template {
     pub name: &'static str,
-    /// What the address usually looks like, as a hint in the empty field.
+    /// What the address usually looks like. Written into the field on a
+    /// template click — `<host>` stays for the user to replace — and shown
+    /// as the hint while the field is empty.
     pub address_hint: &'static str,
     pub result_path: &'static str,
     pub allow_insecure: bool,
+    /// The service's published logo, as a web address. Fetched once when
+    /// the service is saved and kept as a local `.ico`; empty means none.
+    pub icon: &'static str,
 }
 
 /// The templates on offer. Deliberately short: a wrong entry here costs more
@@ -160,9 +171,14 @@ pub const TEMPLATES: &[Template] = &[
         // Self-hosted, so the address is always a private one and the key is
         // generated per installation. Measured against it on 2026-08-15.
         name: "SnapOtter",
-        address_hint: "http://<host>:1349/api/docs/",
+        // The full document address, not the documentation page: the guesses
+        // in `spec_candidates` cover a pasted page address anyway, but the
+        // template can simply be right from the start (asked for on
+        // 2026-08-20 after the short form needed the guesswork).
+        address_hint: "http://<host>:1349/api/docs/openapi.json",
         result_path: "downloadUrl",
         allow_insecure: true,
+        icon: "https://raw.githubusercontent.com/snapotter-hq/SnapOtter/main/branding/logo-64.png",
     },
     Template {
         // The empty template: everything blank, for a service nobody has
@@ -171,6 +187,7 @@ pub const TEMPLATES: &[Template] = &[
         address_hint: "https://<host>/api/docs/",
         result_path: "",
         allow_insecure: false,
+        icon: "",
     },
 ];
 
@@ -349,7 +366,10 @@ pub fn favourite_for(
     Favourite {
         id: format!("{}__{}", service.id, id_for(&tool.summary)),
         name,
-        icon: None,
+        // The service's icon, so every tool of one service shares one face.
+        // Only newly taken-over favourites see this — ones recorded earlier
+        // keep what they have, like every other field here.
+        icon: service.icon.clone(),
         note: Some(tool.path.clone()),
         tool: Tool::Web(WebTool {
             mode: WebMode::Upload(Box::new(Upload {
@@ -463,7 +483,22 @@ mod tests {
             }),
             allow_insecure: true,
             result_path: "downloadUrl".into(),
+            icon: None,
         }
+    }
+
+    /// One face per service: a tool taken over inherits the service's icon,
+    /// in the same `file,index`-or-`.ico` shape a favourite carries anyway.
+    #[test]
+    fn a_tool_inherits_the_services_icon() {
+        let mut with_icon = service();
+        with_icon.icon = Some(r"C:\x\snapotter.ico".into());
+
+        let favourite = favourite_for(&with_icon, &tool(), None, ".klein");
+        assert_eq!(favourite.icon.as_deref(), Some(r"C:\x\snapotter.ico"));
+
+        let without = favourite_for(&service(), &tool(), None, ".klein");
+        assert_eq!(without.icon, None, "no icon invents no icon");
     }
 
     fn tool() -> spec::Tool {

@@ -43,6 +43,7 @@ fn service_entry() -> service::Service {
         }),
         allow_insecure: true,
         result_path: "downloadUrl".into(),
+        icon: None,
     }
 }
 

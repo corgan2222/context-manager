@@ -73,11 +73,20 @@ impl Action {
 pub struct Operation {
     pub target: RegTarget,
     pub action: Action,
-    /// Only for `Block` and `Unblock`.
+    /// Only for `Block` and `Unblock` — and for every step on a packaged
+    /// entry, whose one lever is its CLSID.
     pub clsid: Option<String>,
     /// Carried along so the result dialog can name the entry rather than a
     /// registry path.
     pub display_name: String,
+    /// An entry of the new Windows 11 menu. Its target is a carrier — real,
+    /// but never written: hiding goes to the per-user blocked list, and the
+    /// flag and delete actions do not exist for it.
+    ///
+    /// `serde(default)`: plans travel to the elevated process as JSON, and
+    /// one from an older build simply has no packaged steps.
+    #[serde(default)]
+    pub packaged: bool,
 }
 
 impl Operation {
@@ -85,10 +94,19 @@ impl Operation {
     ///
     /// Measured, not assumed: a HKLM key may be writable for this very
     /// process, and a HKCU key may be locked down by an ACL. Only the blocked
-    /// list is decided up front, because it always lives in HKLM.
+    /// lists are decided up front, because their hives are fixed by the
+    /// action: machine-wide for `Block`, the user's own for hiding a
+    /// packaged entry.
     pub fn needs_elevation(&self) -> bool {
         match self.action {
             Action::Block | Action::Unblock => !write::is_blocked_list_writable(),
+            Action::Hide | Action::Show if self.packaged => {
+                !write::is_blocked_list_writable_for(Scope::User)
+            }
+            // The remaining actions are refused for packaged entries in
+            // `apply` before anything is written — elevation would buy an
+            // error message, not a result.
+            _ if self.packaged => false,
             _ => !write::is_writable(&self.target),
         }
     }
@@ -97,6 +115,15 @@ impl Operation {
     pub fn backup_paths(&self) -> Vec<String> {
         match self.action {
             Action::Block | Action::Unblock => vec![paths::blocked_list_display_path()],
+            Action::Hide | Action::Show if self.packaged => {
+                vec![paths::blocked_list_display_path_for(Scope::User)]
+            }
+            // Refused in `apply` before anything is written — but a step
+            // with no backup path at all would sink the whole transaction
+            // (`export` refuses an empty set, deliberately). The carrier is
+            // a real key and exporting it is cheap; the refusal then fails
+            // this one step and the report says why.
+            _ if self.packaged => vec![self.target.full_path()],
             _ => vec![self.target.full_path()],
         }
     }
@@ -280,6 +307,30 @@ pub fn execute(plan: &Plan) -> Result<Report> {
 }
 
 fn apply(operation: &Operation, token: &BackupToken) -> Result<()> {
+    // A packaged entry has exactly two levers, both on its CLSID: the
+    // per-user blocked list (hide) and the machine-wide one. Everything else
+    // is refused here, not only greyed out in the interface — a plan can
+    // arrive from anywhere, including an older elevated process.
+    if operation.packaged {
+        let clsid = operation.clsid.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("\x1ePaketeintrag ohne CLSID\x1fpackaged entry without a CLSID\x1d")
+        })?;
+        return match &operation.action {
+            Action::Hide => write::block_clsid(clsid, Scope::User, token),
+            Action::Show => write::unblock_clsid(clsid, Scope::User, token),
+            Action::Block => write::block_clsid(clsid, Scope::Machine, token),
+            Action::Unblock => write::unblock_clsid(clsid, Scope::Machine, token),
+            other => anyhow::bail!(
+                "\x1e{} gibt es für Einträge des neuen Windows-11-Menüs nicht: \
+                 sie kommen aus einem Paket, nicht aus einem Registry-Schlüssel\
+                 \x1f{} does not exist for entries of the new Windows 11 menu: \
+                 they come from a package, not from a registry key\x1d",
+                other.label(),
+                other.label()
+            ),
+        };
+    }
+
     match &operation.action {
         Action::Hide => write::set_flag(&operation.target, "LegacyDisable", token),
         Action::Show => write::clear_flag(&operation.target, "LegacyDisable", token),
@@ -289,11 +340,11 @@ fn apply(operation: &Operation, token: &BackupToken) -> Result<()> {
             write::set_position(&operation.target, value.as_deref(), token)
         }
         Action::Block => match &operation.clsid {
-            Some(clsid) => write::block_clsid(clsid, token),
+            Some(clsid) => write::block_clsid(clsid, Scope::Machine, token),
             None => anyhow::bail!("\x1eBlockieren ohne CLSID\x1fblock without a CLSID\x1d"),
         },
         Action::Unblock => match &operation.clsid {
-            Some(clsid) => write::unblock_clsid(clsid, token),
+            Some(clsid) => write::unblock_clsid(clsid, Scope::Machine, token),
             None => anyhow::bail!("\x1eFreigeben ohne CLSID\x1funblock without a CLSID\x1d"),
         },
         Action::Delete => {
@@ -318,6 +369,7 @@ mod tests {
             action,
             clsid: None,
             display_name: relative.into(),
+            packaged: false,
         }
     }
 

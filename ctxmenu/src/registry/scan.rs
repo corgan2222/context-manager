@@ -181,6 +181,20 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
     let mut clsids = ClsidResolver::new();
     resolve_entries(&mut entries, &mut mui, &mut clsids);
 
+    // The entries of the new Windows 11 menu, from package manifests. After
+    // resolve_entries — they arrive already resolved — and before the
+    // file-type attribution, so a verb declared for `.png` lands in the
+    // `.png` chain like any classic one. Only where that menu exists: on
+    // Windows 10 the packages are present but no menu ever reads them, and
+    // a row for an entry no menu shows would be a claim about nothing.
+    if super::win11::has_new_menu() {
+        entries.extend(
+            super::packaged::entries(&super::packaged::scan())
+                .into_iter()
+                .filter(|entry| packaged_entry_wanted(entry, options)),
+        );
+    }
+
     attribute_to_file_types(&entries, &mut file_types);
 
     let (mui_cache_hits, mui_cache_misses) = mui.stats();
@@ -193,6 +207,29 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
             blocked_clsids: clsids.blocked_count(),
         },
     )
+}
+
+/// Whether a packaged entry passes the scan options.
+///
+/// The classic sources go through two gates before a key is even opened:
+/// `wanted` drops the categories nobody asked for, and the scope loop visits
+/// only the requested hives. Packaged entries arrive after both gates, so the
+/// same filter has to run here — without it a `--category directory` scan
+/// came back with `Directory\Background` verbs on any machine whose new menu
+/// exists. A file type the caller asked for keeps its packaged verbs even
+/// under a category filter, mirroring the file-type chain, which is scanned
+/// regardless of `categories`.
+fn packaged_entry_wanted(entry: &ContextEntry, options: &ScanOptions) -> bool {
+    if !options.scopes.contains(&entry.scope) {
+        return false;
+    }
+    let by_category = options
+        .categories
+        .as_ref()
+        .is_none_or(|list| list.contains(&entry.category));
+    let by_file_type = matches!(&entry.category, Category::ExtAssoc(ext)
+        if options.file_types.iter().any(|asked| asked.eq_ignore_ascii_case(ext)));
+    by_category || by_file_type
 }
 
 /// Works out which entries belong to which file type.
@@ -277,6 +314,11 @@ fn resolve_entries(
                 info: clsids.resolve(clsid),
                 blocked: clsids.is_blocked(clsid),
             },
+            // Packaged verbs never pass through here — they are appended
+            // after this loop, already resolved by `packaged::scan` — but
+            // the match stays exhaustive so a future caller cannot feed one
+            // in and silently lose its name.
+            EntryKind::PackagedVerb { .. } => continue,
         };
 
         match resolved {
@@ -768,6 +810,97 @@ mod tests {
                 .entries
                 .iter()
                 .all(|e| e.category == Category::Directory)
+        );
+    }
+
+    /// One user-scope package, one verb over three item types: `*`,
+    /// `Directory` and `.png`.
+    fn packaged_fixture() -> Vec<ContextEntry> {
+        use crate::registry::packaged::{PackagedMenu, PackagedPackage, PackagedVerb, entries};
+
+        let menu = PackagedMenu {
+            packages: vec![PackagedPackage {
+                full_name: "Proto_1.0.0.0_x64__abc".into(),
+                display_name: "Proto".into(),
+                root: std::path::PathBuf::from(r"C:\somewhere"),
+                logo: None,
+                scope: Scope::User,
+                verbs: vec![PackagedVerb {
+                    id: "Proto".into(),
+                    clsid: "{4103969A-91A4-45AB-8521-12F32D897BBC}".into(),
+                    item_types: vec!["*".into(), "Directory".into(), ".png".into()],
+                    dll: None,
+                    blocked_user: false,
+                    blocked_machine: false,
+                }],
+            }],
+            skipped: 0,
+        };
+        entries(&menu)
+    }
+
+    /// The append at the end of `scan` used to skip both filters: on any
+    /// machine with the new menu, a `--category directory` scan came back
+    /// with the packaged verbs of every category. Regression guard for the
+    /// filter the append now applies.
+    #[test]
+    fn the_category_filter_reaches_the_packaged_entries() {
+        let options = ScanOptions {
+            categories: Some(vec![Category::Directory]),
+            ..ScanOptions::default()
+        };
+        let kept: Vec<_> = packaged_fixture()
+            .into_iter()
+            .filter(|e| packaged_entry_wanted(e, &options))
+            .collect();
+        assert_eq!(kept.len(), 1, "'*' and '.png' are not Directory");
+        assert_eq!(kept[0].category, Category::Directory);
+    }
+
+    #[test]
+    fn the_scope_filter_reaches_the_packaged_entries() {
+        let options = ScanOptions {
+            scopes: vec![Scope::Machine],
+            ..ScanOptions::default()
+        };
+        assert!(
+            packaged_fixture()
+                .iter()
+                .all(|e| !packaged_entry_wanted(e, &options)),
+            "the fixture package is user scope"
+        );
+    }
+
+    /// The file-type chain is scanned regardless of `categories`; a packaged
+    /// verb for a requested extension must survive a category filter the
+    /// same way.
+    #[test]
+    fn a_requested_file_type_keeps_its_packaged_verbs_under_a_category_filter() {
+        let options = ScanOptions {
+            categories: Some(vec![Category::Directory]),
+            file_types: vec![".png".into()],
+            ..ScanOptions::default()
+        };
+        let kept: Vec<_> = packaged_fixture()
+            .into_iter()
+            .filter(|e| packaged_entry_wanted(e, &options))
+            .collect();
+        assert_eq!(kept.len(), 2, "Directory stays, '.png' stays, '*' falls");
+        assert!(
+            kept.iter()
+                .any(|e| e.category == Category::ExtAssoc(".png".into()))
+        );
+    }
+
+    /// The window scans with default options; every packaged entry must keep
+    /// appearing there.
+    #[test]
+    fn default_options_keep_every_packaged_entry() {
+        let options = ScanOptions::default();
+        assert!(
+            packaged_fixture()
+                .iter()
+                .all(|e| packaged_entry_wanted(e, &options))
         );
     }
 }

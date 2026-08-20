@@ -132,6 +132,8 @@ fn main() -> ExitCode {
         } => cli::run_apply(action, &path, confirmed),
         cli::Command::Create(entry) => cli::run_create(&entry),
         cli::Command::Created => cli::run_created(),
+        cli::Command::Packaged { json } => cli::run_packaged(json),
+        cli::Command::Handler(what) => cli::run_handler(what),
         cli::Command::Favourite(what) => cli::run_favourite(what),
         cli::Command::Backups => cli::run_backups(),
         cli::Command::BackupAll => cli::run_backup_all(),

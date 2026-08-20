@@ -6,7 +6,7 @@
 //! right-click and cannot be undone from memory.
 
 use anyhow::{Context as _, Result, bail};
-use windows_registry::LOCAL_MACHINE;
+use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
 
 use super::backup::BackupToken;
 use super::paths::{self, RegTarget};
@@ -170,15 +170,26 @@ pub fn set_position(target: &RegTarget, value: Option<&str>, token: &BackupToken
     }
 }
 
-/// Adds a CLSID to the machine-wide blocked list.
+/// The hive a blocked-list scope lives in.
+///
+/// `User` hides per user — the lever for entries of the new Windows 11
+/// menu; anything else is the machine-wide list that has always existed.
+fn blocked_hive(scope: Scope) -> &'static windows_registry::Key {
+    match scope {
+        Scope::User => CURRENT_USER,
+        _ => LOCAL_MACHINE,
+    }
+}
+
+/// Adds a CLSID to the blocked list of the given scope.
 ///
 /// One value here disables a handler everywhere at once. That beats deleting
 /// the same handler under twenty classes, survives the program updating
 /// itself, and comes back with a single deletion.
-pub fn block_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
-    require_blocked_backup(token)?;
+pub fn block_clsid(clsid: &str, scope: Scope, token: &BackupToken) -> Result<()> {
+    require_blocked_backup(scope, token)?;
 
-    LOCAL_MACHINE
+    blocked_hive(scope)
         .create(paths::SHELL_EXTENSIONS_BLOCKED)
         .and_then(|key| key.set_string(clsid, ""))
         .with_context(|| {
@@ -187,10 +198,10 @@ pub fn block_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
 }
 
 /// Takes a CLSID off the blocked list. Absent means already unblocked.
-pub fn unblock_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
-    require_blocked_backup(token)?;
+pub fn unblock_clsid(clsid: &str, scope: Scope, token: &BackupToken) -> Result<()> {
+    require_blocked_backup(scope, token)?;
 
-    let Ok(key) = LOCAL_MACHINE
+    let Ok(key) = blocked_hive(scope)
         .options()
         .read()
         .write()
@@ -209,14 +220,21 @@ pub fn unblock_clsid(clsid: &str, token: &BackupToken) -> Result<()> {
     }
 }
 
-/// Can the blocked list be written right now?
+/// Can the machine-wide blocked list be written right now?
 ///
 /// It lives in HKLM, so this is normally false without elevation — but asked
 /// rather than assumed, because an elevated instance runs the same code.
 pub fn is_blocked_list_writable() -> bool {
+    is_blocked_list_writable_for(Scope::Machine)
+}
+
+/// The same question for either hive. Asked even for HKCU — an ACL can lock
+/// down anything, and measuring is this program's rule (decisions/0022).
+pub fn is_blocked_list_writable_for(scope: Scope) -> bool {
+    let hive = blocked_hive(scope);
     // Deliberately without `.create()`: a probe must not bring the key into
     // existence as a side effect of asking whether it could.
-    if LOCAL_MACHINE
+    if hive
         .options()
         .read()
         .write()
@@ -233,7 +251,7 @@ pub fn is_blocked_list_writable() -> bool {
         .map(|(head, _)| head)
         .unwrap_or(paths::SHELL_EXTENSIONS_BLOCKED);
 
-    LOCAL_MACHINE.options().read().write().open(parent).is_ok()
+    hive.options().read().write().open(parent).is_ok()
 }
 
 fn require_backup(target: &RegTarget, token: &BackupToken) -> Result<()> {
@@ -258,8 +276,8 @@ fn require_backup(target: &RegTarget, token: &BackupToken) -> Result<()> {
 /// [`super::backup::restore`] undoes it by removing the key again, which is
 /// what taking a CLSID off the list means. A token that says nothing at all
 /// about the list is still refused.
-fn require_blocked_backup(token: &BackupToken) -> Result<()> {
-    let path = paths::blocked_list_display_path();
+fn require_blocked_backup(scope: Scope, token: &BackupToken) -> Result<()> {
+    let path = paths::blocked_list_display_path_for(scope);
     if token.covers_path(&path) || token.records_absence(&path) {
         return Ok(());
     }
@@ -357,7 +375,8 @@ mod tests {
             token.covers_path(&path) || token.records_absence(&path),
             "the backup must say something about the list"
         );
-        require_blocked_backup(&token).expect("a backup of the list is a backup of the list");
+        require_blocked_backup(Scope::Machine, &token)
+            .expect("a backup of the list is a backup of the list");
 
         let _ = std::fs::remove_dir_all(token.directory());
     }
@@ -373,7 +392,7 @@ mod tests {
         // The gate itself, not `block_clsid`: this test must be safe to run in
         // an elevated session too, and calling the writer would put the very
         // key into HKLM that the gate is there to protect.
-        assert!(require_blocked_backup(&token).is_err());
+        assert!(require_blocked_backup(Scope::Machine, &token).is_err());
 
         let _ = std::fs::remove_dir_all(token.directory());
     }

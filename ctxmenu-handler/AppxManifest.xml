@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The sparse package that carries the handler. Same pattern the
+     2026-08-20 prototype proved: unsigned publisher marker, external
+     content, and the old Application schema because the 19041 makeappx
+     does not know uap10:Executable. The declared executable need not
+     exist in the external folder - measured on 2026-08-20, installation
+     does not check. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  IgnorableNamespaces="uap uap10 rescap com desktop4 desktop5">
+
+  <!-- The package version counts changes to THIS manifest, not the app's
+       releases: the DLL and the entries live outside the package, so a new
+       ctxmenu version needs no re-registration. Bump it when the manifest
+       changes, then repack handler.msix (see the comment in build.rs). -->
+  <Identity Name="ctxmenu.Menu" ProcessorArchitecture="x64"
+    Publisher="CN=ctxmenu, OID.2.25.311729368913984317654407730594956997722=1"
+    Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>ctxmenu</DisplayName>
+    <PublisherDisplayName>ctxmenu</PublisherDisplayName>
+    <Logo>logo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+      MinVersion="10.0.22000.0" MaxVersionTested="10.0.26200.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="Ctxmenu" Executable="ctxmenu.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="ctxmenu"
+        Description="ctxmenu entries in the new context menu"
+        Square150x150Logo="logo.png" Square44x44Logo="logo.png"
+        BackgroundColor="transparent" AppListEntry="none" />
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="ctxmenu">
+              <com:Class Id="C898E0C0-879E-4A3E-AF7E-631D99C7DE44"
+                Path="ctxmenu_handler.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="Ctxmenu"
+                Clsid="C898E0C0-879E-4A3E-AF7E-631D99C7DE44" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="Ctxmenu"
+                Clsid="C898E0C0-879E-4A3E-AF7E-631D99C7DE44" />
+            </desktop5:ItemType>
+            <!-- No Drive block: the desktop5 schema allows only *, .ext,
+                 Directory and DirectoryBackground (pattern error when
+                 packing, 2026-08-20). Drive entries remain a capability of
+                 the classic menu. -->
+            <desktop5:ItemType Type="Directory\Background">
+              <desktop5:Verb Id="Ctxmenu"
+                Clsid="C898E0C0-879E-4A3E-AF7E-631D99C7DE44" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

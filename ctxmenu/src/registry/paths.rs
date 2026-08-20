@@ -385,7 +385,17 @@ pub const SHELL_EXTENSIONS_BLOCKED: &str =
 /// is deliberate: nothing that walks entries should be able to reach it by
 /// accident.
 pub fn blocked_list_display_path() -> String {
-    format!("HKLM\\{SHELL_EXTENSIONS_BLOCKED}")
+    blocked_list_display_path_for(Scope::Machine)
+}
+
+/// The same list in the chosen hive.
+///
+/// The HKCU list hides per user — the lever for entries of the new
+/// Windows 11 menu, measured 2026-08-20: it works on the next menu open,
+/// without elevation. HKLM hides machine-wide and is what [`Scope::Machine`]
+/// callers have always used.
+pub fn blocked_list_display_path_for(scope: Scope) -> String {
+    format!("{}\\{SHELL_EXTENSIONS_BLOCKED}", scope.hive())
 }
 
 #[cfg(test)]

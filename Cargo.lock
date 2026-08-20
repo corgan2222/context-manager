@@ -400,7 +400,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "ctxmenu"
-version = "1.4.2"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -411,6 +411,7 @@ dependencies = [
  "iconflow",
  "raw-window-handle",
  "read-fonts",
+ "roxmltree",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -418,6 +419,18 @@ dependencies = [
  "windows",
  "windows-registry",
  "winresource",
+]
+
+[[package]]
+name = "ctxmenu-handler"
+version = "1.5.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "windows",
+ "windows-core",
+ "windows-registry",
 ]
 
 [[package]]
@@ -2036,6 +2049,12 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rustc-hash"
