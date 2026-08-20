@@ -96,6 +96,12 @@ thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 dirs = "6"
 rustc-hash = "2"
+# Reads `AppxManifest.xml`, the only XML this program ever touches. Read-only,
+# no dependencies of its own, and it keeps the namespaces apart — the manifest
+# spells the same element `desktop4:`, `desktop5:` or `desktop10:` depending on
+# which Windows version the package targets, so matching on prefixes by hand
+# would miss packages rather than fail loudly.
+roxmltree = "0.20"
 
 [workspace.dependencies.windows]
 version = "0.62.2"

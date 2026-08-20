@@ -5,6 +5,7 @@ pub mod clsid;
 pub mod create;
 pub mod filetypes;
 pub mod mui;
+pub mod packaged;
 pub mod paths;
 pub mod plan;
 pub mod scan;
