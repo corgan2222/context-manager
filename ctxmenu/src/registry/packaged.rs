@@ -212,6 +212,98 @@ fn candidates() -> Vec<(String, Scope)> {
     out
 }
 
+/// The packaged verbs as scan entries, one per verb and item type.
+///
+/// One entry per (verb, item type) rather than one per verb: a
+/// [`ContextEntry`] carries exactly one [`Category`], and the file-type view
+/// attributes entries to extensions through it — the same shape a classic
+/// verb takes when it is registered under every extension separately.
+///
+/// `registry_path` is the package's real `PackagedCom` key. It is never
+/// written; it exists so the entry has a stable id, a scope and a path the
+/// detail pane can show. Hiding works on the CLSID, not on this key.
+pub fn entries(menu: &PackagedMenu) -> Vec<crate::model::ContextEntry> {
+    use crate::model::{ContextEntry, EntryKind, stable_id};
+
+    let mut out = Vec::new();
+    for package in &menu.packages {
+        let path = format!(
+            "{}\\{}\\{}\\{}",
+            package.scope.hive(),
+            package.scope.classes_path(),
+            PACKAGED_COM_PACKAGE.trim_start_matches("Software\\Classes\\"),
+            package.full_name
+        );
+        for verb in &package.verbs {
+            for item_type in &verb.item_types {
+                let Some(category) = category_for(item_type) else {
+                    continue;
+                };
+                out.push(ContextEntry {
+                    // The item type is part of the id: the same verb appears
+                    // once per item type, and two rows must never share one.
+                    id: stable_id(package.scope, &format!("{path}|{}|{item_type}", verb.clsid)),
+                    key_name: verb.id.clone(),
+                    // The honest approximation of the menu text — the real
+                    // one lives in the handler's GetTitle (module comment).
+                    display_name: verb.id.clone(),
+                    raw_display: None,
+                    icon_ref: package
+                        .logo
+                        .as_ref()
+                        .map(|logo| logo.to_string_lossy().into_owned()),
+                    position: None,
+                    extended: false,
+                    // The per-user block is exactly what "hidden" means for
+                    // this kind, measured 2026-08-20: it takes the entry out
+                    // of the menu on the next open, no Explorer restart.
+                    hidden: verb.blocked_user,
+                    applies_to: Some(item_type.clone()),
+                    kind: EntryKind::PackagedVerb {
+                        clsid: verb.clsid.clone(),
+                        package: package.full_name.clone(),
+                        package_name: package.display_name.clone(),
+                        dll: verb
+                            .dll
+                            .as_ref()
+                            .map(|dll| dll.to_string_lossy().into_owned()),
+                        blocked_machine: verb.blocked_machine,
+                    },
+                    scope: package.scope,
+                    category,
+                    registry_path: path.clone(),
+                    // Hiding goes to the HKCU blocked list, which every user
+                    // may write; nothing else can be done to this entry.
+                    read_only: false,
+                    program_key: verb
+                        .dll
+                        .as_ref()
+                        .map(|dll| dll.to_string_lossy().into_owned()),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Where an item type puts the entry, in the vocabulary of the classic scan.
+///
+/// An extension maps to [`Category::ExtAssoc`], which is what
+/// `attribute_to_file_types` matches on — the file-type view picks the entry
+/// up without knowing it came from a package. Unknown item types are dropped
+/// rather than guessed into a category they do not belong to.
+fn category_for(item_type: &str) -> Option<crate::model::Category> {
+    use crate::model::Category;
+    match item_type {
+        "*" => Some(Category::AllFiles),
+        "Directory" => Some(Category::Directory),
+        "Directory\\Background" => Some(Category::DirectoryBackground),
+        "Drive" => Some(Category::Drive),
+        ext if ext.starts_with('.') => Some(Category::ExtAssoc(ext.to_lowercase())),
+        _ => None,
+    }
+}
+
 /// The package's folder in the WindowsApps store, where a sparse package
 /// keeps its manifest.
 ///
@@ -564,6 +656,63 @@ mod tests {
             "Microsoft.WindowsTerminal"
         );
         assert_eq!(family_name("NoUnderscore"), "NoUnderscore");
+    }
+
+    /// A menu with one package and one verb over two item types, the shape
+    /// the prototype proved.
+    fn fixture() -> PackagedMenu {
+        PackagedMenu {
+            packages: vec![PackagedPackage {
+                full_name: "CtxmenuProto_0.1.0.0_x64__abc".into(),
+                display_name: "ctxmenu Prototyp".into(),
+                root: PathBuf::from(r"C:\somewhere"),
+                logo: None,
+                scope: Scope::User,
+                verbs: vec![PackagedVerb {
+                    id: "CtxmenuProto".into(),
+                    clsid: "{4103969A-91A4-45AB-8521-12F32D897BBC}".into(),
+                    item_types: vec!["*".into(), ".png".into(), "Wobbly".into()],
+                    dll: Some(PathBuf::from(r"C:\somewhere\ctxmenu_proto.dll")),
+                    blocked_user: true,
+                    blocked_machine: false,
+                }],
+            }],
+            skipped: 0,
+        }
+    }
+
+    #[test]
+    fn one_entry_per_item_type_and_the_unknown_one_is_dropped() {
+        let entries = entries(&fixture());
+        assert_eq!(entries.len(), 2, "'*' and '.png'; 'Wobbly' has no category");
+        assert_eq!(entries[0].category, crate::model::Category::AllFiles);
+        assert_eq!(
+            entries[1].category,
+            crate::model::Category::ExtAssoc(".png".into())
+        );
+        assert_ne!(entries[0].id, entries[1].id, "two rows, two ids");
+    }
+
+    #[test]
+    fn the_user_block_is_what_hidden_means_here() {
+        let entries = entries(&fixture());
+        assert!(entries[0].hidden);
+        assert!(!entries[0].read_only, "the HKCU blocked list is writable");
+        assert_eq!(entries[0].applies_to.as_deref(), Some("*"));
+    }
+
+    /// The carrier path must be a valid target: the plan path parses it to
+    /// learn scope and display path, even though it never writes it.
+    #[test]
+    fn the_carrier_path_parses_as_a_target() {
+        let entries = entries(&fixture());
+        let target = super::super::paths::RegTarget::parse(&entries[0].registry_path)
+            .expect("PackagedCom lives below Classes");
+        assert_eq!(target.scope(), Scope::User);
+        assert_eq!(
+            entries[0].registry_path,
+            r"HKCU\SOFTWARE\Classes\PackagedCom\Package\CtxmenuProto_0.1.0.0_x64__abc"
+        );
     }
 
     /// The scan must come back on every machine this runs on — Windows 10

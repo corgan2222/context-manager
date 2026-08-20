@@ -181,6 +181,16 @@ pub fn scan(options: &ScanOptions, mut progress: impl FnMut(ScanProgress)) -> Sc
     let mut clsids = ClsidResolver::new();
     resolve_entries(&mut entries, &mut mui, &mut clsids);
 
+    // The entries of the new Windows 11 menu, from package manifests. After
+    // resolve_entries — they arrive already resolved — and before the
+    // file-type attribution, so a verb declared for `.png` lands in the
+    // `.png` chain like any classic one. Only where that menu exists: on
+    // Windows 10 the packages are present but no menu ever reads them, and
+    // a row for an entry no menu shows would be a claim about nothing.
+    if super::win11::has_new_menu() {
+        entries.extend(super::packaged::entries(&super::packaged::scan()));
+    }
+
     attribute_to_file_types(&entries, &mut file_types);
 
     let (mui_cache_hits, mui_cache_misses) = mui.stats();
@@ -277,6 +287,11 @@ fn resolve_entries(
                 info: clsids.resolve(clsid),
                 blocked: clsids.is_blocked(clsid),
             },
+            // Packaged verbs never pass through here — they are appended
+            // after this loop, already resolved by `packaged::scan` — but
+            // the match stays exhaustive so a future caller cannot feed one
+            // in and silently lose its name.
+            EntryKind::PackagedVerb { .. } => continue,
         };
 
         match resolved {

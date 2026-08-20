@@ -56,6 +56,7 @@ impl Fixture {
                     action: action.clone(),
                     clsid: None,
                     display_name: target.relative().to_string(),
+                    packaged: false,
                 })
                 .collect(),
         )
@@ -273,6 +274,7 @@ fn a_failing_step_does_not_stop_the_others() {
             action: Action::Hide,
             clsid: None,
             display_name: "fehlt".into(),
+            packaged: false,
         },
     );
 
@@ -429,4 +431,98 @@ fn an_hkcu_only_plan_needs_no_elevation() {
     let (direct, elevated) = plan.partition();
     assert_eq!(direct.operations.len(), 1);
     assert!(elevated.is_empty());
+}
+
+/// A value name no real handler ever carries: not hex, and it says in plain
+/// letters where it came from, so a run that dies mid-test leaves an
+/// obviously harmless leftover.
+const TEST_CLSID: &str = "{CTXMENU-SELFTEST-PACKAGED-VERB}";
+
+/// The packaged step never writes its carrier target — the CLSID is the
+/// lever. The target still has to parse, which any fixture key does.
+fn packaged_operation(fixture: &Fixture, action: Action) -> Plan {
+    Plan::new(
+        "selftest_packaged",
+        vec![Operation {
+            target: fixture.targets[0].clone(),
+            action,
+            clsid: Some(TEST_CLSID.into()),
+            display_name: "selftest packaged".into(),
+            packaged: true,
+        }],
+    )
+}
+
+fn user_blocked_value_present() -> bool {
+    CURRENT_USER
+        .open(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked")
+        .ok()
+        .is_some_and(|key| key.get_type(TEST_CLSID).is_ok())
+}
+
+/// Hiding a packaged entry is a value in the user's blocked list, and
+/// showing it again removes exactly that value — the mechanism measured in
+/// the Windows 11 VM on 2026-08-20, here exercised through the full plan
+/// path with its mandatory backup.
+#[test]
+fn hiding_a_packaged_entry_blocks_its_clsid_for_this_user_and_frees_it_again() {
+    let fixture = Fixture::create("packaged", &["carrier"]);
+    let mut backups = BackupGuard::none();
+
+    let plan = packaged_operation(&fixture, Action::Hide);
+    assert!(
+        !plan.needs_elevation(),
+        "the user's own blocked list must not ask for admin"
+    );
+
+    let report = execute(&plan).expect("plan runs");
+    report
+        .backup_directories
+        .iter()
+        .for_each(|d| backups.track(d));
+    assert_eq!(report.failed(), 0, "{}", failures(&report));
+    assert!(
+        user_blocked_value_present(),
+        "the CLSID must be on the list"
+    );
+
+    // The carrier key itself must be untouched: no flag, no value.
+    assert!(!flag_present(&fixture.targets[0], "LegacyDisable"));
+
+    let report = execute(&packaged_operation(&fixture, Action::Show)).expect("plan runs");
+    report
+        .backup_directories
+        .iter()
+        .for_each(|d| backups.track(d));
+    assert_eq!(report.failed(), 0, "{}", failures(&report));
+    assert!(
+        !user_blocked_value_present(),
+        "showing again must remove the value"
+    );
+}
+
+/// Delete, position and the Shift rule do not exist for a packaged entry.
+/// The plan path refuses them itself — the interface greys them out, but a
+/// plan can arrive from anywhere.
+#[test]
+fn a_packaged_entry_refuses_what_only_registry_keys_can_do() {
+    let fixture = Fixture::create("packaged_refuse", &["carrier"]);
+    let mut backups = BackupGuard::none();
+
+    for action in [
+        Action::Delete,
+        Action::ShiftOnly,
+        Action::SetPosition(Some("Top".into())),
+    ] {
+        let report = execute(&packaged_operation(&fixture, action)).expect("plan runs");
+        report
+            .backup_directories
+            .iter()
+            .for_each(|d| backups.track(d));
+        assert_eq!(report.failed(), 1, "the step must fail, not be skipped");
+    }
+
+    // Refused loudly, and nothing happened: the carrier key is still there.
+    let key = CURRENT_USER.open(fixture.targets[0].key_path());
+    assert!(key.is_ok(), "the carrier key must survive every refusal");
 }

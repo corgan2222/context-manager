@@ -1014,6 +1014,9 @@ pub fn run_apply(action: crate::registry::plan::Action, path: &str, confirmed: b
             target: target.clone(),
             action,
             clsid: None,
+            // The apply path reaches packaged entries only through the
+            // window; a hand-typed registry path never names one.
+            packaged: false,
         }],
     );
 
@@ -1650,7 +1653,7 @@ fn count_all(entries: &[ContextEntry]) -> usize {
         .iter()
         .map(|e| match &e.kind {
             EntryKind::Verb { sub_commands, .. } => 1 + count_all(sub_commands),
-            EntryKind::ShellEx { .. } => 1,
+            EntryKind::ShellEx { .. } | EntryKind::PackagedVerb { .. } => 1,
         })
         .sum()
 }
@@ -1660,6 +1663,7 @@ fn print_entry(entry: &ContextEntry, indent: usize) {
     let detail = match &entry.kind {
         EntryKind::Verb { command, .. } => command.clone().unwrap_or_else(|| "—".into()),
         EntryKind::ShellEx { clsid, .. } => clsid.clone(),
+        EntryKind::PackagedVerb { package_name, .. } => package_name.clone(),
     };
 
     crate::outln!(

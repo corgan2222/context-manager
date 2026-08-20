@@ -192,6 +192,27 @@ pub enum EntryKind {
         server_path: Option<String>,
         blocked: bool,
     },
+    /// An `IExplorerCommand` verb from a package with identity — one entry
+    /// of the new Windows 11 menu, declared in the package's manifest rather
+    /// than under a `shell` key.
+    ///
+    /// Its menu text is produced at run time by the handler's `GetTitle`;
+    /// the verb id is the closest thing to it that exists outside the DLL.
+    /// Hidden per user via the blocked list — `LegacyDisable` means nothing
+    /// here, and there is no key to delete: the entry goes away with its
+    /// package.
+    PackagedVerb {
+        clsid: String,
+        /// Package full name, e.g. `Microsoft.WindowsNotepad_11…`.
+        package: String,
+        /// The package's resolved display name, for the detail pane.
+        package_name: String,
+        /// The handler DLL behind the CLSID, anchored at the content root.
+        dll: Option<String>,
+        /// Blocked machine-wide, in HKLM. The per-user block is what
+        /// `ContextEntry::hidden` carries.
+        blocked_machine: bool,
+    },
 }
 
 impl EntryKind {
@@ -199,6 +220,7 @@ impl EntryKind {
         match self {
             EntryKind::Verb { .. } => "verb",
             EntryKind::ShellEx { .. } => "shellex",
+            EntryKind::PackagedVerb { .. } => "win11",
         }
     }
 }

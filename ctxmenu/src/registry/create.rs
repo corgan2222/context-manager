@@ -88,13 +88,18 @@ impl NewEntry {
                             crate::model::EntryKind::Verb { command, .. } => {
                                 command.clone().unwrap_or_default()
                             }
-                            crate::model::EntryKind::ShellEx { .. } => String::new(),
+                            // Neither has a command line: a COM handler's text
+                            // comes from IContextMenu, a packaged verb's from
+                            // IExplorerCommand.
+                            crate::model::EntryKind::ShellEx { .. }
+                            | crate::model::EntryKind::PackagedVerb { .. } => String::new(),
                         },
                         icon: child.icon_ref.clone(),
                     })
                     .collect(),
             ),
-            crate::model::EntryKind::ShellEx { .. } => (String::new(), Vec::new()),
+            crate::model::EntryKind::ShellEx { .. }
+            | crate::model::EntryKind::PackagedVerb { .. } => (String::new(), Vec::new()),
         };
 
         Self {

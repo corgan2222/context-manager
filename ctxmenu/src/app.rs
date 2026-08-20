@@ -665,6 +665,10 @@ struct SelectionState {
     read_only: usize,
     /// How many carry a CLSID — the one thing blocking needs.
     blockable: usize,
+    /// How many are entries of the new Windows 11 menu. They know neither
+    /// the Shift rule nor a position, and deleting means uninstalling the
+    /// package — three switch groups go grey when this is non-zero.
+    packaged: usize,
     hidden: Agreement<bool>,
     extended: Agreement<bool>,
     /// Over the rows that *have* a CLSID only: the switch acts on those, so it
@@ -691,6 +695,18 @@ fn actions_for(entry: &ContextEntry, alone: bool) -> Vec<Action> {
         true => Action::Show,
         false => Action::Hide,
     });
+    // A packaged entry has no Extended flag, no position and no key to
+    // delete — its menu offers exactly what the plan path can do for it.
+    if let EntryKind::PackagedVerb {
+        blocked_machine, ..
+    } = &entry.kind
+    {
+        out.push(match blocked_machine {
+            true => Action::Unblock,
+            false => Action::Block,
+        });
+        return out;
+    }
     out.push(match entry.extended {
         true => Action::AlwaysShow,
         false => Action::ShiftOnly,
@@ -1008,6 +1024,7 @@ fn selection_state(
         changeable: 0,
         read_only: 0,
         blockable: 0,
+        packaged: 0,
         hidden: Agreement::Empty,
         extended: Agreement::Empty,
         blocked: Agreement::Empty,
@@ -1033,12 +1050,19 @@ fn selection_state(
         .iter()
         .filter(|entry| clsid_of(entry).is_some())
         .count();
+    state.packaged = entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::PackagedVerb { .. }))
+        .count();
 
     state.hidden = agreement(entries.iter().map(|entry| entry.hidden));
     state.extended = agreement(entries.iter().map(|entry| entry.extended));
     state.position = agreement(entries.iter().map(|entry| entry.position.clone()));
     state.blocked = agreement(entries.iter().filter_map(|entry| match &entry.kind {
         EntryKind::ShellEx { clsid, blocked, .. } if !clsid.is_empty() => Some(*blocked),
+        EntryKind::PackagedVerb {
+            blocked_machine, ..
+        } => Some(*blocked_machine),
         _ => None,
     }));
 
@@ -1053,6 +1077,7 @@ fn selection_state(
 fn clsid_of(entry: &ContextEntry) -> Option<&str> {
     match &entry.kind {
         EntryKind::ShellEx { clsid, .. } if !clsid.is_empty() => Some(clsid),
+        EntryKind::PackagedVerb { clsid, .. } => Some(clsid),
         _ => None,
     }
 }
@@ -2394,6 +2419,7 @@ impl App {
                 action: action.clone(),
                 clsid,
                 display_name: entry.display_name.clone(),
+                packaged: matches!(entry.kind, EntryKind::PackagedVerb { .. }),
             });
         }
 
@@ -2949,6 +2975,11 @@ impl App {
                     let classic = self.classic_menu;
                     ui.label(self.tr.menu_style)
                         .on_hover_text(self.tr.tip_menu_style);
+                    // No extra mode badge here: it repeated what the lit
+                    // switch button already says, and two "Win11" next to
+                    // each other confused more than they told (2026-08-20).
+                    // The buttons name the menu — "New menu"/"Classic" — and
+                    // which row belongs to which menu is the row's badge.
                     for (wanted, label) in [
                         (false, self.tr.menu_style_new),
                         (true, self.tr.menu_style_classic),
@@ -3216,12 +3247,16 @@ impl App {
                     // was a sentence of permanent text in a bar that has to fit
                     // a small screen, and it belongs to this button anyway.
                     let deleting = format!("{}\n\n{}", tr.tip_delete, tr.msg_backup_first);
+                    // A packaged entry has no key to delete; the plan path
+                    // refuses it too, this merely says so before the click.
+                    let deletable = any && state.packaged == 0;
                     if ui
-                        .add_enabled(any, delete)
+                        .add_enabled(deletable, delete)
                         .on_hover_text(&deleting)
-                        .on_disabled_hover_text(match any {
-                            true => deleting.clone(),
-                            false => tr.tip_needs_selection.to_string(),
+                        .on_disabled_hover_text(match (any, state.packaged > 0) {
+                            (true, true) => tr.tip_not_for_packaged.to_string(),
+                            (true, false) => deleting.clone(),
+                            _ => tr.tip_needs_selection.to_string(),
                         })
                         .clicked()
                     {
@@ -6566,6 +6601,7 @@ impl App {
                         ui.label(match entry.kind {
                             EntryKind::Verb { .. } => tr.kind_verb,
                             EntryKind::ShellEx { .. } => tr.kind_shellex,
+                            EntryKind::PackagedVerb { .. } => tr.kind_packaged,
                         });
                     });
                     row.col(|ui| {
@@ -6903,6 +6939,28 @@ impl App {
                                 }
                                 ui.add_space(6.0);
                                 ui.label(self.tr.msg_com_handler_note);
+                            }
+                            EntryKind::PackagedVerb {
+                                clsid,
+                                package,
+                                package_name,
+                                dll,
+                                blocked_machine,
+                            } => {
+                                field(ui, self.tr.detail_package, package_name);
+                                field(ui, self.tr.detail_package_full, package);
+                                field(ui, self.tr.detail_clsid, clsid);
+                                if let Some(dll) = dll {
+                                    field(ui, self.tr.detail_server, dll);
+                                }
+                                if *blocked_machine {
+                                    ui.colored_label(
+                                        ui.visuals().warn_fg_color,
+                                        self.tr.badge_blocked,
+                                    );
+                                }
+                                ui.add_space(6.0);
+                                ui.label(self.tr.msg_packaged_note);
                             }
                         }
 
@@ -8342,6 +8400,18 @@ fn matches_search(entry: &ContextEntry, needle: &str) -> bool {
                         .as_ref()
                         .is_some_and(|s| s.to_lowercase().contains(needle))
             }
+            // Searchable by what the detail pane shows: the package's name
+            // is what a reader remembers, the CLSID what a bug report has.
+            EntryKind::PackagedVerb {
+                clsid,
+                package,
+                package_name,
+                ..
+            } => {
+                package_name.to_lowercase().contains(needle)
+                    || package.to_lowercase().contains(needle)
+                    || clsid.to_lowercase().contains(needle)
+            }
         }
 }
 
@@ -8349,6 +8419,9 @@ fn detail_text(entry: &ContextEntry) -> &str {
     match &entry.kind {
         EntryKind::Verb { command, .. } => command.as_deref().unwrap_or("—"),
         EntryKind::ShellEx { clsid, .. } => clsid,
+        // The command column: a packaged verb has no command line, the
+        // package is the closest thing to "what runs here".
+        EntryKind::PackagedVerb { package_name, .. } => package_name,
     }
 }
 
@@ -8412,6 +8485,10 @@ fn switch_groups(
     // With nothing selected every group is off for the same reason, so they
     // all give the same answer when hovered.
     let needs_rows = (state.count == 0).then_some(tr.tip_needs_selection);
+    // Shift rule and position do not exist for entries of the new Windows 11
+    // menu; with one of those in the selection the groups go grey and say
+    // why, instead of erroring after the click.
+    let not_packaged = needs_rows.or((state.packaged > 0).then_some(tr.tip_not_for_packaged));
 
     if let Some(index) = switch_group(
         ui,
@@ -8445,7 +8522,7 @@ fn switch_groups(
         tr.group_shift,
         mixed_marker(tr, state.extended == Agreement::Mixed),
         &group_tip(tr.group_shift, tr.tip_group_shift),
-        needs_rows,
+        not_packaged,
         &[
             Segment {
                 icon: glyphs.always,
@@ -8508,7 +8585,7 @@ fn switch_groups(
         tr.group_position,
         mixed_marker(tr, state.position == Agreement::Mixed),
         &group_tip(tr.group_position, tr.tip_position),
-        needs_rows,
+        not_packaged,
         &[
             Segment {
                 icon: glyphs.no_position,
@@ -8676,6 +8753,11 @@ fn badges(ui: &mut Ui, entry: &ContextEntry, tr: &'static Strings) {
     let warn = ui.visuals().warn_fg_color;
     let weak = ui.visuals().weak_text_color();
 
+    // Provenance first, states after: "Win11" says which menu the row
+    // belongs to, everything behind it says what is special about it.
+    if matches!(entry.kind, EntryKind::PackagedVerb { .. }) {
+        ui.label(egui::RichText::new(tr.badge_win11).strong());
+    }
     if entry.read_only {
         ui.colored_label(weak, "🔒");
     }
@@ -8685,7 +8767,12 @@ fn badges(ui: &mut Ui, entry: &ContextEntry, tr: &'static Strings) {
     if entry.extended {
         ui.colored_label(warn, "⇧");
     }
-    if let EntryKind::ShellEx { blocked: true, .. } = entry.kind {
+    if let EntryKind::ShellEx { blocked: true, .. }
+    | EntryKind::PackagedVerb {
+        blocked_machine: true,
+        ..
+    } = entry.kind
+    {
         ui.colored_label(warn, tr.badge_blocked);
     }
     if let Some(position) = &entry.position {
@@ -8710,6 +8797,25 @@ fn explained_flags(
     tr: &'static Strings,
 ) -> Vec<(&'static str, &'static str)> {
     let mut out = Vec::new();
+
+    // A packaged entry explains itself in its own words throughout: its
+    // "hidden" is a per-user block, not LegacyDisable, and its Machine scope
+    // says where the package is registered — changing nothing about the
+    // fact that hiding needs no admin. The classic explanations would state
+    // the wrong mechanism, so none of them is reused.
+    if let EntryKind::PackagedVerb {
+        blocked_machine, ..
+    } = &entry.kind
+    {
+        if entry.hidden {
+            out.push((tr.badge_hidden, tr.why_hidden_packaged));
+        }
+        if *blocked_machine {
+            out.push((tr.badge_blocked, tr.why_blocked));
+        }
+        out.push((tr.badge_win11, tr.why_packaged));
+        return out;
+    }
 
     if entry.read_only {
         out.push((tr.badge_readonly, tr.why_readonly));
@@ -10336,6 +10442,7 @@ mod tests {
                 action: Action::Delete,
                 clsid: None,
                 display_name: entry.display_name.clone(),
+                packaged: false,
             }],
         )
     }
