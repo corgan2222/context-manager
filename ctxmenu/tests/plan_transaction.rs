@@ -299,6 +299,91 @@ fn a_failing_step_does_not_stop_the_others() {
     }
 }
 
+/// What the backup directory actually holds, for an assertion that failed.
+///
+/// "did not come back" on its own says nothing a reader can act on: it does
+/// not say whether the `.reg` file was written, whether it had any content,
+/// what the manifest recorded, or which of the three keys made it. This
+/// failure appeared only on the GitHub runner and never on the development
+/// machine, and the first two attempts at reading it were guesswork for
+/// exactly that reason.
+fn evidence(directory: &Path, fixture: &Fixture) -> String {
+    let mut out = String::from(
+        "--- backup directory ---
+",
+    );
+    out.push_str(&format!(
+        "{}
+",
+        directory.display()
+    ));
+
+    match std::fs::read_dir(directory) {
+        Ok(entries) => {
+            let mut files: Vec<_> = entries.flatten().collect();
+            files.sort_by_key(std::fs::DirEntry::file_name);
+            for file in files {
+                let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push_str(&format!(
+                    "  {:>7} B  {:?}
+",
+                    size,
+                    file.file_name()
+                ));
+
+                // The manifest decides what restore even attempts, and a .reg
+                // file that exported nothing still imports with exit code 0 --
+                // which is how "3 restored" and a missing key can both be true.
+                let name = file.file_name();
+                let name = name.to_string_lossy();
+                if name == "manifest.json" || name.ends_with(".reg") {
+                    match std::fs::read(file.path()) {
+                        Ok(bytes) => {
+                            let text = if bytes.starts_with(&[0xFF, 0xFE]) {
+                                let wide: Vec<u16> = bytes[2..]
+                                    .chunks_exact(2)
+                                    .map(|p| u16::from_le_bytes([p[0], p[1]]))
+                                    .collect();
+                                String::from_utf16_lossy(&wide)
+                            } else {
+                                String::from_utf8_lossy(&bytes).into_owned()
+                            };
+                            for line in text.lines() {
+                                out.push_str(&format!(
+                                    "      | {line}
+"
+                                ));
+                            }
+                        }
+                        Err(error) => out.push_str(&format!(
+                            "      | unreadable: {error}
+"
+                        )),
+                    }
+                }
+            }
+        }
+        Err(error) => out.push_str(&format!(
+            "  unreadable: {error}
+"
+        )),
+    }
+
+    out.push_str(
+        "--- keys now ---
+",
+    );
+    for target in &fixture.targets {
+        out.push_str(&format!(
+            "  {} exists={}
+",
+            target.full_path(),
+            write::exists(target)
+        ));
+    }
+    out
+}
+
 #[test]
 fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
     let fixture = Fixture::create("delete", &["one", "two", "three"]);
@@ -324,8 +409,9 @@ fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
     for target in &fixture.targets {
         assert!(
             write::exists(target),
-            "{} did not come back",
-            target.full_path()
+            "{} did not come back\n{}",
+            target.full_path(),
+            evidence(Path::new(directory), &fixture)
         );
     }
 }
