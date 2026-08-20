@@ -9,6 +9,7 @@
 //! Hence: every handle gets an RAII guard, and no early return can skip one.
 
 use core::ffi::c_void;
+use core::ptr::NonNull;
 
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection,
@@ -106,6 +107,52 @@ impl Drop for OwnedIcon {
                 let _ = DestroyIcon(self.0);
             }
         }
+    }
+}
+
+/// The pixel memory `CreateDIBSection` hands back through its out parameter.
+///
+/// Unlike the guards above this one releases nothing — the section is freed by
+/// its own `OwnedGdiObject`. It exists so that "GDI really did hand back a
+/// buffer" is stated once, in the type, instead of being re-argued at every
+/// use, and so that the two draw passes reach those bytes as a slice rather
+/// than through a raw pointer.
+struct DibBits {
+    first: NonNull<u8>,
+    len: usize,
+}
+
+impl DibBits {
+    /// Wraps what `CreateDIBSection` wrote into its out parameter, or `None`
+    /// if it wrote nothing.
+    ///
+    /// # Safety
+    ///
+    /// A null `bits` is allowed and yields `None`; nothing is read through it.
+    /// For any other value, `len` must not exceed the size of the section
+    /// `bits` points into, and that section must outlive the returned value.
+    unsafe fn new(bits: *mut c_void, len: usize) -> Option<Self> {
+        Some(Self {
+            first: NonNull::new(bits.cast::<u8>())?,
+            len,
+        })
+    }
+
+    /// Blanks the buffer before a draw. `DrawIconEx` composites onto whatever
+    /// it finds, so without this the mask pass would still show the colour
+    /// pass underneath it.
+    ///
+    /// The borrow ends with the call on purpose: GDI writes into these same
+    /// bytes as soon as `DrawIconEx` runs, and a `&mut [u8]` still alive at
+    /// that moment would promise an exclusivity that does not hold.
+    fn clear(&mut self) {
+        unsafe { std::slice::from_raw_parts_mut(self.first.as_ptr(), self.len) }.fill(0);
+    }
+
+    /// Reads back what GDI has drawn. The lifetime ties the slice to this
+    /// value, which is what keeps it from outliving the section.
+    fn drawn(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.first.as_ptr(), self.len) }
     }
 }
 
@@ -214,22 +261,27 @@ fn to_rgba(icon: HICON) -> Option<Rgba> {
         let dib =
             CreateDIBSection(Some(screen.0), &header, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
         let _dib = OwnedGdiObject(HGDIOBJ::from(dib));
-        if bits.is_null() {
-            return None;
-        }
+
+        // 32 bits per pixel is the one depth whose rows need no padding: the
+        // stride formula ((width * 32 + 31) / 32) * 4 collapses to width * 4,
+        // so the section is exactly this many bytes.
+        let len = (width as usize) * (height as usize) * 4;
+        // Declared after the DIB guard, so a section GDI refused to back with
+        // memory is still deleted. This replaces the former null check, and
+        // the raw pointer is out of reach from here on.
+        let mut bits = DibBits::new(bits, len)?;
 
         // Declared after the DIB guard so it drops first: the DIB must be
         // deselected before DeleteObject can succeed.
         let _selection = Selection(memory.0, SelectObject(memory.0, HGDIOBJ::from(dib)));
 
-        let len = (width as usize) * (height as usize) * 4;
-        std::ptr::write_bytes(bits as *mut u8, 0, len);
+        bits.clear();
         DrawIconEx(memory.0, 0, 0, icon, width, height, 0, None, DI_NORMAL).ok()?;
         // GDI batches per thread. Without the flush the buffer may still be
         // half drawn, which shows up as intermittently black icons.
         let _ = GdiFlush();
 
-        let mut pixels = std::slice::from_raw_parts(bits as *const u8, len).to_vec();
+        let mut pixels = bits.drawn().to_vec();
 
         // Windows delivers BGRA, egui wants RGBA.
         for pixel in pixels.chunks_exact_mut(4) {
@@ -240,12 +292,11 @@ fn to_rgba(icon: HICON) -> Option<Rgba> {
         // is zero and the icon would render fully transparent. Rebuild alpha
         // from the AND mask: a set mask bit means transparent.
         if pixels.chunks_exact(4).all(|pixel| pixel[3] == 0) {
-            std::ptr::write_bytes(bits as *mut u8, 0, len);
+            bits.clear();
             DrawIconEx(memory.0, 0, 0, icon, width, height, 0, None, DI_MASK).ok()?;
             let _ = GdiFlush();
 
-            let mask = std::slice::from_raw_parts(bits as *const u8, len);
-            for (pixel, mask) in pixels.chunks_exact_mut(4).zip(mask.chunks_exact(4)) {
+            for (pixel, mask) in pixels.chunks_exact_mut(4).zip(bits.drawn().chunks_exact(4)) {
                 pixel[3] = if mask[0] == 0 { 255 } else { 0 };
             }
         }
@@ -320,6 +371,22 @@ mod tests {
         assert!(load(&reference(r"C:\does\not\exist.dll")).is_none());
         // A resource ID that no shell32 has.
         assert!(load(&reference(r"%SystemRoot%\system32\shell32.dll,-999999")).is_none());
+    }
+
+    /// `DibBits` without GDI in the way. The section it normally wraps needs a
+    /// screen DC; a plain array does not, and what is worth pinning down here
+    /// is the null case and that clearing really reaches every byte.
+    #[test]
+    fn dib_bits_refuses_null_and_blanks_what_it_wraps() {
+        assert!(unsafe { DibBits::new(std::ptr::null_mut(), 16) }.is_none());
+
+        let mut buffer = [7u8; 16];
+        let len = buffer.len();
+        let mut bits = unsafe { DibBits::new(buffer.as_mut_ptr().cast::<c_void>(), len) }
+            .expect("the address of a local array is never null");
+        assert_eq!(bits.drawn(), [7u8; 16].as_slice());
+        bits.clear();
+        assert_eq!(bits.drawn(), [0u8; 16].as_slice());
     }
 
     /// The GDI leak test for the handle guards, made automatic.
