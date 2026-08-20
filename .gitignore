@@ -1,5 +1,8 @@
-# Build artefacts
+# Build artefacts. The released binary is built by GitHub from the tag and
+# attached to the release there -- it never travels through a commit.
 /target
+/release-assets
+*.exe
 *.pdb
 
 # The tool's runtime data

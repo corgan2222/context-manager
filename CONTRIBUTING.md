@@ -28,6 +28,20 @@ cargo build --release
 
 All four must be green. `-D warnings` is not negotiable.
 
+The same checks run as git hooks, so that a red build is caught before it
+travels rather than after. Once per clone:
+
+```powershell
+pip install pre-commit
+pre-commit install --install-hooks
+pre-commit install --hook-type pre-push
+```
+
+Committing then runs gitleaks, the YAML and TOML checks and `cargo fmt`;
+pushing runs `cargo clippy` and `cargo test`. Building the gitleaks hook needs
+Go on the PATH. The hooks live on your machine and `--no-verify` skips them —
+CI runs the same checks again and is the one that decides.
+
 The result ends up at `target\x86_64-pc-windows-msvc\release\ctxmenu.exe`,
 not `target\release\`: `.cargo\config.toml` names the target explicitly, so
 the statically linked C runtime applies to the application and not also to

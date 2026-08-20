@@ -1,0 +1,99 @@
+# Hooks so that what leaves this machine has already been checked.
+#
+# Two stages, split by what they cost:
+#
+#   commit  the cheap and the dangerous -- secrets, binaries, broken YAML,
+#           formatting. Seconds.
+#   push    the slow gate -- clippy and the test suite. About a minute, and
+#           the suite reads this machine's real registry, so it is not
+#           something to run on every save.
+#
+# Install both, once per clone:
+#
+#   pre-commit install --install-hooks
+#   pre-commit install --hook-type pre-push
+#
+# These hooks run on the developer's machine and can be skipped with
+# `--no-verify`. That is why `ci.yml` runs the same checks again on every pull
+# request: the hook is the fast feedback, CI is the one that decides.
+
+minimum_pre_commit_version: '3.2.0'
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  # ---------------------------------------------------------------- secrets
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        name: no credentials in the staged change
+        stages: [pre-commit]
+
+  # ------------------------------------------------------ the usual suspects
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+        stages: [pre-commit]
+      - id: check-added-large-files
+        # Above the largest file the repository legitimately holds today
+        # (the OpenAPI fixture, 432 KB) with room for another screenshot.
+        args: ['--maxkb=1024']
+        stages: [pre-commit]
+      - id: check-merge-conflict
+        stages: [pre-commit]
+      - id: check-yaml
+        # The workflows and the drafter config: a typo here is invisible until
+        # a release does not happen.
+        stages: [pre-commit]
+      - id: check-toml
+        stages: [pre-commit]
+      - id: end-of-file-fixer
+        # ctxmenu/tests/data holds a captured OpenAPI description that
+        # snapotter_abnahme.rs checks against. It is recorded evidence, not
+        # source: it stays byte for byte as the service returned it.
+        exclude: '(?i)(\.(png|ico|rgba|manifest)$|^ctxmenu/tests/data/)'
+        stages: [pre-commit]
+      - id: trailing-whitespace
+        # Two trailing spaces are a line break in Markdown; keep them.
+        args: ['--markdown-linebreak-ext=md']
+        exclude: '(?i)(\.(png|ico|rgba)$|^ctxmenu/tests/data/)'
+        stages: [pre-commit]
+
+  # --------------------------------------------------- nothing built, ever
+  - repo: local
+    hooks:
+      - id: no-build-artefacts
+        name: the .exe is built by GitHub, not committed
+        language: fail
+        entry: >-
+          this is a build artefact. The released binary is built by
+          .github/workflows/release.yml from the tag and attached there;
+          it never travels through a commit.
+        files: '(?i)\.(exe|dll|pdb|obj|lib|msi|zip|7z)$'
+        stages: [pre-commit]
+
+      # ------------------------------------------------------------ Rust
+      - id: cargo-fmt
+        name: cargo fmt --check
+        language: system
+        entry: cargo fmt --all -- --check
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: cargo-clippy
+        name: cargo clippy -D warnings
+        language: system
+        entry: cargo clippy --all-targets -- -D warnings
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-test
+        name: cargo test
+        language: system
+        entry: cargo test
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
