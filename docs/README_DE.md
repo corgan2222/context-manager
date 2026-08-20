@@ -52,7 +52,7 @@ markiert, was sich ohne Administratorrechte nicht ändern lässt.*
 - **Eigene Dateiendungen und der Vollscan.** Der Reiter *Dateitypen* zeigt
   eine kuratierte Auswahl von 98 Typen; ein Feld darüber nimmt jede weitere
   Endung auf, die dann gespeichert bleibt. Wer alles sehen will, drückt
-  *Alle installierten* — auf einem gewachsenen Rechner sind das 1928
+  *Alle installierten* — auf einem gewachsenen Rechner sind das 1674
   Typen statt 98, entsprechend länger dauert das Einlesen.
 - **Nach Programm gruppieren.** Ein Programm, das sich in zwanzig Dateitypen
   einträgt, erscheint als **eine** Gruppe mit allen Vorkommen — mit seinem

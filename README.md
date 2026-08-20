@@ -53,7 +53,7 @@ what cannot be changed without administrator rights.*
   curated selection of 98 types; a field above it accepts any further
   extension, which then stays saved. Anyone who wants to see everything
   presses *All installed*: on a machine that has grown over the years, that
-  is 1928 types instead of 98, and reading them in takes
+  is 1674 types instead of 98, and reading them in takes
   correspondingly longer.
 - **Group by program.** A program that registers itself in twenty file types
   appears as **one** group with every occurrence, with its icon in front.
