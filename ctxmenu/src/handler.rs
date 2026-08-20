@@ -130,6 +130,24 @@ pub fn install() -> Result<bool> {
     }
 }
 
+/// Freshens the deployed files after a self-update, quietly.
+///
+/// The update chain replaces the exe and restarts it, and the new exe may
+/// carry a newer DLL than the one deployed beside the package — which the
+/// shell would keep serving. Where the package is not registered there is
+/// nothing to freshen. A failure stays on stderr: the shell may still hold
+/// the old DLL in a `dllhost`, and the next start simply tries again. A
+/// *manifest* change is not covered — that takes a re-registration, which
+/// is [`install`]'s job and may ask for elevation.
+pub fn refresh_deployed() {
+    if !is_installed() {
+        return;
+    }
+    if let Err(reason) = deploy() {
+        crate::errln!("handler_refresh: {reason:#}");
+    }
+}
+
 /// Removes the package. The files stay — they are inert without the
 /// registration, and the DLL may still be mapped into a `dllhost` that has
 /// not gone away yet; the next install overwrites only what changed.
