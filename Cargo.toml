@@ -1,5 +1,5 @@
 [workspace]
-members = ["ctxmenu"]
+members = ["ctxmenu", "ctxmenu-handler"]
 resolver = "3"
 
 [workspace.package]

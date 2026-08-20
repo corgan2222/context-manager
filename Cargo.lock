@@ -422,6 +422,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctxmenu-handler"
+version = "1.4.2"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "windows",
+ "windows-core",
+ "windows-registry",
+]
+
+[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
