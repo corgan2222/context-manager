@@ -17,6 +17,7 @@
 //! Only the third one actually transfers the file, and only that one asks
 //! first.
 
+pub mod batch;
 pub mod http;
 pub mod shell;
 
@@ -35,8 +36,77 @@ use crate::favourites::{Poll, ResultAction, ResultSource, Tool, Upload, UploadBo
 /// the failure this prevents.
 pub const RUN_ARG: &str = "--favourite";
 
+/// What one file's run has to say for itself.
+///
+/// Two texts rather than one, because one click on six files produces two
+/// different reports and both are wanted. `message` is the whole sentence a
+/// single run has always shown -- where the result was saved, how many bytes
+/// it has. `label` is the one line that file contributes when it is one of
+/// six: the bare file name, because the full path is what the user said cannot
+/// be read there anyway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub message: String,
+    pub label: String,
+}
+
+impl Outcome {
+    /// A result whose one line is the name of a file.
+    fn about(message: String, file: &Path) -> Outcome {
+        Outcome {
+            label: file
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            message,
+        }
+    }
+
+    /// A result with nothing to name, whose line is the message itself.
+    ///
+    /// The collected report drops a line it already has, so six processes that
+    /// all say the same thing -- "nothing was sent" after one refusal -- end
+    /// up as one line and not six.
+    fn plain(message: String) -> Outcome {
+        Outcome {
+            label: message.clone(),
+            message,
+        }
+    }
+}
+
+/// The heading a report from this mode wears: the name of the tool.
+///
+/// It used to be the program's own name, which came from the days when this
+/// was a window title. Beside a sender line that already says `ctxmenu` it
+/// said nothing twice; the favourite's name says which of eight tools has just
+/// finished.
+pub fn title(id: &str) -> String {
+    titled(crate::favourites::find(id).ok().map(|f| f.name).as_deref())
+}
+
+/// The same decision without the disk, so both halves of it can be tested.
+///
+/// A favourite that cannot be read is the case where the id in the registry
+/// no longer matches anything, and the report about it is the one that most
+/// needs a sender.
+fn titled(name: Option<&str>) -> String {
+    match name.map(str::trim) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => FALLBACK_TITLE.to_string(),
+    }
+}
+
+/// What a report is headed with when there is no favourite to name.
+pub const FALLBACK_TITLE: &str = "ctxmenu";
+
 /// Runs a favourite against one file. The whole `--favourite` mode.
-pub fn run(id: &str, file: &Path) -> Result<String> {
+///
+/// `batch` is this process's place among the others started by the same click;
+/// `None` means it has none and everything below behaves as it did before
+/// there was any coordination at all.
+pub fn run(id: &str, file: &Path, batch: Option<&batch::Batch>) -> Result<Outcome> {
     let favourite = crate::favourites::find(id)?;
 
     if !file.exists() {
@@ -60,7 +130,10 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
         WebMode::Open { url } => {
             let address = fill(url, file);
             shell::open(&address)?;
-            Ok(format!("\x1eGeöffnet\x1fopened\x1d: {address}"))
+            Ok(Outcome::about(
+                format!("\x1eGeöffnet\x1fopened\x1d: {address}"),
+                file,
+            ))
         }
 
         WebMode::Clipboard { url } => {
@@ -69,10 +142,13 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
             shell::copy_file_to_clipboard(file)?;
             let address = fill(url, file);
             shell::open(&address)?;
-            Ok(format!(
-                "{} \x1eliegt in der Zwischenablage — im Browser Strg+V drücken.\
-                 \x1fis on the clipboard; press Ctrl+V in the browser.\x1d",
-                file.file_name().unwrap_or_default().to_string_lossy()
+            Ok(Outcome::about(
+                format!(
+                    "{} \x1eliegt in der Zwischenablage — im Browser Strg+V drücken.\
+                     \x1fis on the clipboard; press Ctrl+V in the browser.\x1d",
+                    file.file_name().unwrap_or_default().to_string_lossy()
+                ),
+                file,
             ))
         }
 
@@ -85,39 +161,44 @@ pub fn run(id: &str, file: &Path) -> Result<String> {
             // The one place in this program where data leaves the machine.
             // Asked once per favourite and recorded, so it is a decision about
             // this service rather than a habit of clicking yes.
+            //
+            // Once per *run* as well, which is what the gate in
+            // [`crate::webtool::batch`] is for: six files start six of these
+            // processes, all six read the same `confirmed: false`, and six
+            // dialogs used to stack up. One of them asks now; the other five
+            // wait for its answer and take it, a no included.
             if !web.confirmed {
                 let size = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
-                let agreed = shell::ask(
-                    "\x1eDatei senden?\x1fSend the file?\x1d",
-                    &format!(
-                        "„{name}“ \x1eschickt diese Datei an einen fremden Dienst\
+                let agreed = batch::consent(batch, &favourite.id, || {
+                    shell::ask(
+                        "\x1eDatei senden?\x1fSend the file?\x1d",
+                        &format!(
+                            "„{name}“ \x1eschickt diese Datei an einen fremden Dienst\
                          \x1fsends this file to an external service\x1d:\n\n\
                          \x1eDatei\x1fFile\x1d: {file}\n\
                          \x1eGröße\x1fSize\x1d: {kilobytes} KB\n\
                          \x1eZiel\x1fTo\x1d: {host}\n\n\
                          \x1eEinverstanden? Diese Frage kommt für dieses Werkzeug nur einmal.\
                          \x1fAgree? You will be asked once per tool.\x1d",
-                        name = favourite.name,
-                        file = file.display(),
-                        kilobytes = size.div_ceil(1024),
-                        host = host_of(&upload.endpoint),
-                    ),
-                );
+                            name = favourite.name,
+                            file = file.display(),
+                            kilobytes = size.div_ceil(1024),
+                            host = host_of(&upload.endpoint),
+                        ),
+                    )
+                });
 
                 if !agreed {
-                    return Ok("\x1eNichts gesendet\x1fnothing was sent\x1d".into());
+                    return Ok(Outcome::plain(
+                        "\x1eNichts gesendet\x1fnothing was sent\x1d".into(),
+                    ));
                 }
 
-                // Remember the answer, but never let a failure to write it
-                // stop the upload the user just agreed to.
-                //
-                // The one field, and not the whole favourite: this process was
-                // started by a right-click and the window may well be open
-                // beside it, with a favourite half renamed. Writing back the
-                // copy read at the top of this function would take that rename
-                // with it -- and that copy is now as old as the dialog above
-                // stood on screen.
-                let _ = crate::favourites::remember_consent(&favourite.id);
+                // Writing the answer down is the gate's job now: whichever
+                // process asked is the one that records it, and the five that
+                // waited must not write a decision they did not take. See
+                // `batch::recorded` for why it is one field and not the whole
+                // favourite.
             }
 
             let bytes = std::fs::read(file).with_context(|| format!("{}", file.display()))?;
@@ -247,7 +328,7 @@ fn apply_result(
     answer: &http::Answer,
     file: &Path,
     allow_insecure: bool,
-) -> Result<String> {
+) -> Result<Outcome> {
     let endpoint = &upload.endpoint;
 
     // Before anything is fetched or written: what came back may be a receipt
@@ -260,10 +341,13 @@ fn apply_result(
     };
 
     match &upload.result {
-        ResultAction::Report => Ok(format!(
-            "\x1eAntwort\x1fstatus\x1d {}, {} Bytes",
-            answer.status,
-            answer.body.len()
+        ResultAction::Report => Ok(Outcome::about(
+            format!(
+                "\x1eAntwort\x1fstatus\x1d {}, {} Bytes",
+                answer.status,
+                answer.body.len()
+            ),
+            file,
         )),
 
         ResultAction::Open { source } => {
@@ -278,9 +362,12 @@ fn apply_result(
                 }
             };
             shell::open_from_service(&address)?;
-            Ok(format!(
-                "{}\x1eErgebnis geöffnet\x1fresult opened\x1d: {address}",
-                took_a_while(&job)
+            Ok(Outcome::about(
+                format!(
+                    "{}\x1eErgebnis geöffnet\x1fresult opened\x1d: {address}",
+                    took_a_while(&job)
+                ),
+                file,
             ))
         }
 
@@ -305,11 +392,17 @@ fn apply_result(
 
             let target = free_name(file, suffix);
             std::fs::write(&target, &bytes).with_context(|| format!("{}", target.display()))?;
-            Ok(format!(
-                "{}\x1eGespeichert\x1fsaved\x1d: {} ({} Bytes)",
-                took_a_while(&job),
-                target.display(),
-                bytes.len()
+            // Named after the file that was written, not the one that was
+            // clicked: the result is what the user is looking for afterwards,
+            // and its name is the one that differs.
+            Ok(Outcome::about(
+                format!(
+                    "{}\x1eGespeichert\x1fsaved\x1d: {} ({} Bytes)",
+                    took_a_while(&job),
+                    target.display(),
+                    bytes.len()
+                ),
+                &target,
             ))
         }
     }
@@ -797,6 +890,39 @@ pub fn mime_for(file: &Path) -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_report_is_headed_with_the_name_of_the_tool() {
+        assert_eq!(
+            titled(Some("SnapOtter: Metadaten entfernen")),
+            "SnapOtter: Metadaten entfernen"
+        );
+        assert_eq!(titled(Some("  SnapOtter  ")), "SnapOtter");
+    }
+
+    #[test]
+    fn a_favourite_that_is_gone_still_leaves_a_sender() {
+        // The entry in the registry outlived the favourite it was made from,
+        // which is exactly the case whose error message most needs a heading.
+        assert_eq!(titled(None), FALLBACK_TITLE);
+        assert_eq!(titled(Some("   ")), FALLBACK_TITLE);
+        assert_eq!(titled(Some("")), FALLBACK_TITLE);
+    }
+
+    #[test]
+    fn an_outcome_lists_a_bare_name_and_says_the_whole_sentence() {
+        let outcome = Outcome::about(
+            r"Gespeichert: D:\Bilder\bild.ohne-meta.png (527029 Bytes)".into(),
+            Path::new(r"D:\Bilder\bild.ohne-meta.png"),
+        );
+        assert_eq!(outcome.label, "bild.ohne-meta.png");
+        assert!(outcome.message.contains(r"D:\Bilder"));
+
+        // Nothing to name: the line is the sentence, so that six identical
+        // ones collapse into one. See `batch::collected`.
+        let nothing = Outcome::plain("Nichts gesendet".into());
+        assert_eq!(nothing.label, nothing.message);
+    }
+
     /// An upload with one endpoint and one thing to do with the answer.
     fn upload(endpoint: &str, result: ResultAction) -> Upload {
         Upload {
@@ -1181,8 +1307,16 @@ mod tests {
             body: br#"{"jobId":"abc","async":true}"#.to_vec(),
         };
 
-        let message = apply_result(&task, &receipt, &file, true).expect("the job is waited out");
-        assert!(message.contains("bild.neu.png"), "{message}");
+        let outcome = apply_result(&task, &receipt, &file, true).expect("the job is waited out");
+        assert!(
+            outcome.message.contains("bild.neu.png"),
+            "{}",
+            outcome.message
+        );
+        assert_eq!(
+            outcome.label, "bild.neu.png",
+            "the collected report names the file that was written, not the one that was clicked"
+        );
         assert_eq!(
             std::fs::read(directory.join("bild.neu.png")).expect("the result was written"),
             result,

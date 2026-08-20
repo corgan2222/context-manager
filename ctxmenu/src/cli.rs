@@ -1420,8 +1420,11 @@ pub fn run_favourite(command: FavouriteCommand) -> Result<()> {
         }
 
         FavouriteCommand::Run { id, file } => {
-            let message = crate::webtool::run(&id, std::path::Path::new(&file))?;
-            crate::outln!("{message}");
+            // No batch: this is one file typed at a console by hand, where
+            // collecting six reports into one has nothing to collect -- and
+            // where there is a console to print to in the first place.
+            let outcome = crate::webtool::run(&id, std::path::Path::new(&file), None)?;
+            crate::outln!("{}", outcome.message);
             Ok(())
         }
     }

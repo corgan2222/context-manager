@@ -103,7 +103,10 @@
 
 use anyhow::{Context as _, Result};
 use windows::Data::Xml::Dom::XmlDocument;
-use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+use windows::UI::Notifications::{
+    NotificationData, NotificationUpdateResult, ToastNotification, ToastNotificationManager,
+    ToastNotifier,
+};
 use windows::core::HSTRING;
 use windows_registry::CURRENT_USER;
 
@@ -156,6 +159,105 @@ const TEXT_LIMIT: usize = 512;
 /// the first case and deliberately nothing for the second; see
 /// [`crate::webtool::shell::report`].
 pub fn show(title: &str, text: &str, level: Level) -> Result<()> {
+    let notifier = notifier()?;
+    let toast = toast(&payload(title, text, level))?;
+
+    notifier
+        .Show(&toast)
+        .context("\x1eToast abgelehnt\x1ftoast refused\x1d")?;
+
+    settled(&notifier);
+    Ok(())
+}
+
+/// Which notification an update is meant for.
+///
+/// `tag` and `group` together are the platform's name for one entry in the
+/// Action Center; showing a second toast under a name already in use replaces
+/// the first rather than adding to it. `sequence` grows with every change, and
+/// the platform drops anything that arrives with an older one -- which is what
+/// makes six processes with no knowledge of each other safe to let write.
+pub struct Slot<'a> {
+    pub tag: &'a str,
+    pub group: &'a str,
+    pub sequence: u32,
+}
+
+/// Puts one notification on screen and changes it afterwards, in place.
+///
+/// The half of the collected report that the platform does; see
+/// [`crate::webtool::batch`] for how the processes agree on what to write.
+///
+/// # Why the text lives in the data and not in the XML
+///
+/// [`ToastNotifier::UpdateWithTagAndGroup`] replaces *data-bound* values, not
+/// markup: it takes a [`NotificationData`] and fills the `{name}` placeholders
+/// of a toast that is already on screen. So the payload of an updatable
+/// carries `<text>{ctx_body}</text>` and never the text itself, and the first
+/// `Show` has to supply the same data the updates later replace.
+///
+/// The gain is that an update does *not* draw a new banner. Measured on
+/// 2026-08-20 with a three-line body replacing a one-line one: `Update`
+/// answered `Succeeded`, the banner already on screen grew where it stood, and
+/// nothing flashed a second time. Showing a fresh toast under the same tag
+/// would have replaced the entry just as well, but with a new banner each time
+/// -- which is six banners for six files, the thing this exists to stop.
+///
+/// # When it falls back to showing one
+///
+/// `Update` answers `NotificationNotFound` once the entry has gone: the user
+/// dismissed it, or the Action Center dropped it. There is then nothing to
+/// change, and a new toast under the same tag is the right answer -- the same
+/// answer the first process gives, which is why both paths end in the same
+/// three lines.
+pub fn show_or_update(title: &str, text: &str, level: Level, slot: &Slot) -> Result<()> {
+    let notifier = notifier()?;
+    let data = bound(title, text, slot.sequence)?;
+    let tag = HSTRING::from(slot.tag);
+    let group = HSTRING::from(slot.group);
+
+    // Not for the first one: there is nothing on screen yet, and asking would
+    // only be answered with `NotificationNotFound`.
+    if slot.sequence > 1
+        && matches!(
+            notifier.UpdateWithTagAndGroup(&data, &tag, &group),
+            Ok(result) if result == NotificationUpdateResult::Succeeded
+        )
+    {
+        // For the same reason as after `Show`, and it was missed here first:
+        // `Update` returns once the store has the new text, and redrawing the
+        // banner already on screen comes after that. Without this the process
+        // is gone before the redraw and the banner keeps the text it had --
+        // measured on 2026-08-20 as a banner that stood unchanged for ten
+        // seconds while four more files finished behind it.
+        settled(&notifier);
+        return Ok(());
+    }
+
+    let toast = toast(&bound_payload(level))?;
+    toast
+        .SetTag(&tag)
+        .context("\x1eToast-Kennzeichen\x1ftoast tag\x1d")?;
+    toast
+        .SetGroup(&group)
+        .context("\x1eToast-Gruppe\x1ftoast group\x1d")?;
+    toast
+        .SetData(&data)
+        .context("\x1eToast-Daten\x1ftoast data\x1d")?;
+
+    notifier
+        .Show(&toast)
+        .context("\x1eToast abgelehnt\x1ftoast refused\x1d")?;
+
+    settled(&notifier);
+    Ok(())
+}
+
+/// The notifier both entry points send through, with the identity in place.
+///
+/// `WithId`, not the bare `CreateToastNotifier`: the argument-less one asks
+/// the process for its own AppUserModelID, and a portable `.exe` has none.
+fn notifier() -> Result<ToastNotifier> {
     name_the_sender();
 
     // The other half of the same identity: the registry value above gives the
@@ -164,30 +266,78 @@ pub fn show(title: &str, text: &str, level: Level) -> Result<()> {
     // fail loudly -- see there.
     crate::startmenu::ensure(AUMID);
 
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
+        .context("\x1eCreateToastNotifier\x1fCreateToastNotifier\x1d")
+}
+
+/// One toast from one XML document.
+fn toast(xml: &str) -> Result<ToastNotification> {
     let document = XmlDocument::new().context("\x1eXmlDocument\x1fXmlDocument\x1d")?;
     document
-        .LoadXml(&HSTRING::from(payload(title, text, level)))
+        .LoadXml(&HSTRING::from(xml))
         .context("\x1eToast-XML abgelehnt\x1ftoast XML refused\x1d")?;
 
-    let toast = ToastNotification::CreateToastNotification(&document)
-        .context("\x1eCreateToastNotification\x1fCreateToastNotification\x1d")?;
+    ToastNotification::CreateToastNotification(&document)
+        .context("\x1eCreateToastNotification\x1fCreateToastNotification\x1d")
+}
 
-    // `WithId`, not the bare `CreateToastNotifier`: the argument-less one asks
-    // the process for its own AppUserModelID, and a portable `.exe` has none.
-    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
-        .context("\x1eCreateToastNotifier\x1fCreateToastNotifier\x1d")?;
-
-    notifier
-        .Show(&toast)
-        .context("\x1eToast abgelehnt\x1ftoast refused\x1d")?;
-
-    // One more question to the platform, and the answer is thrown away: what
-    // is wanted is the round trip. See the module documentation -- without it
-    // this process is gone before the banner is drawn, and the message reaches
-    // the Action Center and nothing else.
+/// Questions to the platform whose answers are thrown away: what is wanted is
+/// the round trip. See the module documentation -- without one, this process is
+/// gone before the banner is drawn and the message reaches the Action Center
+/// and nothing else.
+///
+/// Two of them, and the second is the expensive one on purpose. `Setting()`
+/// was enough while the toast carried its text in its own markup; a toast
+/// whose text arrives as [`NotificationData`] gives the platform more to do
+/// before it can draw anything, and one cheap question came back too early.
+/// Measured on 2026-08-20, one file through `--favourite`, the banner region
+/// photographed a second later:
+///
+/// ```text
+/// text in the markup, Setting() only            banner   (the build before this one)
+/// text in the data,   Setting() only            none     (5 runs, 0 banners)
+/// text in the data,   Setting() and GetHistory  banner
+/// ```
+///
+/// `GetHistory` is a real query against the notification store, so its answer
+/// cannot arrive before the store has taken in what `Show` handed it. Still
+/// not a sleep and still nothing that could leave a process behind.
+fn settled(notifier: &ToastNotifier) {
     let _ = notifier.Setting();
+    let _ = ToastNotificationManager::History()
+        .and_then(|history| history.GetHistoryWithId(&HSTRING::from(AUMID)));
+}
 
-    Ok(())
+/// The two texts as the values a bound toast reads them out of.
+///
+/// No entity escaping here, unlike [`payload`]: these never pass a parser.
+/// They are handed to the platform as strings and put into the toast as text,
+/// so an `&` in a file name has to arrive as an `&` -- escaping it would show
+/// the user `&amp;`. What still has to go is what [`allowed`] rules out, for
+/// the same reason as there.
+fn bound(title: &str, text: &str, sequence: u32) -> Result<NotificationData> {
+    let data = NotificationData::new().context("\x1eNotificationData\x1fNotificationData\x1d")?;
+    let values = data
+        .Values()
+        .context("\x1eNotificationData.Values\x1fNotificationData.Values\x1d")?;
+
+    values
+        .Insert(
+            &HSTRING::from(TITLE_KEY),
+            &HSTRING::from(cleaned(capped(title, TITLE_LIMIT))),
+        )
+        .context("\x1eToast-Titel\x1ftoast title\x1d")?;
+    values
+        .Insert(
+            &HSTRING::from(BODY_KEY),
+            &HSTRING::from(cleaned(capped(text, TEXT_LIMIT))),
+        )
+        .context("\x1eToast-Text\x1ftoast text\x1d")?;
+
+    data.SetSequenceNumber(sequence)
+        .context("\x1eToast-Folgenummer\x1ftoast sequence number\x1d")?;
+
+    Ok(data)
 }
 
 /// Gives the Action Center a name to put above the message.
@@ -256,6 +406,31 @@ fn payload(title: &str, text: &str, level: Level) -> String {
     )
 }
 
+/// What the two `{…}` placeholders of an updatable toast are called.
+///
+/// Prefixed, because the names live in the same space as the ones the platform
+/// uses for a progress bar (`progressValue`, `progressStatus`). Nothing here
+/// draws a progress bar today, and a collision would be a silent one.
+const TITLE_KEY: &str = "ctx_title";
+const BODY_KEY: &str = "ctx_body";
+
+/// The same document as [`payload`], with the two texts left out.
+///
+/// They arrive separately, as the values of a [`NotificationData`], and that is
+/// what makes the notification changeable afterwards -- see [`show_or_update`].
+fn bound_payload(level: Level) -> String {
+    let duration = match level {
+        Level::Info => "",
+        Level::Error => " duration=\"long\"",
+    };
+
+    format!(
+        "<toast{duration}><visual><binding template=\"ToastGeneric\">\
+         <text>{{{TITLE_KEY}}}</text><text>{{{BODY_KEY}}}</text>\
+         </binding></visual></toast>"
+    )
+}
+
 /// `text` cut to at most `limit` characters, on a character boundary.
 ///
 /// Cut along `chars`, never along bytes: half a UTF-8 sequence is not a string
@@ -296,6 +471,17 @@ fn escaped(text: &str) -> String {
     }
 
     out
+}
+
+/// The half of [`escaped`] that a bound value still needs.
+///
+/// A value handed to [`NotificationData`] is not markup and is not parsed, so
+/// the three entities would arrive on screen spelled out. The dropping stays:
+/// a bilingual marker that outlived the cut would be an unprintable character
+/// in the middle of a file name, and the tab and the line breaks are what put
+/// six names under each other.
+fn cleaned(text: &str) -> String {
+    text.chars().filter(|c| allowed(*c)).collect()
 }
 
 /// Whether XML 1.0 allows this character at all.
@@ -417,6 +603,49 @@ mod tests {
         let text = "&".repeat(5000);
         let xml = payload(&title, &text, Level::Error);
         assert!(xml.len() < 3072, "{} bytes", xml.len());
+    }
+
+    #[test]
+    fn a_bound_payload_carries_the_two_placeholders_and_no_text() {
+        let xml = bound_payload(Level::Info);
+        assert!(xml.contains("<text>{ctx_title}</text>"), "{xml}");
+        assert!(xml.contains("<text>{ctx_body}</text>"), "{xml}");
+        assert!(
+            xml.contains(r#"template="ToastGeneric""#),
+            "the same template as the fixed one, so the two look alike: {xml}"
+        );
+        assert!(
+            bound_payload(Level::Error).contains(r#"<toast duration="long">"#),
+            "an error is worth the long interval here too"
+        );
+    }
+
+    #[test]
+    fn the_placeholders_are_spelled_the_same_in_the_xml_and_in_the_data() {
+        // Two halves that have to agree and are written down separately: the
+        // markup names them in braces, `bound` inserts them without. A typo in
+        // either is a toast that shows `{ctx_body}` to the user.
+        let xml = bound_payload(Level::Info);
+        assert!(xml.contains(&format!("{{{TITLE_KEY}}}")));
+        assert!(xml.contains(&format!("{{{BODY_KEY}}}")));
+    }
+
+    #[test]
+    fn a_bound_value_keeps_the_characters_a_parsed_one_has_to_escape() {
+        // The difference between the two paths, and the reason for the second
+        // function: a bound value never passes a parser, so escaping it would
+        // put `&amp;` in front of the user.
+        assert_eq!(cleaned("Rechnung & Co.png"), "Rechnung & Co.png");
+        assert_eq!(escaped("Rechnung & Co.png"), "Rechnung &amp; Co.png");
+    }
+
+    #[test]
+    fn a_bound_value_drops_what_no_toast_can_hold() {
+        // A bilingual marker that outlived the cut, and the line break that
+        // puts six file names under each other.
+        let text = format!("eins.png{}zwei.png", crate::bilingual::OPEN);
+        assert_eq!(cleaned(&text), "eins.pngzwei.png");
+        assert_eq!(cleaned("eins.png\nzwei.png"), "eins.png\nzwei.png");
     }
 
     #[test]
