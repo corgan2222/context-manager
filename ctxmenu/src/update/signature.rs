@@ -16,7 +16,8 @@
 //! * The public half is [`RELEASE_KEY`], compiled in from
 //!   `ctxmenu/release-signing.pub.pem`. The private half lives in the
 //!   `RELEASE_SIGNING_KEY` secret of the repository and is used by one step of
-//!   `release.yml`; see `tools/new-release-key.ps1` for how the pair was made.
+//!   `release.yml`. The pair was generated once and is not rotated: a new one
+//!   takes self-update away from every copy already shipped.
 //!
 //! # Why the arithmetic is not written out here
 //!

@@ -7,10 +7,3 @@
 
 # The tool's runtime data
 /backups
-/tmp
-/tools
-/.claude
-
-.mcp.json
-CLAUDE.md
-HANDOVER.md
