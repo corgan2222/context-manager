@@ -1,0 +1,31 @@
+name: Auto Label
+
+# Labels a pull request from its branch, title and changed files, using the
+# `autolabeler:` block in .github/release-drafter.yml -- the same file the
+# draft is built from, so a label can only ever mean one thing.
+on:
+  pull_request:
+    # The only types the action acts on; listing them keeps it from waking for
+    # every comment and review.
+    types: [opened, reopened, synchronize]
+    # pull_request_target would be needed for pull requests from forks. It is
+    # deliberately not used: that event runs with a writable token in the
+    # context of the base repository, and a fork should not reach it.
+
+permissions:
+  contents: read
+
+jobs:
+  auto_label:
+    permissions:
+      # Both, and deliberately: a job-level `permissions:` block *replaces* the
+      # workflow-level one rather than adding to it. With `pull-requests: write`
+      # alone the action cannot read .github/release-drafter.yml through the
+      # contents API and dies with "Resource not accessible by integration" --
+      # measured here on 2026-08-20. A public repository hides this, because the
+      # config is readable without a token there.
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter/autolabeler@v7

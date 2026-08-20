@@ -28,10 +28,45 @@ cargo build --release
 
 All four must be green. `-D warnings` is not negotiable.
 
+The same checks run as git hooks, so that a red build is caught before it
+travels rather than after. Once per clone:
+
+```powershell
+pip install pre-commit
+pre-commit install --install-hooks
+pre-commit install --hook-type pre-push
+```
+
+Committing then runs gitleaks, the YAML and TOML checks and `cargo fmt`;
+pushing runs `cargo clippy` and `cargo test`. Building the gitleaks hook needs
+Go on the PATH. The hooks live on your machine and `--no-verify` skips them —
+CI runs the same checks again and is the one that decides.
+
 The result ends up at `target\x86_64-pc-windows-msvc\release\ctxmenu.exe`,
 not `target\release\`: `.cargo\config.toml` names the target explicitly, so
 the statically linked C runtime applies to the application and not also to
 the compiler's macro libraries.
+
+## Branches and main
+
+`main` is protected and takes no direct push — not from a contributor, not
+from the maintainer. Every change arrives as a pull request, and every change
+gets its own branch:
+
+```powershell
+git switch -c feature/short-name    # or bugfix/, docs/, chore/
+git push -u origin HEAD
+gh pr create
+```
+
+Those four prefixes are not decoration. `.github/release-drafter.yml` reads
+them and sorts the pull request into the right heading of the next release's
+notes, so a branch named after what it does labels itself. A branch named
+something else still merges; it just arrives in the notes unsorted.
+
+To merge, `check` and `secrets` must be green and the branch must be up to
+date with `main`. No approving review is required — this is a one-person
+project and nobody can approve their own work.
 
 ## What belongs in a pull request
 

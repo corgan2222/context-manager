@@ -1,0 +1,23 @@
+name: Release Drafter
+
+# Every push to main rewrites the draft. main only ever moves through a merged
+# pull request, so in practice this runs once per merge -- which is exactly the
+# unit the notes are written in.
+on:
+  push:
+    branches: [main]
+
+# Permissions for the default token (secrets.GITHUB_TOKEN).
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  update_release_draft:
+    runs-on: ubuntu-latest
+    steps:
+      # No checkout: the action fetches .github/release-drafter.yml through the
+      # API on its own.
+      - uses: release-drafter/release-drafter@v7
+        with:
+          config-name: release-drafter.yml

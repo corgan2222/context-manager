@@ -1,0 +1,141 @@
+# Release Drafter keeps the next release's notes up to date as pull requests
+# are merged, so that publishing becomes a decision rather than an evening
+# spent reading the log.
+#
+# How this fits the two workflows already here:
+#
+#   release-drafter.yml  rewrites the draft on every push to main
+#   autolabeler.yml      labels a pull request from its branch, title and files
+#   release.yml          runs when the draft is *published*, builds the .exe
+#                        from the tag and attaches it
+#
+# The version below is a suggestion, not a decision. `Cargo.toml` is the source
+# of truth, and `release.yml` refuses to build when the tag and the manifest
+# disagree. A wrong guess here therefore cannot ship a mislabelled binary; it
+# fails loudly instead. Bump `Cargo.toml` first, then publish the draft.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+# `exclusive: true` on every changelog category, and the order below is the
+# priority: a pull request lands in the first heading it matches and in no
+# other. Without it one pull request appears under every label it carries --
+# measured on #1, which honestly earned `ci`, `documentation` and `chore` at
+# once and would have been listed three times.
+#
+# The order answers "what was this change actually about?". A feature that also
+# touches the README is a feature; a CI change that also touches the README is
+# a CI change; only a pull request that is nothing else is documentation.
+# Maintenance sits last as the catch-all.
+categories:
+  - title: '🚀 Features'
+    exclusive: true
+    semver-increment: minor
+    when:
+      labels:
+        - 'feature'
+        - 'enhancement'
+  - title: '🐛 Bug Fixes'
+    exclusive: true
+    when:
+      labels:
+        - 'fix'
+        - 'bugfix'
+        - 'bug'
+  - title: '⚙️ Build, CI and Dependencies'
+    exclusive: true
+    when:
+      labels:
+        - 'ci'
+        - 'build'
+        - 'dependencies'
+  - title: '📖 Documentation'
+    exclusive: true
+    when:
+      labels:
+        - 'documentation'
+  - title: '🧰 Maintenance'
+    exclusive: true
+    when:
+      labels:
+        - 'chore'
+        - 'refactor'
+
+  # Anything wearing this label stays out of the notes entirely.
+  - type: 'pre-exclude'
+    when:
+      label: 'skip-changelog'
+
+  # A feature moves the minor digit through the category above. These two say
+  # what the other labels do to the suggested number; patch is the default, so
+  # an unlabelled pull request never proposes a bigger jump than it earned.
+  - type: 'version-resolver'
+    semver-increment: 'major'
+    when:
+      label: 'major'
+  - type: 'version-resolver'
+    semver-increment: 'patch'
+
+change-template: '- $TITLE (#$NUMBER) $AUTHORS'
+
+# Escapes the characters that would otherwise let a pull request title reach
+# into the release notes as markup.
+change-title-escapes: '\<*_&'
+
+no-changes-template: '- Nothing that reaches a user.'
+
+# Matchers are evaluated independently: one match is enough for the label.
+# The branch patterns follow this repository's own naming -- feature/*,
+# bugfix/*, docs/* -- so an ordinary branch labels itself and the notes are
+# sorted without anyone remembering to do it.
+autolabeler:
+  - label: 'feature'
+    branch:
+      - '/feature\/.+/'
+  - label: 'bug'
+    branch:
+      - '/bugfix\/.+/'
+      - '/fix\/.+/'
+    title:
+      - '/^fix/i'
+  - label: 'documentation'
+    branch:
+      - '/docs?\/.+/'
+    files:
+      - '*.md'
+      - 'docs/**'
+  - label: 'ci'
+    files:
+      - '.github/**'
+      - '.pre-commit-config.yaml'
+  - label: 'dependencies'
+    files:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  - label: 'chore'
+    branch:
+      - '/chore\/.+/'
+
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Download
+
+  `ctxmenu.exe` needs no installation and no runtime library. Windows 10 and
+  11, 64-bit.
+
+  Every file here was built by GitHub from the tag this release names — never
+  uploaded from a developer's machine. `checksums.txt` carries the SHA-256 of
+  each one, so a download can be checked before it is run:
+
+  ```powershell
+  Get-FileHash .\ctxmenu.exe -Algorithm SHA256
+  ```
+
+  The binary is not code-signed yet, so Windows SmartScreen will warn on first
+  run. Why that is, and what it would cost to change, is written down in
+  `.github/workflows/release.yml`.
+
+  **Full changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
