@@ -62,7 +62,7 @@ resolver = "3"
 # entire section, and the ten screenshots it never had. Nothing stored changed
 # shape, no subcommand moved, and a binary built from this behaves like 1.4.0
 # -- which is the whole claim a patch makes.
-version = "1.4.1"
+version = "1.4.2"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
