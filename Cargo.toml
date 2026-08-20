@@ -47,7 +47,22 @@ resolver = "3"
 # older version ignores, and two files that exist for seconds during an update.
 # Older releases carry no signature and are therefore never offered -- which
 # only matters in one direction, since they are all older than this.
-version = "1.4.0"
+# 1.4.1 on 2026-08-20: a patch in the plainest sense -- the program does the
+# same things, and one of them now does them without writing through a raw
+# pointer. Code scanning read `icons/extract.rs` and reported two accesses
+# through a pointer it could not prove valid. Neither was a defect:
+# `CreateDIBSection` writes the buffer address through an out parameter the
+# analysis cannot follow, so all it ever saw was the `null_mut()` the pointer
+# was initialised with. But the argument for why that is safe lived in a
+# comment and a null check, and it lives in the type now -- `DibBits` holds a
+# `NonNull` and a length, and the two draw passes reach the pixels as slices
+# whose borrows are narrower than the bindings they replace. Beside it the
+# German README caught up with the English one: seven statements that were no
+# longer true, ten numbers that disagreed with the code or with themselves, an
+# entire section, and the ten screenshots it never had. Nothing stored changed
+# shape, no subcommand moved, and a binary built from this behaves like 1.4.0
+# -- which is the whole claim a patch makes.
+version = "1.4.1"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
