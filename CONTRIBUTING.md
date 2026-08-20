@@ -1,7 +1,5 @@
 # Contributing
 
-*[Deutsche Fassung](CONTRIBUTING_DE.md)*
-
 Thanks for stopping by. This is a small project with strong opinions; the
 rules below are what keep it small.
 
@@ -73,7 +71,7 @@ The most delicate part, so the strictest rules apply:
 - **Features Windows doesn't offer.** Free reordering of menu entries, for
   example: measured, and the system only knows `Position=Top` and
   `Position=Bottom`. What fails because of that is listed in the
-  [README](../README.md) under "What It Deliberately Cannot Do."
+  [README](README.md) under "What It Deliberately Cannot Do."
 - **Machine-generated translations.** Both languages are written by hand and
   are meant to read equally well.
 

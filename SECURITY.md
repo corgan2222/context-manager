@@ -1,7 +1,5 @@
 # Security Policy
 
-*[Deutsche Fassung](SECURITY_DE.md)*
-
 `ctxmenu` is a desktop program. It runs as the logged-in user on a Windows PC,
 reads and writes the context menu's registry keys, and can send files to web
 services the user has entered themselves. It is not a service, has no

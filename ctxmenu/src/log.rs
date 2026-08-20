@@ -17,8 +17,8 @@
 //!
 //! What is never written: the contents of a file, a key, or a header value. The
 //! log is meant to be attachable to a public issue after a glance — it does name
-//! registry paths and file names, which is why `docs/SECURITY.md` and
-//! `docs/CONTRIBUTING.md` both say to look before sending.
+//! registry paths and file names, which is why `SECURITY.md` and
+//! `CONTRIBUTING.md` both say to look before sending.
 
 use std::fmt::Write as _;
 use std::io::Write as _;

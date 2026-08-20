@@ -444,9 +444,9 @@ Notizen, die nicht Teil dieses Repositoriums sind.
 
 ## Mitmachen, Sicherheit, Lizenz
 
-- [Mitmachen](CONTRIBUTING_DE.md) ([english](CONTRIBUTING.md))
-- [Sicherheitsrichtlinie](SECURITY_DE.md) ([english](SECURITY.md))
-- [Verhaltenskodex](CODE_OF_CONDUCT.md)
-- [Hinweise zu Fremdsoftware](THIRD-PARTY-NOTICES_DE.md)
-  ([english](THIRD-PARTY-NOTICES.md))
+- [Mitmachen](../CONTRIBUTING.md) (englisch)
+- [KI-Richtlinie](../AI_POLICY.md) (englisch)
+- [Sicherheitsrichtlinie](../SECURITY.md) (englisch)
+- [Verhaltenskodex](../CODE_OF_CONDUCT.md) (englisch)
+- [Hinweise zu Fremdsoftware](THIRD-PARTY-NOTICES.md) (englisch)
 - [MIT-Lizenz](../LICENSE)

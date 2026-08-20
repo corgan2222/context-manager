@@ -10,7 +10,7 @@ policy, but because the delete function cannot be invoked at all without
 proof of a backup.
 
 It also works the other way: custom entries, submenus, a toolbox of programs
-and web services, all the way to **two hundred menu entries from a single
+and web services, all the way to **two hundred tools from a single
 address** when a web application describes itself through OpenAPI.
 
 Windows 10 and 11, 64-bit. A single `.exe` written in Rust, no installation, no
@@ -19,25 +19,36 @@ runtime library, no background service.
 *Interface in German and English, switchable at runtime; this README is
 English only.*
 
+![The Categories tab, showing 927 context menu entries across seven base categories](docs/images/01-overview_en.web.png)
+
+*The starting point on a machine that has grown over the years: 927 entries,
+131 of them in the seven base categories, another 229 in Windows' own verb
+store. Static verbs and COM handlers stand side by side; the padlock marks
+what cannot be changed without administrator rights.*
+
 ---
 
 ## What It Can Do
 
 - **See everything.** The seven base categories (files, folders, folder
   background, desktop background, drives, filesystem objects, and the shell
-  namespace) across three registry areas: `HKCU`, `HKLM`, and the 32-bit view
-  `WOW6432Node`. On a machine that has grown over the years, that comes to
-  around 930 entries. Static verbs and COM handlers are shown separately: a
-  verb is a key with a command, a COM handler is a CLSID backed by a DLL, and
-  for the handler the program shows the CLSID's plain-text name and the DLL
-  behind it. Plus Windows' own **verb store** (`CommandStore`): 229 verbs on
-  this machine that appear in no menu until another entry names them in its
-  `SubCommands` list. Read-only, marked with a lock.
+  namespace) across three registry areas: `HKCU`, `HKLM`, and the 32-bit
+  view `WOW6432Node`. On a machine that has grown over the years, those
+  seven come to about 130 entries; resolve every file type as well and the
+  whole scan reaches around 930. Static verbs and COM handlers are shown
+  separately: a verb is a key with a command, a COM handler is a CLSID
+  backed by a DLL, and for the handler the program shows the CLSID's
+  plain-text name and the DLL behind it. Plus Windows' own **verb store**
+  (`CommandStore`): 229 verbs on this machine that appear in no menu until
+  another entry names them in its `SubCommands` list. Read-only, marked with
+  a lock.
 - **Resolve file types.** For an extension like `.jpg`, the complete chain
   from user choice, ProgID, `PerceivedType`, and `SystemFileAssociations`,
   seven levels in all: in other words, what the right-click actually shows,
-  not what is registered at one single spot. For `.jpg` that comes to 58
-  entries, 39 of which apply to every file.
+  not what is registered at one single spot. For `.jpg` that comes to just
+  under sixty entries, two thirds of which apply to every file — and because
+  those two thirds are the same for every extension, the tab leaves them out
+  until *Include entries for all files* asks for them.
 - **Custom file extensions and the full scan.** The *File Types* tab shows a
   curated selection of 98 types; a field above it accepts any further
   extension, which then stays saved. Anyone who wants to see everything
@@ -50,12 +61,19 @@ English only.*
   **If an entry points to a program that no longer exists, the row shows in
   red**; this happens mainly after updates to Store apps, whose folder
   carries the version number in its name.
-- **Change, in four steps from mild to severe:** hide (`LegacyDisable`), show
+- **Change, in five steps from mild to severe:** hide (`LegacyDisable`), show
   only with the Shift key (`Extended`), set the position to top or bottom,
   block a COM handler machine-wide, delete.
 - **Create your own entries** with a display name, command, icon, position,
-  and Shift-key visibility. Always in `HKCU`, so without administrator
-  rights and without risk to other accounts.
+  and Shift-key visibility — for a base category, for a single extension, or
+  for a whole kind of file. Browse buttons beside the command and icon
+  fields open the ordinary Windows file dialog and quote what comes back;
+  the icon a reference resolves to is drawn beside the field, so a wrong
+  index shows before the entry does; the registry path the entry will land
+  in stands under the form and follows what you type; and a folded *Help*
+  carries the placeholder table and three working command lines. Always in
+  `HKCU`, so without administrator rights and without risk to other
+  accounts.
 - **Also as a submenu.** Instead of a command, the entry gets a list of
   child entries that expands within the menu. The order in the form is the
   order in the menu: Windows sorts registry keys alphabetically, so the
@@ -67,21 +85,26 @@ English only.*
 - **Web tools as a favourite.** A favourite does not have to be an `.exe`;
   an address is enough. Because a web page is not allowed to read a local
   file, it gets *sent* instead; more on that below.
-- **Services: a hundred tools from one address.** If a web application
+- **Services: two hundred tools from one address.** If a web application
   describes itself through OpenAPI, the address of its documentation page
   is enough. The program looks for the machine-readable document behind it,
   reads out which endpoints accept a file, groups them the way the service
   itself groups them, and turns every checked one into a favourite. If a
   tool accepts settings, a form is generated for it, even when the service
   describes its options only as running text.
-- **Drag and drop.** Dragging an `.exe` into the window creates an entry
-  from it; which category it is dropped on decides where it lands. In the
-  editor, the fields for command and icon also accept a dropped file.
+- **Drag and drop.** Dragging an `.exe` into the window opens the editor
+  already filled in from it — name, command with the right placeholder, the
+  program's own icon; which category it is dropped on decides which one the
+  form starts in. Nothing is written until the button in the form is
+  pressed. In the editor, the fields for command and icon also accept a
+  dropped file.
 - **Back up and restore.** Every action creates a backup beforehand, a group
-  action exactly one backup for the whole group. The *Backups* tab shows the
-  history and plays it back, and it has a **Back Up Everything** button that
-  takes along every location this tool touches at all (on this machine, 1.2
-  MB in under a second).
+  action exactly one backup for the whole group. A **Back up** button in the
+  top bar makes one on demand and changes nothing: the selected rows, or
+  everything currently listed when nothing is selected. The *Backups* tab
+  shows the history and plays it back, and it has a **Back Up Everything**
+  button that takes along every location this tool touches at all (on this
+  machine, 1.2 MB in under a second).
 - **Submenus** are shown with their children, indented under the entry they
   hang from.
 - **Look at an entry:** double-click a row, or right-click and choose *Look
@@ -98,7 +121,8 @@ English only.*
   behind it.
 - **Rebuild the new Windows 11 main menu.** The tool works on the classic
   menu ("Weitere Optionen anzeigen", i.e. "Show more options"), which
-  Windows 11 continues to run in full.
+  Windows 11 continues to run in full. What it can do is switch Explorer
+  over to that classic menu altogether — see *Getting Started*.
 - **Freely determine the order.** Windows sorts subkeys alphabetically and
   only knows the coarse blocks `Position=Top` and `Position=Bottom`. Both
   have been measured; the system does not offer anything more.
@@ -131,42 +155,94 @@ for that one step.
 | **Services** | Pull tools in from a web application's self-description |
 | **Backups** | History of every backup, with a button to restore |
 
-The search field works on every tab and searches the display name, the
-command, and the registry path, even when nothing is selected on the left
-yet.
+The search field searches the display name, the command, and the registry
+path — for a COM handler its CLSID and DLL as well, and a submenu's child
+matches for the entry it hangs under. It applies to the three tabs that show
+scanned entries (Categories, File Types, Programs), even when nothing is
+selected on the left yet. The *Services* tab brings a search of its own,
+above the tool list; Favourites and Backups are short enough to be shown
+whole.
+
+![The search field narrowing 927 entries down to a single Git Bash entry](docs/images/03-search_en.web.png)
+
+*Typing `git` leaves one of 927 entries standing, and the right-hand side
+says where it lives: `Directory\Background\shell\git_shell`, under `HKCU`,
+with `%V` rather than `%1` because it hangs on a folder background.*
+
+![The File Types tab resolving .png into 27 entries](docs/images/05-file-types_en.web.png)
+
+*`.png` resolved: 27 entries, collected from the extension itself, its
+ProgID and `image` as a perceived type — no single registry key holds this
+list. The entries that apply to every file are left out until "Include
+entries for all files" above the tree asks for them. The field below takes
+any further extension; "All installed" swaps the curated 98 types for every
+type registered on the machine.*
 
 ### In the List
 
 The arrow keys move the selection, Home and End jump to the start and the
 end, holding Shift grows the selection, and Ctrl+A selects everything.
 Clicking a column header sorts by it, a second click reverses the
-direction. The **Appears On** column says in words where an entry shows
-up: "All Files" instead of `*`, ".zip" instead of a path with
+direction, and a third puts the table back into the order the rows were
+collected in — which is worth having: in *File Types* that order puts the
+entries belonging to the chosen extension in front of the ones that apply
+to every file. *Flags* and the icon column do not sort; a row of symbols has
+no order worth the click. The **Appears On** column says in words where an
+entry shows up: "All Files" instead of `*`, ".zip" instead of a path with
 `SystemFileAssociations` in the middle; the real registry path sits in the
 tooltip. A **right-click** offers, everywhere, exactly the actions that
 would change something about the item clicked; with a multi-selection, the
 ones that only make sense for a single entry drop out, and in the empty
-area, *New*.
+area below the table, *New*. The trees on the left answer a right-click
+too, each with the target it stands for: a category row creates in that
+category, a row in the file type tree creates for that extension alone —
+the shortest way to "this entry, but only for `.png`".
+
+![The details panel for the 7-Zip COM handler, with CLSID, DLL and a read-only notice](docs/images/02-entry-detail_en.web.png)
+
+*One COM handler, opened: registry path, CLSID, the DLL behind it, and three
+short reasons why nothing here can be edited — the key belongs to `HKLM`,
+the text is produced at runtime, and the entry is read-only for this
+account.*
 
 **Restart Explorer** sits in the top bar. Windows reads the context menu
 keys when Explorer starts; an entry that absolutely refuses to show up
 needs this.
 
+**Switch the Windows 11 menu off.** On Windows 11 the top bar carries one
+more control: *Menu: Windows 11 | classic*. "Classic" puts back the full
+Windows 10 menu, with every entry visible at once instead of half of them
+behind "Show more options". It is one key in your own account — no
+administrator rights, nobody else affected — and it takes hold when Explorer
+next starts, which the program offers to do straight away. On Windows 10 the
+control is not there, because there would be nothing to switch.
+
 ### A Typical Round
 
 1. **Programs** tab, click the program that is causing trouble.
-2. Check on the right what depends on it: path, command, scope.
+2. Check on the right what depends on it: registry path, raw value,
+   command or CLSID and DLL, where it appears, and the children of a
+   submenu. Every field can be selected and copied. A folder button beside
+   the name opens Explorer with the program itself picked out, and each
+   symbol the table had room for — the lock, the arrow, the Shift sign — is
+   spelled out in words further down.
 3. **Hide** instead of delete. That is reversible and is almost always
    enough.
 4. If Windows asks for administrator rights: those are the entries under
    `HKLM`, the ones for all accounts. Anyone who declines keeps the changes
    to their own entries; the others stay as they were.
 
+![The Programs tab, grouped by program, with two missing programs marked in red](docs/images/06-programs_en.web.png)
+
+*Grouped by program instead of by key: one editor holds 49 entries,
+LibreOffice Draw 44. At the top in red sit two programs that are no longer
+installed and whose 33 entries are still in the menu.*
+
 ---
 
 ## Changing an Entry
 
-Four levels, from gentle to hard:
+Five levels, from gentle to hard:
 
 | Level | What happens | Reversible |
 |---|---|---|
@@ -188,25 +264,48 @@ once creates one directory, not twenty.
 program asks for exactly that step and restarts itself once for it. Anyone
 who declines keeps the changes to their own entries.
 
-**The action bar** above the table is not a set of buttons but four
-switches: *In the menu* (visible <-> hidden), *Shift key* (always <-> only
-with ⇧), *Machine-wide* (free <-> blocked), and *Position*. Highlighted is
-where the selection currently stands; clicking the other side moves it
+**The action bar** above the table is built around four switches rather than
+a row of verbs: *In the menu* (visible <-> hidden), *Shift key* (always <->
+only with ⇧), *Machine-wide* (free <-> blocked), and *Position*. Highlighted
+is where the selection currently stands; clicking the other side moves it
 there. "Which button do I press?" becomes "where should it go?". With a
 mixed selection, nothing lights up, and the tooltip gives the counts.
 Whatever is not currently possible is greyed out and says why in the
 tooltip: for instance, that none of the selected entries is a COM handler,
-so there is nothing to block.
+so there is nothing to block. Beside the switches sit the two selection
+buttons, and at the far end, behind a separator and in red, **Delete** — the
+only control in the bar that keeps its word instead of shrinking to a
+symbol. Flush right, the bar says whether this run has administrator rights.
+On the Favourites, Services and Backups tabs it is not drawn at all.
+
+*New* in the top bar, or a right-click in the empty area, opens the same
+form the other way round: not changing an entry but writing one.
+
+![The form for a new entry, with category, command, icon, position and Shift visibility](docs/images/04-new-entry_en.web.png)
+
+*The form names the key it is about to write before it writes it, offers
+"Submenu" instead of "Single entry" for a whole list of children, and lists
+underneath what this tool has already created — so that nothing is left
+behind that nobody remembers making.*
 
 ---
 
 ## Favourites and Web Tools
 
-The **Favourites** tab is a list that stays. Whatever is in it once can be
-placed at another spot in the context menu at any time, without setting it
-up again. "Add to menu" only asks for the where: one of the base
-categories, a file extension (`.png`), or an entire kind of file (`image`
-covers every image format Windows knows).
+The **Favourites** tab is a list that stays, in the order you put it in:
+each row carries *Add to menu*, two arrows that move it up or down, *Edit*
+and *Remove*, and that order is saved. The keyboard works too — arrows, Home
+and End move the cursor, Enter places the favourite, Delete takes it out.
+Whatever is in it once can be placed at another spot in the context menu at
+any time, without setting it up again. "Add to menu" only asks for the
+where: one of the base categories, a file extension (`.png`), or an entire
+kind of file (`image` covers every image format Windows knows).
+
+![The Favourites tab with eight web tools, each with an Add to menu button](docs/images/07-favourites_en.web.png)
+
+*Eight web tools that stay. Each row keeps its mode — here "Upload" — and
+its endpoint; "Add to menu" is the only step that ever has to be repeated,
+and only to say where.*
 
 A favourite does not have to be a program. If the tool lives in the
 browser, there is a problem that no registry solves: **a web page is not
@@ -226,19 +325,44 @@ that expect an image rather than a file are satisfied too.
 
 **Upload**: for tools with a real endpoint. The file goes out via
 `multipart/form-data` (field name configurable) or as a raw body; header
-lines for a key can be attached. What comes back is, depending on the
+lines for a key can be attached. A multipart request can carry plain form
+fields beside the file, which is where a tool's settings travel: one field
+holding the JSON block the service asked for, or one field per option when
+the service names them separately. What comes back is, depending on the
 setting, saved next to the original file (`bild.png` → `bild.min.png`; the
 original is **never** overwritten), opened in the browser, or just
-reported. The result address may be given in the `Location` header or in a
-JSON field such as `output.url`.
+reported. The result address may be given in the `Location` header of a
+successful answer or in a JSON field such as `output.url`.
+
+**Redirects are not followed.** A `3xx` ends the request and says which
+address it pointed at instead. The question before the upload named one
+host; a service that answers by pointing somewhere else is asking for a
+decision that was never taken. If that other address is the right one, it
+belongs in the endpoint.
+
+**A queued job is waited out.** A busy service answers with a receipt
+instead of a file — a `202`, or a `200` carrying `"async": true` — and which
+of the two arrives depends on how busy it is, not on the endpoint, so it
+cannot be settled when the favourite is made. The program reads the job
+number out of the receipt, asks the service's own progress path about it
+every one and a half seconds for at most two minutes, and then saves the
+finished file as if it had come back straight away. A frame that reports the
+job failed ends the wait at once rather than running out the clock. This
+needs the description to name a progress path, and the favourite to say
+where the answer names the finished file.
 
 **Open address**: builds the address from placeholders and opens it without
 transmitting anything. `{name}`, `{stem}`, `{ext}`, `{path}`, `{dir}`, and
 `{fileurl}`, all correctly encoded. For search, wiki, ticket forms.
 
 **You are asked before the first upload.** Once per tool, stating the
-destination and the file size; the answer is remembered. The program
-refuses unencrypted `http://` unless it has been explicitly allowed for
+destination and the file size; the answer is remembered — and it can be
+taken back: the favourite's form says in a line that sending is confirmed
+for this tool, and the button beside that line clears it, so the next click
+asks again. Tools created from a service are the exception, because the
+service was set up with its address and its key in one deliberate step:
+they count as agreed to from the start and send on the first click. The
+program refuses unencrypted `http://` unless it has been explicitly allowed for
 this favourite: sending a file across the network in the clear is meant to
 be a decision, not a default. WinHTTP handles the transfer, which is to say
 Windows' own client: with the system certificate store and the proxy
@@ -260,7 +384,7 @@ a nuisance, a file that was never sent is a fault.
 
 ---
 
-## Services: A Hundred Tools, One Address
+## Services: Two Hundred Tools, One Address
 
 Setting up a favourite by hand means filling out six fields. For a
 self-hosted service with two hundred tools, that is not work anyone is
@@ -291,9 +415,9 @@ Everything that can be read is then read out of the description:
   measured against four criteria: how much of the service ends up in usable
   groups, how evenly, how close the group count is to the square root of the
   total, and whether the tool names repeat the group word. For a service
-  with 232 tools, this yields *Image, Video, PDF, Audio, Files* instead of a
-  single drawer called "Tools" with 225 entries in it, and it wins by a
-  factor of 17.
+  with 232 tools, this yields *Image, Video, PDF, Audio, Files* — plus two
+  strays of one tool each — instead of a single drawer called "Tools" with
+  225 entries in it, and it wins by a factor of 26.
 - **What a tool accepts besides the file.** If the description supplies a
   schema, a form with typed fields is built from it: a number with its
   allowed range shown in the empty field, a checkbox, a dropdown list. If it
@@ -311,17 +435,33 @@ Everything that can be read is then read out of the description:
   not unambiguous, it stays a text field with the description above it:
   better no field than a wrong one, because a wrong one sends nonsense to a
   real service, while an overlooked one costs a checkbox.
-- **What would not work.** Endpoints that answer only with a job number and
-  keep working in the background do not appear in the list: an entry made
-  from one would report success and save nothing. On the test service, that
-  is 52 of 232. Their count is shown anyway, with a button that reveals
-  them.
+- **What is left out.** Endpoints whose description says up front that they
+  only ever queue a job do not appear in the list. A queued answer as such
+  is no longer a dead end — see below — but an endpoint that never answers
+  any other way is one whose progress path and settings have to be right
+  before it is worth offering, and a description alone does not prove they
+  are. On the test service, that is 52 of 232. Their count is shown anyway,
+  with a button that reveals them.
 
 You check items individually or by category, and create them in one batch.
-What a service says about itself then lives in every favourite, and every
-tool carries a link to its place in the service's documentation;
+
+![The Services tab listing 180 tools read out of one OpenAPI description](docs/images/08-services_en.web.png)
+
+*One address, read out: 180 usable tools, grouped the way the service groups
+itself — "Image" alone holds 81. "Settings" opens the form built from the
+tool's own options, the arrow opens its page in the service's documentation.
+The 52 tools that only answer with a job number are left out of the list and
+counted above it.*
+
+What a service says about itself then lives in every favourite — the
+address, the key, where the answer names the finished file — and every tool
+carries a link to its place in the service's documentation;
 **the address and the key stay local** in
-`%LOCALAPPDATA%\ctxmenu\services.json` and go nowhere.
+`%LOCALAPPDATA%\ctxmenu\services.json` and go nowhere. Because each
+favourite holds its own copy, changing the service afterwards does not reach
+the tools already made from it: tick the same ones again and create them a
+second time. They are replaced rather than duplicated, which is also how a
+service that has grown a new tool is caught up with.
 
 No description can supply two fields, because they depend on the
 installation: where in the response the finished file is named, and
@@ -343,6 +483,9 @@ ctxmenu scan --every-type                every registered extension instead of t
 ctxmenu filetype .jpg                    resolution chain of one file type
 ctxmenu programs                         group by program
 ctxmenu hide "<key>" --yes               hide, with a backup
+ctxmenu show "<key>" --yes               undo that
+ctxmenu shift-only "<key>" --yes         only on Shift+right-click
+ctxmenu always-show "<key>" --yes        undo that
 ctxmenu delete "<key>" --yes             delete, with a backup
 ctxmenu backups                          list backups
 ctxmenu backup-all                       back up everything this tool touches
@@ -357,15 +500,34 @@ ctxmenu created                          list entries created by this tool
 ctxmenu favourites                       list favourites
 ctxmenu favourite add --name "PNG verkleinern"
         --url https://squoosh.app --mode clipboard
-ctxmenu favourite place <id> --ext .png
+ctxmenu favourite place <id> --ext .png  also --category or --perceived
+ctxmenu favourite remove <id>            take one out of the toolbox
 ctxmenu favourite run <id> <file>        run it like a click
 ctxmenu --tab services                   open the window on a specific tab
+ctxmenu --ext .png                       file types tab, that extension selected
+ctxmenu --search 7-zip                   the window, with the search filled in
 ctxmenu --service snapotter              services tab, that service selected and loaded
 ctxmenu --new directory                  the editor for a new entry, filled with an example
 ctxmenu --lang en scan                   this run in English, saved setting untouched
 ctxmenu --version                        which version this is
-ctxmenu --help                           the complete list
+ctxmenu --help                           the list of commands and switches
 ```
+
+`<key>` is the full path below a Classes root, the way `reg.exe` writes
+it: `HKCU\SOFTWARE\Classes\Directory\shell\MeinEintrag`. Anything above
+that root, and any path ending in a collecting key such as `shell`, is
+refused. The plain `scan` table does not print it — `ctxmenu scan --json`
+carries it as `registry_path`, and the window shows it in the detail pane.
+
+**Leave `--yes` off and nothing is written.** The command names the key it
+would touch and, for the four flag verbs, whether that step would need
+administrator rights. It is the cheapest way to check a key typed by hand.
+
+One trap, and it is Windows' own: the released `.exe` is a windowed program,
+so the shell does not wait for it, and `ctxmenu scan --json > scan.json`
+leaves the file empty — measured, with no error to show for it. Read the
+output in the console, or capture it with `Start-Process ctxmenu
+-ArgumentList 'scan','--json' -Wait -RedirectStandardOutput scan.json`.
 
 A note on creating entries: in the background categories (folder
 background, desktop), `%1` stays **empty**. `%V` belongs there instead. The
@@ -382,6 +544,12 @@ Everything** button captures every location this program touches at all: on
 this machine, 26 of 46 keys, 1.2 MB, in under a second. The remaining 20 do
 not exist here, 15 of them in the empty 32-bit view.
 
+![The Backups tab, one line per backup with a timestamp and a key count](docs/images/09-backups_en.web.png)
+
+*One line per action, with the number of keys behind it in brackets. The
+lines reading 26 are full backups; the rest come from single changes and
+from test runs on the developing machine.*
+
 ```
 %LOCALAPPDATA%\ctxmenu\backups\<timestamp>_<action>\
     manifest.json      what was backed up, when, and what was missing
@@ -393,21 +561,37 @@ not exist here, 15 of them in the empty 32-bit view.
 %LOCALAPPDATA%\ctxmenu\ctxmenu.log      every error shown and every crash
 ```
 
-The log is linked from the About window.
+The log is linked from the About window — which does one more thing worth
+knowing about. It offers to put *this* program into the folder background
+and desktop background menus, says for each whether the entry is already
+there, and takes it out again on the same button. It is the one entry nobody
+can write by hand without first knowing where their own `.exe` lives, and
+removing it is backed up like every other deletion.
 
-One more file is written, and it is the only one outside that folder:
+Three more things are written outside that folder, all of them by a
+favourite being clicked. The first is a Start menu shortcut:
 
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\ctxmenu.lnk
 ```
 
 A shortcut to the running `.exe`, created the first time a favourite reports
-its result. Windows only draws a notification of a desktop program on screen
-if a Start menu shortcut carries the same identifier the notification was sent
-under; without it the message is filed silently. Delete it and nothing breaks:
-the result of every favourite still reaches the Action Center either way, and
-the next run writes the shortcut again. It is also rewritten whenever the
-`.exe` moves, so the entry never points at a file that is no longer there.
+its result. Before Windows will draw a desktop program's notification on the
+screen, it wants a Start menu shortcut naming the same identifier the
+notification is sent under; without one the message is filed in the Action
+Center and nothing appears. What Windows learns this way it keeps, though:
+measured with the shortcut deleted again, the banner still arrived. So delete
+it and nothing breaks, and the next run writes it back anyway. It is also
+rewritten whenever the `.exe` moves, so the entry never points at a file
+that is no longer there.
+
+The second is a scratch file per favourite and per day under
+`%TEMP%\ctxmenu-batch\`: three lines of text saying when the run started,
+how the one question was answered, and which files are done. It is what the
+six processes of one click agree through, it is a few dozen bytes, and the
+next run on another day sweeps it away. The third is a single registry
+value, `HKCU\SOFTWARE\Classes\AppUserModelId\ctxmenu.ContextMenuManager\DisplayName`,
+which is where Windows reads the name it writes above a notification.
 
 The keys in `favourites.json` and `services.json` sit there in plain text,
 protected only by the permissions on your user profile, the same as in an
@@ -436,6 +620,23 @@ back both.
 
 ---
 
+## Speed
+
+Measured on this machine, four screens at 3840x2160: **714 to 724 ms** from
+process creation to the first visible list with 927 real entries, and 1113
+to 1277 ms the very first time a freshly built `.exe` runs. Scrolling a
+table of 2000 rows costs **16.7 ms per frame on average**, 18.5 ms in the
+worst frame of 300 (`--synthetic 2000 --bench 300`).
+
+![The table filled with 2000 generated entries](docs/images/10-many-entries_en.web.png)
+
+*`--synthetic 2000` fills the table with generated rows so the list can be
+judged without owning a machine that really has that many. The flags column
+shows the four states side by side: hidden, Shift-only, blocked, and pinned
+to the top or bottom.*
+
+---
+
 ## Building It Yourself
 
 Required are Rust 1.95 and the Visual Studio Build Tools with the C++
@@ -455,7 +656,7 @@ libraries. The finished file therefore needs no "Visual C++
 Redistributable", verified on a freshly installed Windows 10 with no
 additional software at all.
 
-336 tests, `cargo clippy -- -D warnings` clean.
+511 tests, `cargo clippy -- -D warnings` clean.
 
 Deferred plans, the development status, the measured values, and the
 places where Windows behaves differently than documented are kept by the
@@ -465,9 +666,9 @@ author in notes that are not part of this repository.
 
 ## Contributing, Security, Licence
 
-- [Contributing](docs/CONTRIBUTING.md) ([deutsch](docs/CONTRIBUTING_DE.md))
-- [Security policy](docs/SECURITY.md) ([deutsch](docs/SECURITY_DE.md))
-- [Code of conduct](docs/CODE_OF_CONDUCT.md)
+- [Contributing](CONTRIBUTING.md)
+- [AI policy](AI_POLICY.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 - [Third-party notices](docs/THIRD-PARTY-NOTICES.md)
-  ([deutsch](docs/THIRD-PARTY-NOTICES_DE.md))
 - [MIT licence](LICENSE)

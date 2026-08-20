@@ -4,25 +4,10 @@
 
 # The tool's runtime data
 /backups
-/todo
 /tmp
-# Manages /todo, which does not belong in the repository either:
-# a working note like HANDOVER.md, not part of the program.
-/tools/todo_erledigt.ps1
+/tools
+/.claude
 
-# Holds valid API keys (Kimi, DeepSeek, xAI) in plain text.
-# Must never be committed, not even to a private repo.
 .mcp.json
-
-# Claude Code, local. Working notes, not project files: they stay on the disk
-# and out of version control. On 2026-08-14 they were purged from the history
-# as well, after the fact.
-.claude/settings.local.json
 CLAUDE.md
 HANDOVER.md
-handover_mcp2.md
-# Moved to .claude/ on 2026-08-15: deferred plans are a working note like the
-# HANDOVER, not shipped documentation.
-maybe_later.md
-# Test image for the web tool run; it lives with the user, not in the repo.
-test.png
