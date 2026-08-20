@@ -52,8 +52,9 @@ markiert, was sich ohne Administratorrechte nicht ändern lässt.*
 - **Eigene Dateiendungen und der Vollscan.** Der Reiter *Dateitypen* zeigt
   eine kuratierte Auswahl von 98 Typen; ein Feld darüber nimmt jede weitere
   Endung auf, die dann gespeichert bleibt. Wer alles sehen will, drückt
-  *Alle installierten* — auf einem gewachsenen Rechner sind das 1928
-  Typen statt 98, entsprechend länger dauert das Einlesen.
+  *Alle installierten* — auf einem gewachsenen Rechner sind das weit über
+  tausend Typen statt 98; auf dem, an dem das hier entsteht, 1674. Entsprechend
+  länger dauert das Einlesen.
 - **Nach Programm gruppieren.** Ein Programm, das sich in zwanzig Dateitypen
   einträgt, erscheint als **eine** Gruppe mit allen Vorkommen — mit seinem
   Symbol davor. Der Name kommt aus der Versionsressource der `.exe`, nicht aus
@@ -786,7 +787,7 @@ Anwendung und nicht auch für die Makro-Bibliotheken des Übersetzers. Die
 fertige Datei braucht deshalb kein „Visual C++ Redistributable" — nachgeprüft
 auf einem frisch installierten Windows 10 ohne jede Zusatzsoftware.
 
-535 Tests, `cargo clippy -- -D warnings` sauber.
+536 Tests, `cargo clippy -- -D warnings` sauber.
 
 Zurückgestellte Vorhaben, den Entwicklungsstand, die Messwerte und die Stellen,
 an denen Windows sich anders verhält als dokumentiert, führt der Autor in

@@ -6051,9 +6051,10 @@ impl App {
                 }
 
                 // Adding a type of one's own, and the full sweep. Both were
-                // promised from the start: the curated list is 98 types, this
-                // machine has 1928 registered, and `custom_extensions` was
-                // saved to disk from milestone 5 on while nothing ever read it.
+                // promised from the start: the curated list is 98 types and
+                // every machine has far more registered than that -- 1674 on
+                // the one this was written on -- while `custom_extensions` was
+                // saved to disk from milestone 5 on and nothing ever read it.
                 let mut add = false;
                 let mut sweep = false;
                 ui.horizontal(|ui| {

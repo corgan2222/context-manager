@@ -53,7 +53,8 @@ what cannot be changed without administrator rights.*
   curated selection of 98 types; a field above it accepts any further
   extension, which then stays saved. Anyone who wants to see everything
   presses *All installed*: on a machine that has grown over the years, that
-  is 1928 types instead of 98, and reading them in takes
+  is well over a thousand types instead of 98 -- 1674 on the machine this
+  was written on -- and reading them in takes
   correspondingly longer.
 - **Group by program.** A program that registers itself in twenty file types
   appears as **one** group with every occurrence, with its icon in front.
@@ -741,7 +742,7 @@ libraries. The finished file therefore needs no "Visual C++
 Redistributable", verified on a freshly installed Windows 10 with no
 additional software at all.
 
-511 tests, `cargo clippy -- -D warnings` clean.
+536 tests, `cargo clippy -- -D warnings` clean.
 
 Deferred plans, the development status, the measured values, and the
 places where Windows behaves differently than documented are kept by the

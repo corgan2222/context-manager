@@ -723,12 +723,12 @@ pub static DE: Strings = Strings {
     tip_select_none: "Hebt die Auswahl auf.",
     tip_backup_now: "Sichert die ausgewählten Einträge, ohne etwas zu ändern. Ohne Auswahl: alles Sichtbare.",
     tip_editor_new: "Legt einen neuen Eintrag im Kontextmenü an, in der links gewählten Kategorie.",
-    tip_filter_include_generic: "Zeigt zusätzlich die Einträge, die für jede Datei gelten — bei .jpg sind das 39 von 58 Zeilen, und sie sind für jeden Dateityp dieselben.",
+    tip_filter_include_generic: "Zeigt zusätzlich die Einträge, die für jede Datei gelten. Das ist meist der größere Teil der Liste, und er ist für jeden Dateityp derselbe — deshalb steht er normalerweise nicht davor.",
     tip_pick_program: "Programm auswählen. Der Pfad wird in Anführungszeichen gesetzt und bekommt \"%1\" angehängt.",
     tip_pick_icon: "Symboldatei auswählen (.ico, .exe, .dll). Der Index ,0 wird angehängt.",
     tip_ext_add: "Eine Dateiendung zur Liste hinzufügen. Sie bleibt gespeichert und wird bei jedem Einlesen mitgenommen.",
     tip_ext_remove: "Diese selbst hinzugefügte Endung wieder entfernen.",
-    tip_ext_scan_every: "Liest jede auf diesem Rechner registrierte Dateiendung ein, nicht nur die vorgegebene Liste — auf dieser Maschine 1928 statt 98. Dauert entsprechend länger und gilt nur für diese Sitzung.",
+    tip_ext_scan_every: "Liest jede auf diesem Rechner registrierte Dateiendung ein statt nur der vorgegebenen 98. Auf einem gewachsenen Windows sind das schnell über tausend, es dauert entsprechend länger, und es gilt nur für diese Sitzung.",
     tip_editor_submenu: "Ein Untermenü führt selbst nichts aus: es klappt auf und zeigt seine Untereinträge. Deren Reihenfolge ist die dieser Liste — Windows sortiert Registry-Schlüssel alphabetisch, deshalb bekommen sie eine Nummer vorangestellt.",
     tip_child_up: "Einen Platz nach oben",
     tip_child_down: "Einen Platz nach unten",
@@ -1127,12 +1127,12 @@ pub static EN: Strings = Strings {
     tip_select_none: "Clears the selection.",
     tip_backup_now: "Backs up the selected entries without changing anything. With nothing selected: everything visible.",
     tip_editor_new: "Creates a new context menu entry in the category selected on the left.",
-    tip_filter_include_generic: "Also lists the entries that apply to every file — for .jpg that is 39 rows out of 58, and they are the same for every file type.",
+    tip_filter_include_generic: "Also lists the entries that apply to every file. That is usually the larger part of the list, and it is the same for every file type — which is why it is kept out of the way.",
     tip_pick_program: "Pick a program. The path is quoted and \"%1\" is appended.",
     tip_pick_icon: "Pick an icon file (.ico, .exe, .dll). The index ,0 is appended.",
     tip_ext_add: "Adds a file extension to the list. It is saved and included in every scan from now on.",
     tip_ext_remove: "Removes this extension you added yourself.",
-    tip_ext_scan_every: "Reads every file extension registered on this machine, not just the curated list — 1928 instead of 98 here. Takes correspondingly longer and applies to this session only.",
+    tip_ext_scan_every: "Reads every file extension registered on this machine instead of just the curated 98. On a well-used Windows that is easily over a thousand, it takes correspondingly longer, and it applies to this session only.",
     tip_editor_submenu: "A submenu runs nothing itself: it opens and shows its entries. Their order is the order of this list — Windows sorts registry keys alphabetically, which is why each one is written with a number in front.",
     tip_child_up: "Move one place up",
     tip_child_down: "Move one place down",
@@ -1658,6 +1658,34 @@ pub(crate) fn field_pairs() -> Vec<(&'static str, &'static str, &'static str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interface may quote a number about the machine only when the binary
+    /// itself knows it.
+    ///
+    /// Two tooltips used to name a second one: how many extensions were
+    /// registered on the machine this was developed on. That is a claim about
+    /// a stranger's computer, and it was wrong for everyone else by however
+    /// much their machine differs -- it was even wrong here, having said 1928
+    /// while the count was 1674. The curated list is the opposite case: it is
+    /// compiled in, so every copy of the program has exactly this many. Which
+    /// makes it the one figure that may be written out, and this test is what
+    /// keeps the sentence and the constant from drifting apart.
+    #[test]
+    fn a_tooltip_quotes_only_a_number_the_binary_carries() {
+        let curated = crate::registry::filetypes::CURATED.len().to_string();
+
+        for (field, de, en) in field_pairs() {
+            if field != "tip_ext_scan_every" {
+                continue;
+            }
+            for (language, text) in [("DE", de), ("EN", en)] {
+                assert!(
+                    text.contains(&curated),
+                    "{language}.{field} should name the curated {curated}, says: {text}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn no_string_is_empty_in_either_language() {
