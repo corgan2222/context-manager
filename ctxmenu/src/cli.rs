@@ -12,7 +12,7 @@
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::model::{Category, ContextEntry, EntryKind, ScanProgress, Scope};
+use crate::model::{Category, ContextEntry, EntryKind, FileTypeInfo, ScanProgress, Scope};
 use crate::registry::paths::RegTarget;
 use crate::registry::scan::{self, ScanOptions};
 use crate::registry::{backup, write};
@@ -691,6 +691,19 @@ fn creatable_slugs() -> String {
         .join(", ")
 }
 
+/// How many of the examined file types Windows actually knows.
+///
+/// `ScanResult::file_types` keeps one entry per requested extension,
+/// registered or not — "no entries" and "not looked at" must stay
+/// distinguishable — so the vector's length counts the walk. Only the
+/// resolution knows about registration.
+fn registered_file_types(file_types: &[FileTypeInfo]) -> usize {
+    file_types
+        .iter()
+        .filter(|info| info.resolution.registered)
+        .count()
+}
+
 pub fn run_scan(args: ScanArgs) -> Result<()> {
     let started = std::time::Instant::now();
 
@@ -738,7 +751,7 @@ pub fn run_scan(args: ScanArgs) -> Result<()> {
             "\x1e{walked} Dateitypen untersucht, {found} davon registriert\
               \x1f{walked} file types examined, {found} of them registered\x1d",
             walked = args.options.file_types.len(),
-            found = result.file_types.len()
+            found = registered_file_types(&result.file_types)
         );
     }
     crate::outln!();
@@ -2333,5 +2346,37 @@ mod tests {
         assert_eq!(truncate("kurz", 10), "kurz");
         assert_eq!(truncate("äöüäöüäöü", 4), "äöü…");
         assert_eq!(truncate("abcdef", 6), "abcdef");
+    }
+
+    /// `found = result.file_types.len()` reported every examined type as
+    /// registered, because the scan keeps unregistered extensions in the
+    /// tree on purpose. Regression guard for the count asking the
+    /// resolution instead.
+    #[test]
+    fn only_registered_file_types_are_counted() {
+        let info = |registered| FileTypeInfo {
+            group: crate::registry::filetypes::group_of(".ctxmenu_probe"),
+            resolution: crate::registry::filetypes::Resolution {
+                registered,
+                ..Default::default()
+            },
+            entry_indices: Vec::new(),
+        };
+        assert_eq!(registered_file_types(&[info(true), info(false)]), 1);
+    }
+
+    /// A made-up extension really arrives as an unregistered
+    /// `FileTypeInfo` — without that, the count above could never meet its
+    /// counterexample in a real scan.
+    #[test]
+    fn an_unregistered_extension_is_examined_but_not_registered() {
+        let options = ScanOptions {
+            categories: Some(vec![Category::Directory]),
+            file_types: vec![".ctxmenu_selftest_missing".into()],
+            ..ScanOptions::default()
+        };
+        let result = scan::scan(&options, |_| {});
+        assert_eq!(result.file_types.len(), 1, "examined stays examined");
+        assert_eq!(registered_file_types(&result.file_types), 0);
     }
 }
