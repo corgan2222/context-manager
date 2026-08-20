@@ -73,6 +73,25 @@ repos:
         files: '(?i)\.(exe|dll|pdb|obj|lib|msi|zip|7z)$'
         stages: [pre-commit]
 
+      # ------------------------------------------------- main is read-only
+      # GitHub enforces this on the server since 2026-08-20: main is protected,
+      # a pull request is required, `check` and `secrets` must be green, and
+      # the rule applies to administrators too. This hook adds nothing to that
+      # -- it only fails a second earlier and says what to do instead, rather
+      # than letting the push travel to GitHub to be rejected there.
+      - id: no-push-to-main
+        name: main only ever moves through a pull request
+        language: system
+        entry: >-
+          bash -c 'test "$PRE_COMMIT_REMOTE_BRANCH" != "refs/heads/main" ||
+          { echo "main takes merges, not pushes. Branch it:";
+          echo "    git switch -c feature/<name>   (or bugfix/, docs/, chore/)";
+          echo "    git push -u origin HEAD && gh pr create";
+          exit 1; }'
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+
       # ------------------------------------------------------------ Rust
       - id: cargo-fmt
         name: cargo fmt --check

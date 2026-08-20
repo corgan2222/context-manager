@@ -47,6 +47,27 @@ not `target\release\`: `.cargo\config.toml` names the target explicitly, so
 the statically linked C runtime applies to the application and not also to
 the compiler's macro libraries.
 
+## Branches and main
+
+`main` is protected and takes no direct push — not from a contributor, not
+from the maintainer. Every change arrives as a pull request, and every change
+gets its own branch:
+
+```powershell
+git switch -c feature/short-name    # or bugfix/, docs/, chore/
+git push -u origin HEAD
+gh pr create
+```
+
+Those four prefixes are not decoration. `.github/release-drafter.yml` reads
+them and sorts the pull request into the right heading of the next release's
+notes, so a branch named after what it does labels itself. A branch named
+something else still merges; it just arrives in the notes unsorted.
+
+To merge, `check` and `secrets` must be green and the branch must be up to
+date with `main`. No approving review is required — this is a one-person
+project and nobody can approve their own work.
+
 ## What belongs in a pull request
 
 - **One test per new pure function.** Test names are complete sentences that

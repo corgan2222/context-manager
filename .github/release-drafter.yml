@@ -17,34 +17,49 @@
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 
+# `exclusive: true` on every changelog category, and the order below is the
+# priority: a pull request lands in the first heading it matches and in no
+# other. Without it one pull request appears under every label it carries --
+# measured on #1, which honestly earned `ci`, `documentation` and `chore` at
+# once and would have been listed three times.
+#
+# The order answers "what was this change actually about?". A feature that also
+# touches the README is a feature; a CI change that also touches the README is
+# a CI change; only a pull request that is nothing else is documentation.
+# Maintenance sits last as the catch-all.
 categories:
   - title: '🚀 Features'
+    exclusive: true
     semver-increment: minor
     when:
       labels:
         - 'feature'
         - 'enhancement'
   - title: '🐛 Bug Fixes'
+    exclusive: true
     when:
       labels:
         - 'fix'
         - 'bugfix'
         - 'bug'
-  - title: '📖 Documentation'
-    when:
-      labels:
-        - 'documentation'
-  - title: '🧰 Maintenance'
-    when:
-      labels:
-        - 'chore'
-        - 'refactor'
   - title: '⚙️ Build, CI and Dependencies'
+    exclusive: true
     when:
       labels:
         - 'ci'
         - 'build'
         - 'dependencies'
+  - title: '📖 Documentation'
+    exclusive: true
+    when:
+      labels:
+        - 'documentation'
+  - title: '🧰 Maintenance'
+    exclusive: true
+    when:
+      labels:
+        - 'chore'
+        - 'refactor'
 
   # Anything wearing this label stays out of the notes entirely.
   - type: 'pre-exclude'
