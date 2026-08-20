@@ -6,6 +6,10 @@ name: Release Drafter
 on:
   push:
     branches: [main]
+  # A button for "rebuild the draft now". It answers the one question the push
+  # trigger cannot: does a change to release-drafter.yml sort the way it was
+  # meant to? Without it the only way to find out is to merge something.
+  workflow_dispatch:
 
 # Permissions for the default token (secrets.GITHUB_TOKEN).
 permissions:
