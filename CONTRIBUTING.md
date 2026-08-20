@@ -64,9 +64,15 @@ them and sorts the pull request into the right heading of the next release's
 notes, so a branch named after what it does labels itself. A branch named
 something else still merges; it just arrives in the notes unsorted.
 
-To merge, `check` and `secrets` must be green and the branch must be up to
-date with `main`. No approving review is required — this is a one-person
-project and nobody can approve their own work.
+To merge, three checks must be green — `check` (formatting, clippy, tests),
+`release-build` (the release profile, which has its own compile) and `secrets`
+(gitleaks over the whole history) — and the branch must be up to date with
+`main`. No approving review is required: this is a one-person project and
+nobody can approve their own work.
+
+A pull request that touches no Rust, no manifest and no asset skips the two
+Windows jobs' expensive steps and finishes in seconds. Changing this file is
+such a pull request.
 
 ## What belongs in a pull request
 
