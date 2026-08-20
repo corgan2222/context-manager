@@ -10,7 +10,8 @@ rules below are what keep it small.
 Windows behaves differently from its own documentation in more than one
 place. This program therefore claims nothing that hasn't been verified on a
 real system, and where a number is missing, no claim is made either. A
-change based on "should work in theory" is not one.
+change based on "should work in theory" is not one. A number without a date
+is a suspicion.
 
 Everything else follows from that.
 
@@ -37,24 +38,31 @@ pre-commit install --install-hooks
 pre-commit install --hook-type pre-push
 ```
 
-Committing then runs gitleaks, the YAML and TOML checks and `cargo fmt`;
-pushing runs `cargo clippy` and `cargo test`. Building the gitleaks hook needs
-Go on the PATH. The hooks live on your machine and `--no-verify` skips them —
-CI runs the same checks again and is the one that decides.
+Committing then runs gitleaks, a private key check, a block on committed
+binaries, the YAML and TOML checks and `cargo fmt`. Pushing runs
+`cargo clippy` and `cargo test`. Building the gitleaks hook needs Go on the
+PATH. The hooks live on your machine and `--no-verify` skips them — CI runs
+the same checks again and is the one that decides.
 
 The result ends up at `target\x86_64-pc-windows-msvc\release\ctxmenu.exe`,
 not `target\release\`: `.cargo\config.toml` names the target explicitly, so
 the statically linked C runtime applies to the application and not also to
 the compiler's macro libraries.
 
+That binary never travels through a commit. The released one is built by
+`.github/workflows/release.yml` from the tag, and a commit hook rejects any
+`.exe` on the way in.
+
 ## Branches and main
 
 `main` is protected and takes no direct push — not from a contributor, not
 from the maintainer. Every change arrives as a pull request, and every change
-gets its own branch:
+gets its own branch. Start it from `origin/main`, never from your local
+`main`:
 
 ```powershell
-git switch -c feature/short-name    # or bugfix/, docs/, chore/
+git fetch origin
+git switch -c feature/short-name origin/main    # or bugfix/, docs/, chore/
 git push -u origin HEAD
 gh pr create
 ```
@@ -70,6 +78,10 @@ To merge, three checks must be green — `check` (formatting, clippy, tests),
 `main`. No approving review is required: this is a one-person project and
 nobody can approve their own work.
 
+When another pull request lands first, rebase onto `origin/main` and push
+with `--force-with-lease`. GitHub offers a button that brings the branch up
+to date for you, but it does that with a merge commit.
+
 A pull request that touches no Rust, no manifest and no asset skips the two
 Windows jobs' expensive steps and finishes in seconds. Changing this file is
 such a pull request.
@@ -80,6 +92,7 @@ such a pull request.
   state what holds: `fn a_range_whose_ends_are_the_wrong_way_round_is_no_range_at_all`.
   Anyone who can't spell out the name in words hasn't understood the rule
   yet.
+- **Small functions with names that say what they do.**
 - **Comments that explain the *why*.** What the code does is in the code.
   What's valuable is what explains it: which alternative was rejected, which
   measurement is behind it, which Windows quirk forces it.
