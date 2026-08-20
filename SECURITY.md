@@ -5,13 +5,15 @@ reads and writes the context menu's registry keys, and can send files to web
 services the user has entered themselves. It is not a service, has no
 accounts, and does not listen on any port.
 
-Three things make it security-relevant anyway, which is why the scope is
+Four things make it security-relevant anyway, which is why the scope is
 spelled out here rather than left to guessing:
 
 - It **writes to the registry**, some of it under `HKLM`, i.e. for all
   accounts.
 - It **requests elevated privileges** for that and restarts itself.
 - It **sends files** to addresses and stores the keys for that.
+- Since 1.4.0 it **replaces its own executable** with one it fetched from
+  GitHub.
 
 ## Supported Versions
 
@@ -59,6 +61,12 @@ Anything one of these sentences describes:
   for this tool, or to an address other than the one entered.
 - A way for **a stored key** to reach someone who should not otherwise be
   able to read it.
+- A way to make the updater **install something the release signature does
+  not cover**: a checksums.txt accepted without a valid signature, an asset
+  accepted whose SHA-256 is not the one that signed file names, or any path
+  that writes over the running executable without both of those checks. The
+  public half of the signing key is `ctxmenu/release-signing.pub.pem` and is
+  compiled into every binary; the private half is not in this repository.
 - A **malicious OpenAPI document** or a malicious response from a service
   that makes the program write outside the target folder, execute something
   it should not, or crash.
@@ -79,7 +87,16 @@ Anything one of these sentences describes:
   program refuses it until someone sets the checkbox.
 - **SmartScreen warns about the `.exe`.** It is not signed; a certificate
   Windows trusts by default costs several hundred euros a year. The
-  checksum for each release is published with the release.
+  checksum for each release is published with the release, and since 1.4.0
+  so is a signature over that list of checksums. Note that these are
+  different things: Authenticode is what Windows checks before running a
+  downloaded file, and the release signature is what the program checks
+  before replacing itself. The second one does not remove the first
+  warning.
+- **A release older than 1.4.0 cannot be installed by the updater**, because
+  it carries no signature. That is the intended behaviour, not a gap: an
+  asset set that is allowed to arrive incomplete is one an attacker is
+  allowed to strip.
 - Reports from a vulnerability scanner **without a path showing how this
   applies here**. A dependency with a CVE in a code path this program does
   not use is not a vulnerability of this program.

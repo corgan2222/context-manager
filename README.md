@@ -110,6 +110,11 @@ what cannot be changed without administrator rights.*
 - **Look at an entry:** double-click a row, or right-click and choose *Look
   at this entry*, opens the form with everything that is actually in the
   registry.
+- **Say when a new version is out.** One request to GitHub as the window
+  opens, and a dot on the logo button if there is something newer. Fetching
+  it takes a second click, and only happens when the release signature and
+  the published checksum both check out; the request can be switched off in
+  the About window.
 - German and English, light and dark, or "Follow system", both without a
   restart; the title bar follows along.
 
@@ -237,6 +242,84 @@ control is not there, because there would be nothing to switch.
 *Grouped by program instead of by key: one editor holds 49 entries,
 LibreOffice Draw 44. At the top in red sit two programs that are no longer
 installed and whose 33 entries are still in the menu.*
+
+---
+
+## Keeping It Up To Date
+
+Because there is no installer, there is also nothing that would notice a
+copy has gone stale. So the program asks: one GET to
+`api.github.com/repos/corgan2222/context-manager/releases/latest` while the
+window opens, without an account and without a token. Nothing else goes out
+unless somebody presses the button below, and then it is three more GETs: the
+checksums, their signature, and the executable.
+
+What comes of it stays quiet. When there is nothing newer, nothing appears;
+when the request fails, nothing appears either and the reason goes to the
+log — a program that opens a window to announce that it could not reach
+GitHub is a program people learn to switch off. Only a newer version shows
+itself, and only as a dot in the corner of the logo button in the top bar,
+whose tooltip names the version. The About window behind that button carries
+the version number, the release notes, and a **Fetch and restart** button.
+
+That second click is the first moment anything is downloaded, and what it
+does happens in this order:
+
+1. `checksums.txt` and `checksums.txt.sig` are fetched.
+2. The signature has to verify against the public key compiled into the
+   running `.exe` (`ctxmenu/release-signing.pub.pem`; RSA PKCS#1 v1.5 over
+   SHA-256, with the arithmetic left to Windows' own CNG rather than
+   hand-written). Nothing below this line runs if it does not.
+3. That file has to name the version being offered. The signature covers the
+   digests and nothing else — not the tag, not the release it hangs on — so
+   without this step a signed list from an older release could be attached to
+   a release tagged `v99.0.0` and would check out, quietly putting a fixed
+   hole back. What closes it is already in the list: the archive beside the
+   `.exe` carries the version in its name, and a line for
+   `ctxmenu_<offered version>_windows_amd64.zip` can only be in a list that
+   was signed for exactly that version.
+4. The digest for `ctxmenu.exe` is read out of the file that has now been
+   proved to be both the author's and this version's.
+5. The executable is fetched, and accepted only when its SHA-256 is that
+   digest.
+
+TLS already says the bytes came from GitHub. The signature says they came
+from whoever holds the private key, and that is the half that still holds
+when the first one does not: the private key lives in a repository secret
+that one step of the release workflow uses, not in the account it protects,
+so somebody who can publish a release cannot sign one. A release without
+`checksums.txt.sig` is therefore never offered for installing — which is
+every release before 1.4.0, and is meant that way: a set of assets that is
+allowed to arrive short is one somebody gets to shorten.
+
+Such a release is not folded into "you are up to date" either, and neither is
+one whose assets are still being uploaded. Both are named as announced but not
+finished publishing yet, because from the outside they are the same thing: a
+version that exists and that this program will not install. For the few
+minutes after every publish that sentence is literally true, and the button
+that would fetch it is simply not there.
+
+The swap itself works around the one thing Windows refuses: it will not
+overwrite a running executable, but it will rename one. So the new bytes are
+written beside the old file as `ctxmenu.exe.new`, the running file is renamed
+to `ctxmenu.exe.old`, and `ctxmenu.exe.new` takes the original name. The new
+copy is started with the same command line this one had, this window closes,
+and `ctxmenu.exe.old` is deleted on the next start. If the `.exe` sits in a
+folder this account may not write to — `C:\Program Files`, usually — the
+message says exactly that instead of reporting a broken download.
+
+*Look for new versions on start* in the About window is on by default and
+stops the request entirely when it is unticked; **Look now**, at the foot of
+the same block, works either way, because pressing it is the decision the
+setting otherwise makes.
+There is no background service, no scheduled task, nothing measured or
+reported back, and nothing downloaded or installed without that second click.
+
+One limit, because the two are easy to confuse: the `.exe` is still not
+Authenticode-signed, and SmartScreen still warns about it when it is
+downloaded in a browser. Authenticode is what Windows checks before running a
+downloaded file; the release signature is what *this program* checks before
+replacing itself. Neither stands in for the other.
 
 ---
 
@@ -557,7 +640,7 @@ from test runs on the developing machine.*
 %LOCALAPPDATA%\ctxmenu\entries.json     entries you created yourself
 %LOCALAPPDATA%\ctxmenu\favourites.json  the toolbox
 %LOCALAPPDATA%\ctxmenu\services.json    registered services, including their keys
-%LOCALAPPDATA%\ctxmenu\settings.json    language and appearance
+%LOCALAPPDATA%\ctxmenu\settings.json    language, appearance, update check
 %LOCALAPPDATA%\ctxmenu\ctxmenu.log      every error shown and every crash
 ```
 
@@ -568,8 +651,10 @@ there, and takes it out again on the same button. It is the one entry nobody
 can write by hand without first knowing where their own `.exe` lives, and
 removing it is backed up like every other deletion.
 
-Three more things are written outside that folder, all of them by a
-favourite being clicked. The first is a Start menu shortcut:
+Three more things are written outside that folder by a favourite being
+clicked, and two more by an update installing itself: `ctxmenu.exe.new` and
+`ctxmenu.exe.old`, both beside the running `.exe`, both gone again within
+seconds. The first of the three is a Start menu shortcut:
 
 ```
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\ctxmenu.lnk
