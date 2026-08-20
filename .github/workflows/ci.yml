@@ -10,11 +10,18 @@ on:
 permissions:
   contents: read
 
+# A second push to the same branch supersedes the first: nobody waits on the
+# verdict for a commit that no longer exists. Runs on main are never cancelled,
+# because that verdict is the one the release is built on.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # The same scan `.pre-commit-config.yaml` runs before a commit. It is here as
   # well because a hook lives on a developer's machine and `--no-verify` skips
-  # it; this one nobody can skip. Cheap enough to run beside the Windows job
-  # rather than after it.
+  # it; this one nobody can skip. Six seconds, so it runs beside the Windows
+  # jobs rather than after them.
   secrets:
     runs-on: ubuntu-latest
 
@@ -38,43 +45,120 @@ jobs:
           # the secret into a log that outlives it.
           ./gitleaks git --no-banner --redact --verbose .
 
-  check:
-    # windows-latest is not a preference: this program is Win32 calls from top
-    # to bottom -- registry, GDI, WinHTTP, shell -- and most of the test suite
-    # reads a real Windows machine. On any other runner it would not compile.
-    runs-on: windows-latest
+  # Does anything that compiles actually differ? A change to the README used to
+  # cost the full Windows build; measured cold on 2026-08-20, that was 584 s of
+  # which 509 s was cargo. Ten seconds here answers the question instead.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
 
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '**/*.rs'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - 'ctxmenu/build.rs'
+              - 'ctxmenu/assets/**'
+              - 'ctxmenu/tests/**'
+              - '.github/workflows/ci.yml'
+
+  check:
+    # windows-latest is not a preference: this program is Win32 calls from top
+    # to bottom -- registry, GDI, WinHTTP, shell -- and most of the test suite
+    # reads a real Windows machine. On any other runner it would not compile.
+    runs-on: windows-latest
+    needs: changes
+
+    # The job itself always runs, and the expensive steps are what carry the
+    # condition. A job skipped by `if:` reports no status at all, and `check` is
+    # a required check on main -- a pull request would sit blocked forever
+    # waiting for a verdict that never comes.
+    steps:
+      - uses: actions/checkout@v7
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          persist-credentials: false
+
       - name: Install the toolchain the repository asks for
+        if: needs.changes.outputs.rust == 'true'
         # rust-toolchain.toml pins the version; rustup honours it on the first
         # cargo call, so nothing has to be named twice.
         run: rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          # Two jobs compile the same crate graph in two profiles; without
+          # separate keys they would overwrite each other's cache on every run.
+          key: debug
+          # A red run leaves a warm cache behind. Without this the first three
+          # runs of this repository all reported "No cache found" -- they failed,
+          # so nothing was saved, so the next one started cold and failed slowly.
+          cache-on-failure: true
 
       - name: Formatting
+        if: needs.changes.outputs.rust == 'true'
         run: cargo fmt --all -- --check
 
       - name: Clippy
+        if: needs.changes.outputs.rust == 'true'
         # -D warnings, the same as locally. A lint that is only a warning in CI
         # is a lint nobody fixes.
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Tests
+        if: needs.changes.outputs.rust == 'true'
         # Including the integration tests, which read this runner's own
         # registry -- that is the point of them.
         run: cargo test
 
+      - name: Nothing to compile
+        if: needs.changes.outputs.rust != 'true'
+        run: echo "No Rust, manifest or asset changed -- nothing here to check."
+
+  # Split out so it runs beside the lint and test job rather than after it.
+  # Measured cold: 268 s of the 584 s total, because `lto = true` and
+  # `codegen-units = 1` apply to this profile alone. In parallel the wall clock
+  # is the longer of the two, not their sum.
+  release-build:
+    runs-on: windows-latest
+    needs: changes
+
+    steps:
+      - uses: actions/checkout@v7
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Install the toolchain the repository asks for
+        if: needs.changes.outputs.rust == 'true'
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.rust == 'true'
+        with:
+          key: release
+          cache-on-failure: true
+
       - name: Release build
+        if: needs.changes.outputs.rust == 'true'
         # Not just `cargo build`: lto and codegen-units = 1 apply to the
         # release profile only, and what fails there fails for users, not here.
         run: cargo build --release
 
       - name: The binary reports the version the manifest names
+        if: needs.changes.outputs.rust == 'true'
         shell: pwsh
         run: |
           $exe = 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe'
@@ -97,3 +181,7 @@ jobs:
           if ($reported -cne "ctxmenu $version") {
             throw "binary reports '$reported', manifest says $version"
           }
+
+      - name: Nothing to build
+        if: needs.changes.outputs.rust != 'true'
+        run: echo "No Rust, manifest or asset changed -- nothing here to build."
