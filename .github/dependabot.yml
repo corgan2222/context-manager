@@ -1,0 +1,35 @@
+# Version updates for the two ecosystems this repository has. Security
+# updates are enabled in the repository settings and need no entry here.
+version: 2
+updates:
+  # The Rust workspace: the root manifest, the ctxmenu and ctxmenu-handler
+  # members, and the shared lockfile at the root.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    # Minor and patch bumps arrive as one collected pull request. A major
+    # bump arrives alone, because that is the one that needs reading.
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    open-pull-requests-limit: 5
+
+  # The actions the workflows pin: checkout, rust-cache, the artifact pair,
+  # paths-filter and the release drafter.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    groups:
+      actions:
+        patterns:
+          - "*"
