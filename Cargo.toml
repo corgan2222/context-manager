@@ -62,7 +62,18 @@ resolver = "3"
 # entire section, and the ten screenshots it never had. Nothing stored changed
 # shape, no subcommand moved, and a binary built from this behaves like 1.4.0
 # -- which is the whole claim a patch makes.
-version = "1.4.2"
+# 1.5.0 on 2026-08-20: a minor, because the program can do things it could
+# not. The new Windows 11 menu is no longer only switched off wholesale: its
+# packaged entries appear in the existing views, and hiding one writes the
+# per-user blocked list instead of LegacyDisable. The program's own entries
+# -- favourites and service tools included -- reach the upper menu through an
+# IExplorerCommand handler the executable carries inside itself and registers
+# on request (`ctxmenu handler`, or the checkbox in the header). Services and
+# favourites gained an icon field, and an icon given as a web address is
+# fetched once into a local `.ico`. Everything stored still reads back:
+# entries.json, favourites.json and services.json only grew optional fields
+# an older version ignores.
+version = "1.5.0"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so

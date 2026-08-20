@@ -26,9 +26,6 @@ use serde::Deserialize;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::System::SystemServices::SFGAO_FOLDER;
-use windows::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW,
-};
 use windows::Win32::UI::Shell::*;
 use windows::core::*;
 
@@ -208,9 +205,16 @@ fn matches(entry: &Entry, selection: &Selection) -> bool {
 ///
 /// `%1` and `%V` are what the window writes into recorded commands — the
 /// path placeholder of a shell verb, `%V` in the two background categories.
-/// One process per selected item, which is what the classic menu does for a
+/// One start per selected item, which is what the classic menu does for a
 /// multi-selection too.
+///
+/// Through `ShellExecuteExW`, not `CreateProcessW`: a recorded command may
+/// name a `.lnk` — the entry editor's file picker happily takes one — and
+/// only the shell resolves shortcuts. The line is split into program and
+/// arguments first, because ShellExecute wants them apart.
 fn run(command: &str, selection: &Selection) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
     let paths: &[String] = if selection.paths.is_empty() {
         &[String::new()]
     } else {
@@ -219,31 +223,46 @@ fn run(command: &str, selection: &Selection) -> Result<()> {
     for path in paths {
         let line = command.replace("%1", path).replace("%V", path);
         let expanded = expand_env(&line);
-        let mut wide: Vec<u16> = expanded.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut startup = STARTUPINFOW {
-            cb: size_of::<STARTUPINFOW>() as u32,
+        let (file, parameters) = split_command(&expanded);
+
+        let file: Vec<u16> = file.encode_utf16().chain(std::iter::once(0)).collect();
+        let parameters: Vec<u16> = parameters
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            // NOASYNC because this thread belongs to a dllhost that may be
+            // torn down right after Invoke returns.
+            fMask: SEE_MASK_NOASYNC,
+            lpFile: PCWSTR(file.as_ptr()),
+            lpParameters: PCWSTR(parameters.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
             ..Default::default()
         };
-        let mut process = PROCESS_INFORMATION::default();
-        unsafe {
-            CreateProcessW(
-                PCWSTR::null(),
-                Some(PWSTR(wide.as_mut_ptr())),
-                None,
-                None,
-                false,
-                CREATE_UNICODE_ENVIRONMENT,
-                None,
-                PCWSTR::null(),
-                &startup,
-                &mut process,
-            )?;
-            let _ = CloseHandle(process.hProcess);
-            let _ = CloseHandle(process.hThread);
-        }
-        let _ = &mut startup;
+        unsafe { ShellExecuteExW(&mut info) }?;
     }
     Ok(())
+}
+
+/// Splits one command line into the program and everything behind it.
+///
+/// A quoted program keeps its spaces; the quotes themselves are not part of
+/// the name ShellExecute wants.
+fn split_command(line: &str) -> (String, String) {
+    let line = line.trim_start();
+    if let Some(rest) = line.strip_prefix('"') {
+        match rest.split_once('"') {
+            Some((file, parameters)) => (file.to_string(), parameters.trim().to_string()),
+            None => (rest.to_string(), String::new()),
+        }
+    } else {
+        match line.split_once(' ') {
+            Some((file, parameters)) => (file.to_string(), parameters.trim().to_string()),
+            None => (line.to_string(), String::new()),
+        }
+    }
 }
 
 fn expand_env(raw: &str) -> String {
@@ -388,14 +407,62 @@ impl IExplorerCommand_Impl for SubmenuCommand_Impl {
 /// The root: the one verb the manifest declares. Everything below it is
 /// built from `entries.json` when the menu opens.
 #[implement(IExplorerCommand)]
-struct RootCommand;
+#[derive(Default)]
+struct RootCommand {
+    /// What the last look at the selection found: the entries that apply,
+    /// and the selection itself for a later `Invoke`. Interior mutability
+    /// is sound here — the manifest declares STA, one thread owns this
+    /// object for one menu build.
+    matching: std::cell::RefCell<Vec<Entry>>,
+    selection: std::cell::RefCell<Option<Selection>>,
+}
+
+impl RootCommand_Impl {
+    /// Reads the file and filters against the selection, once per menu.
+    ///
+    /// Every selection-carrying call funnels through here, because the one
+    /// call that decides the shape — `GetFlags` — carries no selection and
+    /// can only reuse what an earlier call saw. If the shell ever asks for
+    /// the flags first, the caches are empty and the answer degrades to the
+    /// flyout, which is the shape that is never wrong.
+    fn ensure(&self, items: Ref<IShellItemArray>) {
+        if self.selection.borrow().is_some() {
+            return;
+        }
+        let selection = selection(items);
+        *self.matching.borrow_mut() = read_entries()
+            .into_iter()
+            .filter(|entry| matches(entry, &selection))
+            .collect();
+        *self.selection.borrow_mut() = Some(selection);
+    }
+
+    /// The single applying entry, when there is exactly one without
+    /// children — the case the menu shows directly instead of as a flyout
+    /// of one (asked for on 2026-08-20).
+    fn only(&self) -> Option<Entry> {
+        let matching = self.matching.borrow();
+        match &matching[..] {
+            [entry] if entry.children.is_empty() => Some(entry.clone()),
+            _ => None,
+        }
+    }
+}
 
 impl IExplorerCommand_Impl for RootCommand_Impl {
-    fn GetTitle(&self, _items: Ref<IShellItemArray>) -> Result<PWSTR> {
-        title("ctxmenu")
+    fn GetTitle(&self, items: Ref<IShellItemArray>) -> Result<PWSTR> {
+        self.ensure(items);
+        match self.only() {
+            Some(entry) => title(&entry.display_name),
+            None => title("ctxmenu"),
+        }
     }
-    fn GetIcon(&self, _items: Ref<IShellItemArray>) -> Result<PWSTR> {
-        Err(E_NOTIMPL.into())
+    fn GetIcon(&self, items: Ref<IShellItemArray>) -> Result<PWSTR> {
+        self.ensure(items);
+        match self.only().and_then(|entry| entry.icon) {
+            Some(icon) => title(&icon),
+            None => Err(E_NOTIMPL.into()),
+        }
     }
     fn GetToolTip(&self, _items: Ref<IShellItemArray>) -> Result<PWSTR> {
         Err(E_NOTIMPL.into())
@@ -406,23 +473,42 @@ impl IExplorerCommand_Impl for RootCommand_Impl {
     fn GetState(&self, items: Ref<IShellItemArray>, _slow_ok: BOOL) -> Result<u32> {
         // Hidden rather than an empty flyout: with nothing recorded, or
         // nothing that applies here, there is no ctxmenu entry to show.
-        let selection = selection(items);
-        let any = read_entries()
-            .iter()
-            .any(|entry| matches(entry, &selection));
-        Ok(match any {
-            true => ECS_ENABLED.0 as u32,
-            false => ECS_HIDDEN.0 as u32,
+        self.ensure(items);
+        Ok(match self.matching.borrow().is_empty() {
+            false => ECS_ENABLED.0 as u32,
+            true => ECS_HIDDEN.0 as u32,
         })
     }
-    fn Invoke(&self, _items: Ref<IShellItemArray>, _bctx: Ref<IBindCtx>) -> Result<()> {
-        Ok(())
+    fn Invoke(&self, items: Ref<IShellItemArray>, _bctx: Ref<IBindCtx>) -> Result<()> {
+        self.ensure(items);
+        let Some(entry) = self.only() else {
+            return Ok(());
+        };
+        if entry.command.is_empty() {
+            return Ok(());
+        }
+        match self.selection.borrow().as_ref() {
+            Some(selection) => run(&entry.command, selection),
+            None => Ok(()),
+        }
     }
     fn GetFlags(&self) -> Result<u32> {
-        Ok(ECF_HASSUBCOMMANDS.0 as u32)
+        // No selection reaches this call; the shape comes from what
+        // `ensure` cached. An empty cache means the flyout — never wrong,
+        // merely one click longer.
+        Ok(match self.only() {
+            Some(_) => ECF_DEFAULT.0 as u32,
+            None => ECF_HASSUBCOMMANDS.0 as u32,
+        })
     }
     fn EnumSubCommands(&self) -> Result<IEnumExplorerCommand> {
-        let commands = read_entries()
+        // The filtered list when a selection was seen, everything recorded
+        // otherwise — the sub-commands hide themselves per selection anyway.
+        let entries = match self.selection.borrow().is_some() {
+            true => self.matching.borrow().clone(),
+            false => read_entries(),
+        };
+        let commands = entries
             .into_iter()
             .map(|entry| match entry.children.is_empty() {
                 true => LeafCommand {
@@ -513,7 +599,7 @@ impl IClassFactory_Impl for Factory_Impl {
         if !outer.is_null() {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
-        let command: IExplorerCommand = RootCommand.into();
+        let command: IExplorerCommand = RootCommand::default().into();
         unsafe { command.query(iid, object).ok() }
     }
     fn LockServer(&self, _lock: BOOL) -> Result<()> {
@@ -625,6 +711,29 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].display_name, "Probe");
         assert_eq!(entries[0].command, "notepad.exe \"%1\"");
+    }
+
+    /// The case that found this: a favourite pointing at a `.lnk`, quoted
+    /// because the path has spaces. ShellExecute wants program and
+    /// arguments apart, and the quotes are not part of the program's name.
+    #[test]
+    fn a_command_line_splits_into_program_and_arguments() {
+        assert_eq!(
+            split_command(r#""C:\Users\P\Desktop\Visual Studio Code.lnk" "C:\a.txt""#),
+            (
+                r"C:\Users\P\Desktop\Visual Studio Code.lnk".to_string(),
+                r#""C:\a.txt""#.to_string()
+            ),
+        );
+        assert_eq!(
+            split_command(r"notepad.exe C:\a.txt"),
+            ("notepad.exe".to_string(), r"C:\a.txt".to_string())
+        );
+        assert_eq!(
+            split_command("explorer.exe"),
+            ("explorer.exe".to_string(), String::new()),
+            "no arguments is not an error"
+        );
     }
 
     #[test]

@@ -1136,6 +1136,10 @@ pub struct App {
     /// program runs, and the switch only changes through this window.
     win11: bool,
     classic_menu: bool,
+    /// Whether the handler package that serves own entries to the new menu
+    /// is registered. Read at startup and after each install or remove —
+    /// never in the frame path, it is a registry enumeration.
+    handler_installed: bool,
     /// The last error already written to the log.
     ///
     /// An error dialog re-sets itself every frame it stays open, so without
@@ -1534,6 +1538,8 @@ impl App {
             selected_backup: None,
             win11: crate::registry::win11::has_new_menu(),
             classic_menu: crate::registry::win11::classic_menu(),
+            handler_installed: crate::registry::win11::has_new_menu()
+                && crate::handler::is_installed(),
             logged_error: None,
             drop_target: None,
             search: start.search,
@@ -2861,6 +2867,7 @@ impl eframe::App for App {
 impl App {
     fn top_bar(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut switch_menu: Option<bool> = None;
+        let mut switch_handler: Option<bool> = None;
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -2996,6 +3003,23 @@ impl App {
                             switch_menu = Some(wanted);
                         }
                     }
+                    // Own entries in the upper menu. A checkbox rather than a
+                    // third selectable button: beside the two-button menu
+                    // switch, another lit button read as a third menu mode
+                    // (2026-08-20). The checkbox edits a copy — the real
+                    // state changes only after the registration succeeded,
+                    // so a declined UAC prompt snaps the tick back.
+                    let mut wanted = self.handler_installed;
+                    if ui
+                        .checkbox(&mut wanted, self.tr.btn_handler)
+                        .on_hover_text(match self.handler_installed {
+                            true => self.tr.tip_handler_remove,
+                            false => self.tr.tip_handler_install,
+                        })
+                        .changed()
+                    {
+                        switch_handler = Some(wanted);
+                    }
                 }
 
                 let search = ui
@@ -3070,6 +3094,33 @@ impl App {
                         note: None,
                     });
                 }
+                Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
+            }
+        }
+
+        if let Some(wanted) = switch_handler {
+            // Runs on the frame thread and blocks it, like the elevated half
+            // of a plan does: the UAC prompt is modal for the user anyway,
+            // and a frozen frame behind a system dialog is the lesser evil
+            // than an install whose result arrives when nobody looks.
+            let outcome = match wanted {
+                true => crate::handler::install(),
+                false => crate::handler::remove(),
+            };
+            match outcome {
+                Ok(true) => {
+                    self.handler_installed = crate::handler::is_installed();
+                    self.dialog = Some(Dialog::Note(
+                        match wanted {
+                            true => self.tr.msg_handler_installed,
+                            false => self.tr.msg_handler_removed,
+                        }
+                        .to_string(),
+                    ));
+                }
+                // The UAC prompt was declined — a decision, not a fault, and
+                // not worth a window of its own.
+                Ok(false) => {}
                 Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
             }
         }
@@ -4299,6 +4350,7 @@ impl App {
         .default_width(620.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
+            let icons = &mut self.icons;
             // A template only fills in what cannot be read off the service
             // itself. It is offered before the fields so it is the first thing
             // tried, not a correction afterwards.
@@ -4315,8 +4367,15 @@ impl App {
                     }
                     if ui.small_button(template.name).clicked() {
                         draft.name = template.name.to_string();
+                        // Into the field, not only the hint — asked for on
+                        // 2026-08-20: `<host>` stays visible for the user
+                        // to replace, everything around it is already right.
+                        draft.spec_url = template.address_hint.to_string();
                         draft.result_path = template.result_path.to_string();
                         draft.allow_insecure = template.allow_insecure;
+                        if !template.icon.is_empty() {
+                            draft.icon = Some(template.icon.to_string());
+                        }
                     }
                 }
             });
@@ -4386,6 +4445,10 @@ impl App {
                     ui.label("");
                     ui.small(self.tr.svc_result_help);
                     ui.end_row();
+
+                    // Inherited by every tool taken over from this service —
+                    // one face per service, set once (like `result_path`).
+                    icon_row(ui, self.tr, icons, 272.0, &mut draft.icon);
                 });
 
             ui.add_space(4.0);
@@ -4414,6 +4477,22 @@ impl App {
                 service.spec_url = service.spec_url.trim().to_string();
                 if service.id.trim().is_empty() {
                     service.id = service::id_for(&service.name);
+                }
+                // An icon given as a web address becomes a local `.ico` now,
+                // not on first use: the registry and the menu read files. A
+                // failed fetch stops the save — the same error dialog the
+                // entry editor answers with, at the price of the form.
+                match service
+                    .icon
+                    .as_deref()
+                    .map(crate::icons::web::localise)
+                    .transpose()
+                {
+                    Err(error) => {
+                        self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                        return;
+                    }
+                    Ok(icon) => service.icon = icon.filter(|icon| !icon.is_empty()),
                 }
 
                 let index = match self.services.iter().position(|old| old.id == service.id) {
@@ -4479,6 +4558,8 @@ impl App {
                     ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(field_width));
                     ui.end_row();
 
+                    icon_row(ui, self.tr, icons, field_width, &mut draft.icon);
+
                     ui.label(self.tr.fav_kind);
                     ui.horizontal(|ui| {
                         let is_program = matches!(draft.tool, Tool::Program { .. });
@@ -4537,10 +4618,21 @@ impl App {
         });
 
         if save {
-            let outcome = match &before {
-                None => favourites::add(*draft.clone()).map(|_| ()),
-                Some(before) => favourites::update(*draft.clone(), before),
-            };
+            // A web address in the icon field is fetched into a local `.ico`
+            // first; its failure travels the same channel every other
+            // favourite failure does and shows up above the list.
+            let outcome = draft
+                .icon
+                .as_deref()
+                .map(crate::icons::web::localise)
+                .transpose()
+                .and_then(|icon| {
+                    draft.icon = icon.filter(|icon| !icon.is_empty());
+                    match &before {
+                        None => favourites::add(*draft.clone()).map(|_| ()),
+                        Some(before) => favourites::update(*draft.clone(), before),
+                    }
+                });
             self.after_favourite_change(outcome);
         } else if !close {
             self.dialog = Some(Dialog::Favourite { draft, before });
@@ -5778,6 +5870,16 @@ impl App {
 
                     if !errors.is_empty() {
                         self.dialog = Some(Dialog::Error(errors.join("\n")));
+                    } else if let Err(error) = entry
+                        .icon
+                        .as_deref()
+                        .map(crate::icons::web::localise)
+                        .transpose()
+                        .map(|icon| entry.icon = icon.filter(|icon| !icon.is_empty()))
+                    {
+                        // A web address in the icon field could not become a
+                        // local `.ico`; nothing has touched the registry yet.
+                        self.dialog = Some(Dialog::Error(format!("{error:#}")));
                     } else {
                         match create::create(&entry) {
                             Ok(made) => {
@@ -7236,6 +7338,7 @@ fn blank_service() -> Service {
         // and that is exactly where there is no certificate.
         allow_insecure: true,
         result_path: String::new(),
+        icon: None,
     }
 }
 
@@ -7490,6 +7593,49 @@ fn describe(favourite: &Favourite, tr: &'static Strings) -> String {
             )
         }
     }
+}
+
+/// The icon row three forms share: text field, drop target, file picker,
+/// live preview — the entry editor's shape, drawn from one place so a
+/// favourite, a service and an entry all speak the same field. Asked for on
+/// 2026-08-20, when a service's tools had no way to a picture at all.
+fn icon_row(
+    ui: &mut Ui,
+    tr: &'static Strings,
+    icons: &mut IconCache,
+    field_width: f32,
+    value: &mut Option<String>,
+) {
+    ui.label(tr.editor_icon);
+    ui.horizontal(|ui| {
+        let mut icon = value.clone().unwrap_or_default();
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut icon)
+                .desired_width(field_width - 52.0)
+                .hint_text(HINT_ICON),
+        );
+        let mut icon = icon.trim().to_string();
+
+        if let Some(path) = dropped_on(ui, field.rect) {
+            icon = format!("{},0", path.display());
+        }
+
+        if folder_button(ui, icons, tr.tip_pick_icon)
+            && let Some(path) = crate::filedialog::pick_file(None, &crate::filedialog::ICONS, &icon)
+        {
+            icon = format!("{},0", path.display());
+        }
+
+        if !icon.is_empty() {
+            let texture = icons.get(&icon).clone();
+            ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                texture.id(),
+                egui::vec2(16.0, 16.0),
+            )));
+        }
+        *value = (!icon.is_empty()).then_some(icon);
+    });
+    ui.end_row();
 }
 
 fn program_form(

@@ -50,6 +50,9 @@ pub enum Command {
     Packaged {
         json: bool,
     },
+    /// Install, remove or report the Windows 11 handler package that puts
+    /// this tool's own entries into the upper menu.
+    Handler(HandlerCommand),
     /// The tool box. Subcommands, because five of them as top level verbs
     /// would crowd out the ones that scan.
     Favourite(FavouriteCommand),
@@ -57,6 +60,12 @@ pub enum Command {
     Help,
     /// Which build this is — the question every bug report starts with.
     Version,
+}
+
+pub enum HandlerCommand {
+    Install,
+    Remove,
+    Status,
 }
 
 pub enum FavouriteCommand {
@@ -146,6 +155,9 @@ Verwendung:
                             Strich; --sub-icon gilt dem davorstehenden --sub
   ctxmenu created           Selbst angelegte Einträge auflisten
   ctxmenu packaged [--json] Einträge des neuen Windows-11-Menüs auflisten
+  ctxmenu handler [install|remove|status]
+                            Eigene Einträge auch oben im neuen Windows-11-Menü
+                            anbieten; install braucht einmal Adminrechte
   ctxmenu favourites        Favoriten auflisten
   ctxmenu favourite add --name <text>
         --exe <pfad> [--args <zeile>]                  Programm
@@ -228,6 +240,9 @@ Usage:
                             applies to the --sub before it
   ctxmenu created           list entries created by this tool
   ctxmenu packaged [--json]  list the entries of the new Windows 11 menu
+  ctxmenu handler [install|remove|status]
+                            offer own entries in the upper Windows 11 menu
+                            too; install needs admin rights once
   ctxmenu favourites        list favourites
   ctxmenu favourite add --name <text>
         --exe <path> [--args <line>]                   a program
@@ -421,6 +436,17 @@ pub fn parse(args: impl Iterator<Item = String>) -> Result<Command> {
             return Ok(Command::Packaged {
                 json: args[1..].iter().any(|arg| arg == "--json"),
             });
+        }
+        "handler" => {
+            return Ok(Command::Handler(match args.get(1).map(String::as_str) {
+                Some("install") => HandlerCommand::Install,
+                Some("remove") => HandlerCommand::Remove,
+                Some("status") | None => HandlerCommand::Status,
+                Some(other) => bail!(
+                    "\x1ehandler kennt install, remove und status, nicht\
+                     \x1fhandler knows install, remove and status, not\x1d: {other}"
+                ),
+            }));
         }
         "favourites" | "favoriten" => {
             return Ok(Command::Favourite(FavouriteCommand::List));
@@ -1201,6 +1227,46 @@ pub fn run_packaged(json: bool) -> Result<()> {
         menu.skipped
     );
     Ok(())
+}
+
+/// `ctxmenu handler install|remove|status` — the Windows 11 package that
+/// serves this tool's own entries to the upper menu.
+pub fn run_handler(what: HandlerCommand) -> Result<()> {
+    match what {
+        HandlerCommand::Status => {
+            crate::outln!(
+                "{}",
+                match crate::handler::is_installed() {
+                    true => {
+                        "\x1eEingerichtet: eigene Einträge erscheinen im neuen Menü\
+                         \x1finstalled: own entries appear in the new menu\x1d"
+                    }
+                    false => "\x1enicht eingerichtet\x1fnot installed\x1d",
+                }
+            );
+            Ok(())
+        }
+        HandlerCommand::Install => match crate::handler::install()? {
+            true => {
+                crate::outln!("\x1eEingerichtet\x1finstalled\x1d");
+                Ok(())
+            }
+            false => {
+                crate::outln!("\x1eAbgebrochen\x1fcancelled\x1d");
+                Ok(())
+            }
+        },
+        HandlerCommand::Remove => match crate::handler::remove()? {
+            true => {
+                crate::outln!("\x1eEntfernt\x1fremoved\x1d");
+                Ok(())
+            }
+            false => {
+                crate::outln!("\x1eAbgebrochen\x1fcancelled\x1d");
+                Ok(())
+            }
+        },
+    }
 }
 
 /// `ctxmenu favourite <was> …`

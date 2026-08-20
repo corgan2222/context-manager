@@ -15,9 +15,13 @@
   xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
   IgnorableNamespaces="uap uap10 rescap com desktop4 desktop5">
 
+  <!-- The package version counts changes to THIS manifest, not the app's
+       releases: the DLL and the entries live outside the package, so a new
+       ctxmenu version needs no re-registration. Bump it when the manifest
+       changes, then repack handler.msix (see the comment in build.rs). -->
   <Identity Name="ctxmenu.Menu" ProcessorArchitecture="x64"
     Publisher="CN=ctxmenu, OID.2.25.311729368913984317654407730594956997722=1"
-    Version="1.4.2.0" />
+    Version="1.0.0.0" />
 
   <Properties>
     <DisplayName>ctxmenu</DisplayName>

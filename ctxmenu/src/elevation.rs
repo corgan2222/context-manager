@@ -85,6 +85,19 @@ pub fn is_elevated() -> bool {
 /// `ShellExecuteW`: the latter hands back no process handle at all, so the
 /// parent could never learn what happened.
 pub fn run_elevated_job(job: &Path) -> Outcome {
+    // lpParameters is one command line, not an argument list. A job path under
+    // `C:\Users\Vor Name\…` would otherwise split into two arguments and the
+    // child would open nothing.
+    run_self_elevated(&format!("{JOB_ARG} \"{}\"", job.display()))
+}
+
+/// Starts this program again, elevated, with the given command line, and
+/// waits for it.
+///
+/// The vehicle behind [`run_elevated_job`], and on its own the way to run
+/// any subcommand with administrator rights — the Windows 11 handler's
+/// package registration is the second passenger.
+pub fn run_self_elevated(parameters: &str) -> Outcome {
     let Ok(exe) = std::env::current_exe() else {
         return Outcome::Failed(
             "\x1eEigenen Pfad nicht ermittelbar\x1fcannot find own path\x1d".into(),
@@ -92,14 +105,9 @@ pub fn run_elevated_job(job: &Path) -> Outcome {
     };
     let directory = exe.parent().map(Path::to_path_buf).unwrap_or_default();
 
-    // lpParameters is one command line, not an argument list. A job path under
-    // `C:\Users\Vor Name\…` would otherwise split into two arguments and the
-    // child would open nothing.
-    let parameters = format!("{JOB_ARG} \"{}\"", job.display());
-
     let verb = wide("runas");
     let file = wide(&exe.to_string_lossy());
-    let params = wide(&parameters);
+    let params = wide(parameters);
     // Without an explicit directory the child starts in system32, where a
     // relative path in the job would resolve somewhere it must not.
     let dir = wide(&directory.to_string_lossy());
