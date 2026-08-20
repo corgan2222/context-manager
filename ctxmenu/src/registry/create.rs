@@ -1227,6 +1227,58 @@ mod tests {
     }
 
     #[test]
+    fn a_deleted_all_files_entry_is_forgotten_despite_the_star_in_its_path() {
+        // The star is the one category path with a metacharacter in it, and
+        // the CLI reaches `forget_target` through `parse` on a hand-typed
+        // path rather than through the entry itself. Both stood accused of
+        // losing this record once (Win11 VM, 2026-08-20 — the record turned
+        // out to be re-created after the delete, not kept by it), and the
+        // twin below is what an overly loose comparison would take with it.
+        let scratch = Scratch::new("forget-star");
+        let file = scratch.entries();
+
+        let mut e = entry(Category::AllFiles, r#""C:\t.exe" "%1""#);
+        e.key_name = "ctxmenu_snapotter__metadaten_entfernen".into();
+        record_in(&file, &e).expect("records");
+
+        // The same favourite, placed for one perceived type as well: same key
+        // name, different category, different registry key. That twin was in
+        // the VM's file too and has to survive.
+        let mut twin = entry(
+            Category::PerceivedType("image".into()),
+            r#""C:\t.exe" "%1""#,
+        );
+        twin.key_name = e.key_name.clone();
+        record_in(&file, &twin).expect("records");
+
+        let mut other = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        other.key_name = "ctxmenu_bleibt".into();
+        record_in(&file, &other).expect("records");
+
+        // Typed by hand, therefore lowercase: the registry does not care and
+        // the comparison must not either.
+        let typed = r"HKCU\SOFTWARE\Classes\*\shell\ctxmenu_snapotter__metadaten_entfernen";
+        let target = RegTarget::parse(typed).expect("the CLI accepts this path");
+        forget_target_in(&file, &target).expect("forgets");
+
+        let after = recorded_in(&file).expect("readable");
+        assert!(
+            !after
+                .iter()
+                .any(|f| f.key_name == e.key_name && f.category == Category::AllFiles),
+            "the deleted all-files entry is still recorded"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|f| f.key_name == e.key_name && f.category == twin.category),
+            "the same key name in another category belongs to another registry \
+             key and must survive"
+        );
+        assert_eq!(after.len(), 2, "only the deleted entry may disappear");
+    }
+
+    #[test]
     fn a_record_that_does_not_parse_is_reported_rather_than_read_as_empty() {
         // It used to come back as `Ok(vec![])`, and the next `record_in` wrote
         // that empty list back with one entry appended — every earlier line
