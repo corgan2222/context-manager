@@ -29,7 +29,14 @@ resolver = "3"
 # asserted that the host's imageres.dll had a drawn icon at position zero,
 # which is true here and false on the GitHub runner, so 1.3.0 could not be
 # built by the release workflow at all. The binary is the same program.
-version = "1.3.1"
+# 1.3.2 the same day, and for the same shape of reason one layer further out:
+# publishing 1.3.1 built the binary, zipped it and checksummed it, then
+# refused to attach any of it, because the release workflow compared the
+# expected file names in ordinal order against a list PowerShell had sorted
+# the way the culture does. A release workflow runs from the commit its tag
+# names, so the repair could not reach the tag that needed it. Again the same
+# program: nothing here changed but the workflow beside it.
+version = "1.3.2"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
