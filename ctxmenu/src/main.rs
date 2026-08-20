@@ -47,7 +47,7 @@ fn main() -> ExitCode {
     if raw.first().map(String::as_str) == Some(webtool::RUN_ARG) {
         let (Some(id), Some(file)) = (raw.get(1), raw.get(2)) else {
             webtool::shell::report(
-                "ctxmenu",
+                webtool::FALLBACK_TITLE,
                 &format!(
                     "{} \x1eerwartet eine Kennung und eine Datei\x1fexpects an id and a file\x1d",
                     webtool::RUN_ARG
@@ -57,12 +57,29 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         };
 
-        return match webtool::run(id, std::path::Path::new(file)) {
-            Ok(message) => {
+        // The name of the tool, not the name of this program: the sender line
+        // of the notification already says `ctxmenu`, and saying it a second
+        // time tells nobody which of eight favourites has just finished.
+        let title = webtool::title(id);
+
+        // Before the work, not after it. Which processes belong to one click is
+        // decided by when they started; by the time this one is finished the
+        // others may be two minutes behind. See `webtool::batch`.
+        let batch = webtool::batch::Batch::join(id);
+
+        return match webtool::run(id, std::path::Path::new(file), batch.as_ref()) {
+            Ok(outcome) => {
                 // Silence would be indistinguishable from a broken entry, and
                 // the clipboard mode in particular needs to say what to do
-                // next.
-                webtool::shell::report("ctxmenu", &message, webtool::shell::Report::Info);
+                // next. Six files now share one notification that is updated as
+                // each finishes; the single one below is what a lone file gets,
+                // and what everything gets when the coordination fails.
+                let collected = batch
+                    .as_ref()
+                    .is_some_and(|batch| batch.report(&title, &outcome));
+                if !collected {
+                    webtool::shell::report(&title, &outcome.message, webtool::shell::Report::Info);
+                }
                 ExitCode::SUCCESS
             }
             Err(error) => {
@@ -70,9 +87,14 @@ fn main() -> ExitCode {
                 // click, with no console and no window behind the box, so the
                 // message box is the only thing the user sees -- and it is gone
                 // the moment they click it away.
+                //
+                // Deliberately not collected. A failure has a reason, the
+                // reason is a sentence, and six sentences do not fit under one
+                // heading -- so a file that did not make it keeps a
+                // notification of its own and says why.
                 let message = ctxmenu::bilingual::error(&error, ctxmenu::bilingual::language());
                 log::write(log::Kind::Error, &format!("--favourite {id}: {message}"));
-                webtool::shell::report("ctxmenu", &message, webtool::shell::Report::Error);
+                webtool::shell::report(&title, &message, webtool::shell::Report::Error);
                 ExitCode::FAILURE
             }
         };

@@ -244,6 +244,20 @@ be a decision, not a default. WinHTTP handles the transfer, which is to say
 Windows' own client: with the system certificate store and the proxy
 settings that already apply anyway.
 
+**Six files, one question and one message.** Windows reads a context menu
+command ending in `"%1"` as "once per file", so six selected files start six
+copies of this program, none of which knows about the others. They now agree
+among themselves. **One** of them asks the question before the first upload,
+the other five wait for that answer and act on it — a no included, in which
+case nothing is sent by any of them. At the end they share **one**
+notification instead of six: headed with the name of the tool, listing the
+file names one under the other, updated as each file finishes rather than
+popping up again. A single file still reads exactly as it did, with the
+whole sentence and no counter. A file that fails keeps a message of its own,
+because the reason is worth more than the tidiness. And if the six cannot
+reach each other, every one of them asks and reports alone: six messages are
+a nuisance, a file that was never sent is a fault.
+
 ---
 
 ## Services: A Hundred Tools, One Address
