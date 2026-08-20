@@ -283,9 +283,35 @@ mod tests {
 
     #[test]
     fn a_positional_index_works_too() {
+        // A positional index counts from the front of the file; a resource ID
+        // is negative and names the resource outright. That distinction is
+        // what this test is about.
+        //
+        // What actually sits at a given position is the host's business, and
+        // it is not the same everywhere: on this machine imageres.dll,0 is a
+        // drawn icon, on the GitHub windows-latest runner it comes back fully
+        // blank, which is what turned this test red the first time CI ever ran
+        // (2026-08-20). So the shape is asserted for index 0 -- the positional
+        // path resolved and produced a bitmap -- while the "something was
+        // actually drawn" half asks the first few icons rather than betting the
+        // suite on one of them.
         let icon =
             load(&reference(r"%SystemRoot%\system32\imageres.dll,0")).expect("imageres has icons");
-        assert!(icon.pixels.iter().any(|&b| b != 0));
+        assert_eq!(icon.width, ICON_SIZE);
+        assert_eq!(icon.height, ICON_SIZE);
+        assert_eq!(icon.pixels.len() as u32, icon.width * icon.height * 4);
+
+        let drawn = (0..8)
+            .filter_map(|index| {
+                load(&reference(&format!(
+                    r"%SystemRoot%\system32\imageres.dll,{index}"
+                )))
+            })
+            .any(|icon| icon.pixels.iter().any(|&byte| byte != 0));
+        assert!(
+            drawn,
+            "none of the first eight icons in imageres.dll had a single non-zero byte"
+        );
     }
 
     #[test]
