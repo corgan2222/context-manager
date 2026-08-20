@@ -143,11 +143,19 @@ jobs:
         run: |
           Push-Location release-assets
           try {
+            # Both sides go through the same Sort-Object, and that is the whole
+            # point. Written out by hand this list reads in ordinal order --
+            # `.exe` before `_1.3.1...`, because '.' is 0x2E and '_' is 0x5F --
+            # but Sort-Object compares the way the culture does, which ignores
+            # the punctuation and puts the zip first. The first release ever
+            # published died here on exactly that: "unexpected asset set:
+            # checksums.txt, ctxmenu_1.3.1_windows_amd64.zip, ctxmenu.exe",
+            # which is the same three names in a different order.
             $expected = @(
               'checksums.txt'
               'ctxmenu.exe'
               "ctxmenu_${env:RELEASE_VERSION}_windows_amd64.zip"
-            )
+            ) | Sort-Object
             $actual = @(Get-ChildItem -File | Sort-Object Name | ForEach-Object Name)
             if (($expected -join '|') -cne ($actual -join '|')) {
               throw "unexpected asset set: $($actual -join ', ')"
