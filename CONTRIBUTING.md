@@ -72,6 +72,11 @@ them and sorts the pull request into the right heading of the next release's
 notes, so a branch named after what it does labels itself. A branch named
 something else still merges; it just arrives in the notes unsorted.
 
+Name the part after the prefix in English. A branch name reaches the pull
+request list and the release notes, which puts it in the same class as the
+commit message and the code: everything that leaves this repository is
+English.
+
 To merge, three checks must be green — `check` (formatting, clippy, tests),
 `release-build` (the release profile, which has its own compile) and `secrets`
 (gitleaks over the whole history) — and the branch must be up to date with
