@@ -218,6 +218,83 @@ enum Dialog {
     },
 }
 
+/// How far the self-update has got.
+///
+/// Nothing here opens a window of its own. The check runs on start, may well
+/// fail because a machine is offline, and a program that greets its user with
+/// "could not reach GitHub" for that is a program people turn off. So the whole
+/// state lives in the About window, and the only thing that leaks out of it is
+/// a dot on the button that opens it.
+#[derive(Debug, Default)]
+enum UpdateState {
+    /// Nobody has asked yet, or the setting says not to.
+    #[default]
+    Unknown,
+    Checking,
+    /// Asked, and this is the newest there is.
+    Current,
+    /// There is a newer one, and it carries everything needed to install it.
+    Available(Box<crate::update::Available>),
+    /// There is a newer one, and its assets are not all there yet. Nothing to
+    /// press; the version is named and the sentence says to look again.
+    Incomplete(String),
+    Downloading,
+    /// Installed. The new copy is starting and this window is closing.
+    Restarting,
+    /// Kept bilingual and cut where it is drawn, like `Dialog::Error`, so
+    /// switching the language redraws it.
+    Failed(String),
+}
+
+impl UpdateState {
+    /// Whether a worker is busy, which is what greys out both buttons.
+    fn busy(&self) -> bool {
+        matches!(
+            self,
+            UpdateState::Checking | UpdateState::Downloading | UpdateState::Restarting
+        )
+    }
+}
+
+/// Release notes as something worth reading in a dialog box.
+///
+/// GitHub hands them over as Markdown, and `release-drafter` starts every set
+/// with a `## What's Changed` heading. This window has no Markdown renderer and
+/// would be a strange place to grow one, so the hashes come off and the rest
+/// stands as it is: a list of `*` lines reads perfectly well without them, and
+/// the heading is already above the box in the user's own language.
+///
+/// Runs of blank lines collapse to one. Markdown uses them for paragraph
+/// breaks and a changelog often carries two or three in a row, which in a box
+/// 140 points high is most of the box.
+fn plain_notes(notes: &str) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    for line in notes.lines() {
+        let line = line.trim_end().trim_start_matches(['#', ' ']);
+        if line.is_empty() && lines.last().is_some_and(|last: &&str| last.is_empty()) {
+            continue;
+        }
+        lines.push(line);
+    }
+    lines.join("\n").trim().to_string()
+}
+
+/// What a click in the update part of the About window asked for.
+///
+/// Ticking the box is not in here: whether the setting changed is a comparison
+/// against what it was, and one way of finding that out is enough.
+enum UpdateAction {
+    Check,
+    Install,
+}
+
+/// What a worker sends back.
+enum UpdateMessage {
+    Checked(Result<crate::update::Outcome, String>),
+    /// Where the new executable now is.
+    Installed(Result<std::path::PathBuf, String>),
+}
+
 /// Which column the table is ordered by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
@@ -1135,6 +1212,11 @@ pub struct App {
     /// Receives a fetched description: the address that answered and its tools.
     service_rx: Option<Receiver<FetchedSpec>>,
 
+    /// How far the self-update has got. Drawn in the About window only.
+    update: UpdateState,
+    /// Receives what the update worker found or installed.
+    update_rx: Option<Receiver<UpdateMessage>>,
+
     icons: IconCache,
     /// The Feather characters the bar draws, resolved at startup.
     glyphs: Glyphs,
@@ -1464,6 +1546,8 @@ impl App {
             service_search: String::new(),
             service_show_async: false,
             service_rx: None,
+            update: UpdateState::default(),
+            update_rx: None,
             icons: IconCache::new(&cc.egui_ctx),
             glyphs: Glyphs::load(),
             logo: None,
@@ -1511,6 +1595,14 @@ impl App {
         }
 
         app.reload_backups();
+
+        // What the last update left behind, and the question whether there is
+        // another one. Both on threads: one touches the disk, the other the
+        // network, and the window is opening.
+        std::thread::spawn(crate::update::clean_up);
+        if app.settings.check_for_updates {
+            app.start_update_check(&cc.egui_ctx);
+        }
 
         // `--service <id>`: the same two steps a click on the name takes, so
         // the tab opens with a service selected and its tools on their way in.
@@ -2689,6 +2781,7 @@ impl eframe::App for App {
         self.report_theme_once(ui);
         self.poll_action(&ctx);
         self.poll_services();
+        self.poll_update(&ctx);
 
         self.top_bar(ui, &ctx);
         self.action_bar(ui, &ctx);
@@ -2896,18 +2989,34 @@ impl App {
                     // `Button::image`, not `ImageButton`: egui 0.36 folded that
                     // type into `Button` as well, the same way it did with
                     // `SelectableLabel`.
-                    if ui
-                        .add(
-                            egui::Button::image(
-                                egui::Image::from_texture(&logo)
-                                    .fit_to_exact_size(egui::vec2(width, height))
-                                    .tint(tint),
-                            )
-                            .frame(false),
+                    let logo_button = ui.add(
+                        egui::Button::image(
+                            egui::Image::from_texture(&logo)
+                                .fit_to_exact_size(egui::vec2(width, height))
+                                .tint(tint),
                         )
-                        .on_hover_text(self.tr.tip_about)
-                        .clicked()
-                    {
+                        .frame(false),
+                    );
+                    // A dot in the corner, and nothing else. The update state
+                    // lives in the About window; out here it gets one mark on
+                    // the button that opens it, because a bar that is otherwise
+                    // all icons has no room for a sentence -- and because a
+                    // program that opens a window at its user to announce a
+                    // version is a program they learn to dismiss unread.
+                    let logo_button = match &self.update {
+                        UpdateState::Available(found) => {
+                            let corner = logo_button.rect.right_top() + egui::vec2(-1.0, 1.0);
+                            ui.painter()
+                                .circle_filled(corner, 4.0, ui.visuals().warn_fg_color);
+                            logo_button.on_hover_text(
+                                self.tr
+                                    .fmt_tip_update_available
+                                    .replace("{}", &found.version),
+                            )
+                        }
+                        _ => logo_button.on_hover_text(self.tr.tip_about),
+                    };
+                    if logo_button.clicked() {
                         self.dialog = Some(Dialog::About);
                     }
                     self.settings_controls(ui, ctx);
@@ -3395,6 +3504,208 @@ impl App {
             }
             Err(error) => self.service_error = Some(error),
         }
+    }
+
+    /// Asks GitHub whether there is a newer release.
+    ///
+    /// On a thread, like every other request in this program: it is a network
+    /// call, and the frame path may not wait for one. Called once on start when
+    /// the setting allows it, and by the button in the About window whether it
+    /// does or not — pressing it *is* the decision the setting otherwise makes.
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        if self.update.busy() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let found = crate::update::check().map_err(|error| format!("{error:#}"));
+            let _ = tx.send(UpdateMessage::Checked(found));
+            ctx.request_repaint();
+        });
+        self.update = UpdateState::Checking;
+        self.update_rx = Some(rx);
+    }
+
+    /// Fetches the new version, checks it, and puts it in place of this one.
+    ///
+    /// Everything that decides whether those bytes are trustworthy happens in
+    /// [`crate::update::download`], on this thread, before a single byte is
+    /// written anywhere. What comes back here is either a path or a sentence.
+    fn start_update_install(&mut self, ctx: &egui::Context) {
+        let UpdateState::Available(found) = &self.update else {
+            return;
+        };
+        let found = found.clone();
+        let (tx, rx) = channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let installed = crate::update::download(&found)
+                .and_then(|bytes| crate::update::install(&bytes))
+                .map_err(|error| format!("{error:#}"));
+            let _ = tx.send(UpdateMessage::Installed(installed));
+            ctx.request_repaint();
+        });
+        self.update = UpdateState::Downloading;
+        self.update_rx = Some(rx);
+    }
+
+    /// Picks up what the update worker found. Never blocks.
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.update_rx else { return };
+        let message = match rx.try_recv() {
+            Ok(message) => message,
+            // A dead channel has to end the wait, or both buttons stay greyed
+            // out for the rest of the session — the same lesson as `poll_scan`.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.update_rx = None;
+                if self.update.busy() {
+                    self.update = UpdateState::Unknown;
+                }
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        };
+        self.update_rx = None;
+
+        match message {
+            UpdateMessage::Checked(Ok(outcome)) => {
+                self.update = match outcome {
+                    crate::update::Outcome::Current => UpdateState::Current,
+                    crate::update::Outcome::Available(found) => UpdateState::Available(found),
+                    crate::update::Outcome::Incomplete(version) => UpdateState::Incomplete(version),
+                }
+            }
+            UpdateMessage::Checked(Err(error)) | UpdateMessage::Installed(Err(error)) => {
+                self.fail_update(error);
+            }
+            UpdateMessage::Installed(Ok(path)) => match crate::update::relaunch(&path) {
+                Ok(()) => {
+                    self.update = UpdateState::Restarting;
+                    // The old file is already renamed and the new one is
+                    // already running; staying open would leave two windows.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                // The rare one worth spelling out: the update *is* installed,
+                // and only the restart failed. Saying "failed" without that
+                // would send someone looking for a problem they no longer have.
+                Err(error) => self.fail_update(format!(
+                    "{error:#} \u{1e}\u{2014} die neue Fassung liegt bereits an ihrem Platz und startet beim n\u{e4}chsten Mal\u{1f}\u{2014} the new version is already in place and will start next time\u{1d}"
+                )),
+            },
+        }
+    }
+
+    /// Records a failed update where the user can find it later.
+    ///
+    /// Logged as well as shown, because the About window is not where anyone
+    /// looks after the fact — and the automatic check on start fails silently
+    /// by design, so the log is the only trace it leaves at all.
+    fn fail_update(&mut self, error: String) {
+        crate::log::write(
+            crate::log::Kind::Error,
+            &crate::bilingual::pick(&error, self.settings.language),
+        );
+        self.update = UpdateState::Failed(error);
+    }
+
+    /// The update part of the About window.
+    ///
+    /// Draws into the window's own closure and therefore may not touch `self`
+    /// mutably: what a click means comes back through the return value, the
+    /// same way the self-entry buttons do it.
+    fn update_section(&self, ui: &mut egui::Ui, on_start: &mut bool) -> Option<UpdateAction> {
+        let mut action = None;
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.small(self.tr.update_heading);
+        ui.add_space(4.0);
+
+        ui.checkbox(on_start, self.tr.update_on_start)
+            .on_hover_text(self.tr.tip_update_on_start);
+
+        ui.add_space(4.0);
+        match &self.update {
+            UpdateState::Unknown => {}
+            UpdateState::Checking => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(self.tr.update_checking);
+                });
+            }
+            UpdateState::Current => {
+                ui.label(self.tr.update_current);
+            }
+            UpdateState::Incomplete(version) => {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                ui.label(self.tr.fmt_update_incomplete.replace("{}", version));
+            }
+            UpdateState::Downloading => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(self.tr.update_downloading);
+                });
+            }
+            UpdateState::Restarting => {
+                ui.label(self.tr.update_restarting);
+            }
+            UpdateState::Failed(error) => {
+                let shown = crate::bilingual::pick(error, self.settings.language);
+                ui.colored_label(ui.visuals().error_fg_color, shown.as_ref());
+            }
+            UpdateState::Available(found) => {
+                ui.label(
+                    egui::RichText::new(self.tr.fmt_update_available.replace("{}", &found.version))
+                        .strong(),
+                );
+                let notes = plain_notes(&found.notes);
+                if !notes.is_empty() {
+                    ui.add_space(4.0);
+                    ui.small(self.tr.update_notes);
+                    // In a framed box of its own, and left aligned inside it.
+                    // Everything else in this window is centred, which is right
+                    // for a name and a version and wrong for five lines of
+                    // changelog: centred body text has no left edge for the eye
+                    // to return to. The frame is what says the text continues
+                    // below the fold -- without it the last line simply stops
+                    // mid-sentence and reads as a drawing fault.
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(140.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                    ui.label(notes);
+                                });
+                            });
+                    });
+                }
+                ui.add_space(6.0);
+                if ui
+                    .button(self.tr.update_install)
+                    .on_hover_text(self.tr.tip_update_install)
+                    .clicked()
+                {
+                    action = Some(UpdateAction::Install);
+                }
+            }
+        }
+
+        ui.add_space(4.0);
+        if ui
+            .add_enabled(
+                !self.update.busy(),
+                egui::Button::new(self.tr.update_check_now),
+            )
+            .clicked()
+        {
+            action = Some(UpdateAction::Check);
+        }
+
+        action
     }
 
     /// Left panel of the services tab: which service, and the buttons for it.
@@ -4680,6 +4991,11 @@ impl App {
                 let mut open_url: Option<&str> = None;
                 let mut open_log = false;
                 let mut toggle_self: Option<(Category, bool)> = None;
+                let mut update_action: Option<UpdateAction> = None;
+                // Copied out and compared afterwards, because the window's
+                // closure holds `self` immutably and a checkbox wants a `&mut
+                // bool`. The same reason `toggle_self` above exists.
+                let mut check_on_start = self.settings.check_for_updates;
                 let logo = self.logo_texture(ui.ctx());
                 egui::Window::new(self.tr.about_title)
                     .collapsible(false)
@@ -4752,6 +5068,8 @@ impl App {
                                 });
                             }
 
+                            update_action = self.update_section(ui, &mut check_on_start);
+
                             // The log, from the one window every user finds.
                             // A path in a bug report is worth more than a
                             // remembered wording, and nobody types
@@ -4775,6 +5093,22 @@ impl App {
                             ui.add_space(2.0);
                         });
                     });
+                // Saved the moment it is ticked, not on closing the window:
+                // there is no OK button here, and a setting that quietly
+                // forgets itself is worse than no setting.
+                if check_on_start != self.settings.check_for_updates {
+                    self.settings.check_for_updates = check_on_start;
+                    if let Err(error) = self.settings.save() {
+                        self.dialog = Some(Dialog::Error(format!("{error:#}")));
+                        close = true;
+                    }
+                }
+                match update_action {
+                    Some(UpdateAction::Check) => self.start_update_check(ui.ctx()),
+                    Some(UpdateAction::Install) => self.start_update_install(ui.ctx()),
+                    None => {}
+                }
+
                 if let Some(url) = open_url
                     && let Err(error) = crate::webtool::shell::open(url)
                 {
@@ -9414,6 +9748,22 @@ mod tests {
         assert!(i18n::EN.tip_theme_system.contains("light"));
         assert!(i18n::EN.tip_theme_light.contains("dark"));
         assert!(i18n::EN.tip_theme_dark.contains("system"));
+    }
+
+    #[test]
+    fn release_notes_lose_their_hashes_and_their_empty_stretches() {
+        // What release-drafter actually produces, shortened.
+        let notes = "## What's Changed\n\n\n* One thing by @someone\n* Another\n\n\n\n**Full Changelog**: https://example.invalid/compare\n";
+        assert_eq!(
+            plain_notes(notes),
+            "What's Changed\n\n* One thing by @someone\n* Another\n\n**Full Changelog**: https://example.invalid/compare"
+        );
+
+        // A `#` inside a line is not a heading and stays put -- issue numbers
+        // are written that way, and "fixes 42" is not the same sentence.
+        assert_eq!(plain_notes("* fixes #42"), "* fixes #42");
+        assert_eq!(plain_notes(""), "");
+        assert_eq!(plain_notes("   \n\n  \n"), "");
     }
 
     #[test]

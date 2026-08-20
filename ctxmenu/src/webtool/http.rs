@@ -20,11 +20,12 @@ use anyhow::{Context as _, Result, bail};
 use windows::Win32::Networking::WinHttp::{
     INTERNET_DEFAULT_HTTPS_PORT, URL_COMPONENTS, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
     WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE, WINHTTP_OPEN_REQUEST_FLAGS,
-    WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_QUERY_STATUS_CODE,
-    WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen,
-    WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-    WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
+    WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP,
+    WINHTTP_OPTION_REDIRECT_POLICY_NEVER, WINHTTP_QUERY_FLAG_NUMBER,
+    WINHTTP_QUERY_RAW_HEADERS_CRLF, WINHTTP_QUERY_STATUS_CODE, WinHttpAddRequestHeaders,
+    WinHttpCloseHandle, WinHttpConnect, WinHttpCrackUrl, WinHttpOpen, WinHttpOpenRequest,
+    WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+    WinHttpSetOption, WinHttpSetTimeouts,
 };
 use windows::core::PCWSTR;
 
@@ -89,6 +90,39 @@ fn excerpt(body: &[u8]) -> String {
 /// instead of being followed. Naming the other address is the whole point: the
 /// question asked before an upload names one host, and "the service answered
 /// 307" alone would leave the user guessing at which one it wanted instead.
+/// What a request does when the answer is a 3xx.
+///
+/// Two opposite answers, both right for what they cover.
+///
+/// Every request that carries something — a file, a key, an address the user
+/// typed — [`Redirects::Refuse`]s. WinHTTP left to itself repeats the whole
+/// request at the new host, headers and body included, and the question the
+/// user agreed to named exactly one host. So the 3xx comes back as an error
+/// with the address it pointed at, and whoever wants that address puts it in
+/// the endpoint.
+///
+/// The updater [`Redirects::Follow`]s, because it has to: every GitHub release
+/// asset is a 302 to a signed URL on `release-assets.githubusercontent.com`,
+/// and there is no fixed address to put in an endpoint. Nothing is risked by
+/// it — the request carries no secret, and what comes back is only installed
+/// after the release signature and the published digest both check out. The
+/// step from https to http stays forbidden, so the download cannot be talked
+/// down onto a plain connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redirects {
+    Refuse,
+    Follow,
+}
+
+impl Redirects {
+    fn policy(self) -> u32 {
+        match self {
+            Redirects::Refuse => WINHTTP_OPTION_REDIRECT_POLICY_NEVER,
+            Redirects::Follow => WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP,
+        }
+    }
+}
+
 fn redirected(status: u32, location: Option<&str>) -> anyhow::Error {
     match location {
         Some(target) => anyhow::anyhow!(
@@ -192,7 +226,7 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
         .context("WinHttpSetTimeouts")?;
 
     let connect = Handle::connect(&session, &target)?;
-    let request_handle = Handle::request(&connect, &target, method)?;
+    let request_handle = Handle::request(&connect, &target, method, Redirects::Refuse)?;
 
     let mut lines = format!("Content-Type: {}\r\n", request.content_type);
     for header in headers {
@@ -258,13 +292,26 @@ pub fn send(url: &str, method: &str, headers: &[Header], request: Request) -> Re
 /// same key as the service itself, and separate from `send` because a GET with
 /// an empty `Content-Type` line is a request some servers answer with 400.
 pub fn fetch(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
+    fetch_with(url, headers, Redirects::Refuse)
+}
+
+/// The same GET, but following a redirect as far as it stays on https.
+///
+/// Its own function rather than a flag on [`fetch`], so that the decision is
+/// made at the call site by someone who has read [`Redirects`] — there is
+/// exactly one caller, `update::download`, and there is a reason for that.
+pub fn fetch_following(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
+    fetch_with(url, headers, Redirects::Follow)
+}
+
+fn fetch_with(url: &str, headers: &[Header], redirects: Redirects) -> Result<Vec<u8>> {
     let target = Url::parse(url)?;
 
     let session = Handle::session()?;
     unsafe { WinHttpSetTimeouts(session.0, 10_000, 15_000, 60_000, 120_000) }
         .context("WinHttpSetTimeouts")?;
     let connect = Handle::connect(&session, &target)?;
-    let request = Handle::request(&connect, &target, "GET")?;
+    let request = Handle::request(&connect, &target, "GET", redirects)?;
 
     if !headers.is_empty() {
         let mut lines = String::new();
@@ -324,7 +371,7 @@ pub fn stream(url: &str, headers: &[Header], patience: std::time::Duration) -> R
     unsafe { WinHttpSetTimeouts(session.0, 10_000, 15_000, 30_000, receive) }
         .context("WinHttpSetTimeouts")?;
     let connect = Handle::connect(&session, &target)?;
-    let request = Handle::request(&connect, &target, "GET")?;
+    let request = Handle::request(&connect, &target, "GET", Redirects::Refuse)?;
 
     if !headers.is_empty() {
         let mut lines = String::new();
@@ -396,7 +443,7 @@ pub fn download(url: &str) -> Result<Vec<u8>> {
     unsafe { WinHttpSetTimeouts(session.0, 10_000, 15_000, 60_000, 120_000) }
         .context("WinHttpSetTimeouts")?;
     let connect = Handle::connect(&session, &target)?;
-    let request = Handle::request(&connect, &target, "GET")?;
+    let request = Handle::request(&connect, &target, "GET", Redirects::Refuse)?;
 
     unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }.context("WinHttpSendRequest")?;
     unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }
@@ -614,7 +661,7 @@ impl Handle {
         Self::check(handle, "WinHttpConnect")
     }
 
-    fn request(connect: &Handle, url: &Url, method: &str) -> Result<Self> {
+    fn request(connect: &Handle, url: &Url, method: &str, redirects: Redirects) -> Result<Self> {
         let verb: Vec<u16> = method
             .to_ascii_uppercase()
             .encode_utf16()
@@ -648,10 +695,10 @@ impl Handle {
         // Left to itself WinHTTP follows redirects, and its default policy
         // forbids only the step from https to http — a step to a different host
         // it takes, repeating the request there with body and headers, which for
-        // an upload means the file and the key. The question asked before
-        // sending names exactly one host, so no other one is dialled: the 3xx
-        // comes back instead and is reported with the address it pointed at.
-        let policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER.to_ne_bytes();
+        // an upload means the file and the key. Which of the two this request
+        // wants is the caller's decision and is written out at [`Redirects`];
+        // for everything but the updater it is "no".
+        let policy = redirects.policy().to_ne_bytes();
         unsafe {
             WinHttpSetOption(
                 Some(handle.0 as *const c_void),

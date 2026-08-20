@@ -88,6 +88,11 @@ switchable at runtime; this README is German only.*
 - **Einen Eintrag ansehen:** Doppelklick auf eine Zeile — oder Rechtsklick,
   *Eintrag ansehen* — öffnet das Formular mit allem, was wirklich in der
   Registry steht.
+- **Sich selbst aktualisieren.** Eine Anfrage beim Start, ob es eine neuere
+  Fassung gibt; wenn ja, ein Punkt am Logo-Knopf und die Neuigkeiten im
+  Über-Fenster. Geholt und ersetzt wird erst nach einem zweiten Klick, und nur,
+  wenn Signatur und Prüfsumme der neuen Datei stimmen. Ohne Konto, ohne
+  Telemetrie, abschaltbar.
 - Deutsch und Englisch, hell und dunkel oder „System folgen" — beides ohne
   Neustart, die Titelleiste zieht mit.
 
@@ -369,13 +374,17 @@ auf dieser Maschine 26 von 46 Schlüsseln, 1,2 MB, unter einer Sekunde. Die
 %LOCALAPPDATA%\ctxmenu\entries.json     selbst angelegte Einträge
 %LOCALAPPDATA%\ctxmenu\favourites.json  der Werkzeugkasten
 %LOCALAPPDATA%\ctxmenu\services.json    eingetragene Dienste samt Schlüssel
-%LOCALAPPDATA%\ctxmenu\settings.json    Sprache und Darstellung
+%LOCALAPPDATA%\ctxmenu\settings.json    Sprache, Darstellung, ob beim Start
+                                        nach neuen Fassungen gesehen wird
 %LOCALAPPDATA%\ctxmenu\ctxmenu.log      jeder gezeigte Fehler und jeder Absturz
 ```
 
 Das Protokoll ist im Über-Fenster verlinkt.
 
-Eine Datei kommt noch dazu, und sie ist die einzige außerhalb dieses Ordners:
+Eine Datei kommt noch dazu, und außer den beiden, die eine Aktualisierung für
+Sekunden neben die laufende `.exe` legt (`ctxmenu.exe.new` und
+`ctxmenu.exe.old`, siehe „Sich selbst aktualisieren"), ist sie die einzige
+außerhalb dieses Ordners:
 
 ```
 %APPDATA%\Microsoft\Windows\Startmenü\Programme\ctxmenu.lnk
@@ -414,6 +423,114 @@ Eintrag wird versucht, und am Ende steht, wie viele zurück sind und welche
 nicht. Eine geteilte Aktion — ein Teil hier, ein Teil mit Administratorrechten —
 legt zwei Sicherungen an; das Ergebnisfenster nennt beide und der Knopf
 *Wiederherstellen* spielt beide ein.
+
+---
+
+## Sich selbst aktualisieren
+
+Es gibt keinen Installer, also auch nichts, was von sich aus bemerkt, dass diese
+Fassung alt geworden ist. Das Programm fragt deshalb selbst nach: einmal beim
+Start, mit einer Anfrage an
+
+```
+https://api.github.com/repos/corgan2222/context-manager/releases/latest
+```
+
+Ohne Konto, ohne Kennung, ohne Anmeldung. Schlägt die Anfrage fehl — kein Netz,
+ein Proxy dazwischen, GitHub gerade nicht erreichbar —, passiert sichtbar
+nichts: der Zustand steht im Über-Fenster, der Fehler im Protokoll. Ein
+Programm, das beim Start ein Fenster mit „GitHub nicht erreichbar" aufmacht,
+ist eines, das man abschaltet.
+
+Gibt es eine neuere Fassung, die sich auch installieren lässt, erscheint ein
+kleiner Punkt in der Ecke des Logo-Knopfes rechts in der Werkzeugleiste, und der
+Tooltip nennt die Nummer.
+Draußen passiert nicht mehr als das: In einer Leiste aus lauter Symbolen ist für
+einen Satz kein Platz, und ein Fenster, das sich ungefragt öffnet, um eine
+Versionsnummer mitzuteilen, lernt man wegzuklicken. Alles Weitere steht im
+Über-Fenster (Klick auf das Logo) unter der Überschrift **Aktualisierung**, von
+oben nach unten: das Ankreuzfeld **Beim Start nach neuen Fassungen sehen**;
+darunter, wenn etwas gefunden wurde, die Fassungsnummer, unter **Was neu ist**
+die Release-Notizen und der Knopf **Holen und neu starten**; und zuletzt **Jetzt
+nachsehen**.
+
+**Erst dieser zweite Klick lädt etwas herunter.** Geprüft wird dann in dieser
+Reihenfolge, und die Reihenfolge ist der ganze Punkt:
+
+1. `checksums.txt` holen — die Liste der Dateien der Veröffentlichung mit ihren
+   SHA-256-Prüfsummen. Sie selbst steht nicht darin, und ihre Signatur auch
+   nicht; alles andere schon.
+2. `checksums.txt.sig` holen.
+3. Die Signatur prüfen: RSA, PKCS#1 v1.5 über SHA-256, gegen den öffentlichen
+   Schlüssel, der in die laufende `.exe` einkompiliert ist — 4096 Bit, im
+   Repositorium als `ctxmenu\release-signing.pub.pem` nachzulesen. Stimmt sie
+   nicht, endet es hier.
+4. Prüfen, dass diese Liste zu der Fassung gehört, die angeboten wird. Die
+   Signatur deckt die Prüfsummen ab und sonst nichts — nicht den Tag, nicht
+   die Veröffentlichung, an der er hängt. Ohne diesen Schritt könnte jemand,
+   der das GitHub-Konto hat, die echt signierten Dateien einer alten Fassung
+   an eine Veröffentlichung mit dem Tag `v99.0.0` hängen; alles Weitere ginge
+   durch, und eine längst geschlossene Lücke käme zurück. Was es verhindert,
+   steht schon in der Liste: das Archiv neben der `.exe` trägt die Fassung im
+   Namen, und eine Zeile für `ctxmenu_<angebotene Fassung>_windows_amd64.zip`
+   kann nur in einer Liste stehen, die für genau diese Fassung signiert wurde.
+   Das Archiv selbst wird nie geholt; gebraucht wird nur sein Name.
+5. Aus der damit als echt *und* als zu dieser Fassung gehörig erwiesenen Liste
+   die Prüfsumme für `ctxmenu.exe` lesen.
+6. Die `.exe` holen und nur annehmen, wenn ihre SHA-256 genau diese ist.
+
+Zwei Dinge müssen also stimmen, und wer etwas unterschieben will, braucht beide:
+das TLS-Zertifikat von GitHub, das WinHTTP gegen den Zertifikatspeicher von
+Windows prüft, und die Unterschrift des Autors. Der private Schlüssel dazu liegt
+im GitHub-Secret `RELEASE_SIGNING_KEY` und nicht im Repositorium. Das ist die
+Hälfte, die auch dann noch trägt, wenn das GitHub-Konto es nicht mehr tut: Wer
+eine Veröffentlichung anlegen kann, kann sie deswegen noch nicht unterschreiben.
+
+Ersetzt wird über zwei Umbenennungen, denn Windows überschreibt eine laufende
+Datei nicht, umbenennen lässt es sie aber. Die neuen Bytes werden als
+`ctxmenu.exe.new` daneben geschrieben, die laufende Datei heißt dann kurz
+`ctxmenu.exe.old`, und anschließend rückt `.new` auf den Originalnamen. Der
+Download liegt zu diesem Zeitpunkt vollständig auf der Platte; die einzige
+Lücke, in der unter dem Originalnamen keine Datei steht, ist die zwischen den
+beiden Umbenennungen. Danach startet das Programm die neue Datei mit denselben
+Argumenten und schließt sein Fenster — daher der Satz „Das Fenster schließt sich
+und öffnet sich neu". `ctxmenu.exe.old` räumt der nächste Start weg.
+
+Liegt die `.exe` in einem Ordner, in den dieses Konto nicht schreiben darf, etwa
+unter `C:\Program Files`, misslingt das, und die Meldung sagt genau das statt
+„Zugriff verweigert": „hier darf dieses Konto nicht schreiben; das Programm aus
+einem eigenen Ordner starten oder die neue Fassung von Hand herunterladen".
+
+**Was nicht passiert.** Kein Dienst und keine geplante Aufgabe im Hintergrund —
+gefragt wird beim Start des Fensters und sonst nur, wenn jemand **Jetzt
+nachsehen** drückt. Keine Telemetrie: Hinaus
+geht eine Anfrage nach der letzten Veröffentlichung, und das Einzige, was sie
+über den Absender sagt, ist `User-Agent: ctxmenu/<fassung>`. Kein Download ohne
+den zweiten Klick, keine Installation, die von allein anläuft. Wer auch diese
+eine Anfrage nicht möchte, nimmt den Haken bei **Beim Start nach neuen Fassungen
+sehen** heraus (Vorgabe: gesetzt); das steht sofort in `settings.json`, nicht
+erst beim Schließen des Fensters. Der Knopf **Jetzt nachsehen** arbeitet
+weiterhin, denn ihn zu drücken ist genau die Entscheidung, die der Haken sonst
+trifft.
+
+**Was nicht angeboten wird.** Eine Veröffentlichung ohne `checksums.txt.sig` —
+das sind alle vor 1.4.0 — bekommt nie einen Knopf zum Holen. Ein Satz Dateien,
+der unvollständig eintreffen darf, ist einer, den jemand unvollständig machen
+kann. Sie verschwindet dabei nicht aus dem Fenster: sie erscheint mit demselben
+Satz wie eine, deren Dateien noch hochladen — von außen ist beides dasselbe,
+nämlich eine Fassung, die es gibt und die dieses Programm nicht installiert. Und
+in den Minuten nach einer Veröffentlichung, in
+denen GitHub den neuen Tag schon nennt und der Bauauftrag die Dateien noch
+hochlädt, sagt das Fenster genau das: die Fassung sei „angekündigt, aber noch
+nicht fertig veröffentlicht. In ein paar Minuten noch einmal nachsehen." „Das
+ist die neueste Fassung" wäre dort schlicht falsch.
+
+**Und was das alles nicht ersetzt.** Die `.exe` trägt weiterhin keine
+Authenticode-Signatur; wer sie im Browser herunterlädt, bekommt weiterhin die
+Warnung von SmartScreen. Die Signatur über `checksums.txt` ist etwas anderes:
+Authenticode ist, was Windows prüft, bevor es eine heruntergeladene Datei
+ausführt, die Release-Signatur ist, was dieses Programm prüft, bevor es sich
+selbst ersetzt. Keins der beiden steht für das andere ein.
 
 ---
 

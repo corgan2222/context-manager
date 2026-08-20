@@ -66,6 +66,10 @@ jobs:
               - '**/*.rs'
               - '**/Cargo.toml'
               - 'Cargo.lock'
+              # Compiled into the binary by `include_str!`, so a change to it is
+              # a change to the program. Without this line a key rotation would
+              # report "nothing here to check" and ship untested.
+              - 'ctxmenu/release-signing.pub.pem'
               - 'rust-toolchain.toml'
               - '.cargo/**'
               - 'ctxmenu/build.rs'

@@ -36,7 +36,18 @@ resolver = "3"
 # the way the culture does. A release workflow runs from the commit its tag
 # names, so the repair could not reach the tag that needed it. Again the same
 # program: nothing here changed but the workflow beside it.
-version = "1.3.2"
+# 1.4.0 on 2026-08-20: the program updates itself. The pieces for it were
+# written in August and never connected to anything -- what was missing was a
+# release to check against, and, more importantly, an answer to the question
+# the old update.rs raised and declined to answer: what happens if the
+# repository account is taken over. The answer is a signature over
+# checksums.txt with a key that does not live in that account, verified against
+# a public half compiled into this binary. A new ability, and nothing stored
+# changed shape; what is new on disk is one field in settings.json that an
+# older version ignores, and two files that exist for seconds during an update.
+# Older releases carry no signature and are therefore never offered -- which
+# only matters in one direction, since they are all older than this.
+version = "1.4.0"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
@@ -98,6 +109,11 @@ features = [
     "Win32_UI_Controls_Dialogs",       # GetOpenFileNameW: pick a program or an icon file
     "Win32_UI_WindowsAndMessaging",    # HICON, ICONINFO, DrawIconEx, SetWindowPos
     "Win32_Security",                  # token elevation check
+    # CNG, for the signature over a release's checksums.txt. The RSA arithmetic
+    # is the operating system's; ctxmenu/src/update/signature.rs only parses the
+    # PEM and builds the key blob. See the note there on why none of that is
+    # written out by hand.
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",        # version resource: FileDescription
     "Win32_System_Console",
     "Win32_System_Registry",

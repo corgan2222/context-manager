@@ -76,16 +76,19 @@ jobs:
           Copy-Item 'target\x86_64-pc-windows-msvc\release\ctxmenu.exe' `
             'release-assets\ctxmenu.exe'
 
-          # A zip beside the bare .exe: the updater fetches the archive, and a
-          # browser download of a bare .exe is what SmartScreen objects to
-          # loudest.
+          # A zip beside the bare .exe, for people downloading in a browser: a
+          # bare .exe is what SmartScreen objects to loudest. The updater does
+          # *not* take this route -- it fetches the .exe directly, because
+          # unpacking a zip would mean carrying a DEFLATE decoder for one job a
+          # year. Both files are covered by the same signed checksums.txt.
           $zip = "release-assets\ctxmenu_${env:RELEASE_VERSION}_windows_amd64.zip"
           Compress-Archive -LiteralPath 'release-assets\ctxmenu.exe' `
             -DestinationPath $zip -CompressionLevel Optimal
 
-          # The updater expects exactly one executable at the archive root.
-          # Asserted here so a future packaging change cannot produce a release
-          # that the program offers but cannot install.
+          # Exactly one executable at the archive root, so that whoever unpacks
+          # it by hand gets what the .exe asset would have given them. Asserted
+          # here so a future packaging change cannot quietly turn the download
+          # people are steered towards into something else.
           $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
           try {
             $entries = @($archive.Entries | ForEach-Object { $_.FullName })
@@ -96,6 +99,32 @@ jobs:
             $archive.Dispose()
           }
 
+      # ---------------------------------------------------------------------
+      # Code signing goes here, once there is a certificate -- between the
+      # assets being assembled and their digests being taken. Signing changes
+      # the file, and a digest taken before it would be wrong; that is the whole
+      # reason this block sits at this line and not further down.
+      #
+      # There is no certificate today, and the difference matters more than it
+      # looks:
+      #
+      #   * An OV certificate (~300 EUR a year) removes the "unknown publisher"
+      #     line but not the SmartScreen warning -- that only fades once enough
+      #     people have downloaded the signed binary and Windows has built a
+      #     reputation for it.
+      #   * An EV certificate (~600 EUR a year, on a hardware token or in a
+      #     cloud HSM) carries reputation from the first download, and is what
+      #     "no warning at all" actually costs.
+      #   * A self-signed certificate changes nothing for anyone but the
+      #     machine that trusts it, and is worse than none: it looks like a
+      #     signature without being one.
+      #
+      # Note that this is a different thing from the release signature below.
+      # Authenticode is what Windows checks before running a downloaded file;
+      # the signature over checksums.txt is what *this program* checks before
+      # replacing itself. Neither stands in for the other.
+      # ---------------------------------------------------------------------
+
       - name: Checksums
         shell: pwsh
         env:
@@ -103,7 +132,8 @@ jobs:
         run: |
           Push-Location release-assets
           try {
-            $lines = Get-ChildItem -File | Where-Object { $_.Name -ne 'checksums.txt' } |
+            $lines = Get-ChildItem -File |
+              Where-Object { $_.Name -notin 'checksums.txt', 'checksums.txt.sig' } |
               Sort-Object Name | ForEach-Object {
                 # sha256sum format: uppercase digest, exactly two spaces, name.
                 # The updater parses this, so the shape is a contract.
@@ -114,6 +144,64 @@ jobs:
           } finally {
             Pop-Location
           }
+
+      - name: Sign the checksums
+        shell: pwsh
+        env:
+          # The private half of the pair `tools\new-release-key.ps1` made. The
+          # public half is committed at ctxmenu\release-signing.pub.pem and is
+          # compiled into every binary, which is what lets an installed copy
+          # tell a release of this project from a release of somebody who got
+          # into this account.
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          # Deliberately not a here-string: `@'` has to close in column zero,
+          # and a line in column zero ends the YAML block this script lives in.
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_SIGNING_KEY)) {
+            throw ('the RELEASE_SIGNING_KEY secret is not set. Every released copy of ctxmenu ' +
+              'refuses an update whose checksums.txt is not signed, so a release built without ' +
+              'this secret is one nobody can install -- which is why this fails here rather than ' +
+              'publishing it. Create the pair with tools\new-release-key.ps1 and paste the ' +
+              'private half into the repository secret of that name.')
+          }
+
+          $checksums = 'release-assets\checksums.txt'
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $checksums))
+          $sha = [System.Security.Cryptography.HashAlgorithmName]::SHA256
+          $pkcs1 = [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+
+          $key = [System.Security.Cryptography.RSA]::Create()
+          try {
+            $key.ImportFromPem($env:RELEASE_SIGNING_KEY)
+            $signature = $key.SignData($bytes, $sha, $pkcs1)
+          } finally {
+            $key.Dispose()
+          }
+
+          # Wrapped base64. The updater's decoder ignores line breaks, and a
+          # single 684-character line is a file nobody can read in a browser.
+          $armoured = [Convert]::ToBase64String($signature, 'InsertLineBreaks')
+          [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) 'release-assets\checksums.txt.sig'),
+            $armoured + "`n",
+            [System.Text.UTF8Encoding]::new($false))
+
+          # The check that matters, and the reason this is a step and not a
+          # one-liner: a secret that has been rotated, pasted short, or set on
+          # the wrong repository still signs perfectly well. It just signs with
+          # a key nobody is carrying. Verifying against the public half in this
+          # commit is what turns that into a red build instead of a release
+          # that quietly cannot be installed.
+          $public = [System.Security.Cryptography.RSA]::Create()
+          try {
+            $public.ImportFromPem((Get-Content -Raw 'ctxmenu\release-signing.pub.pem'))
+            if (-not $public.VerifyData($bytes, $signature, $sha, $pkcs1)) {
+              throw 'the RELEASE_SIGNING_KEY secret does not match ctxmenu\release-signing.pub.pem -- an update signed with it would be refused by every installed copy'
+            }
+          } finally {
+            $public.Dispose()
+          }
+          Write-Host "checksums.txt signed and verified against the public half in this commit ($($signature.Length) bytes)"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -136,6 +224,19 @@ jobs:
           name: release-assets
           path: release-assets
 
+      - name: The public key of this tag
+        # One file out of the tagged commit, not out of the artifact the other
+        # job just built: checking a signature against a key that travelled
+        # beside it would check nothing at all. Sparse, because this job has no
+        # other use for a working tree.
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          path: key
+          sparse-checkout: ctxmenu/release-signing.pub.pem
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Revalidate before publishing
         shell: pwsh
         env:
@@ -153,6 +254,7 @@ jobs:
             # which is the same three names in a different order.
             $expected = @(
               'checksums.txt'
+              'checksums.txt.sig'
               'ctxmenu.exe'
               "ctxmenu_${env:RELEASE_VERSION}_windows_amd64.zip"
             ) | Sort-Object
@@ -163,10 +265,13 @@ jobs:
 
             # The digests are recomputed rather than trusted: the artifact
             # travelled between two jobs, and checksums.txt is what the updater
-            # will believe.
+            # will believe. The signature is left out of its own list for the
+            # obvious reason, and checksums.txt out of it because a file cannot
+            # contain its own digest.
             $recorded = @(Get-Content checksums.txt)
             $rebuilt = @(
-              Get-ChildItem -File | Where-Object { $_.Name -ne 'checksums.txt' } |
+              Get-ChildItem -File |
+                Where-Object { $_.Name -notin 'checksums.txt', 'checksums.txt.sig' } |
                 Sort-Object Name | ForEach-Object {
                   "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)"
                 }
@@ -174,31 +279,30 @@ jobs:
             if (($recorded -join "`n") -cne ($rebuilt -join "`n")) {
               throw 'checksums.txt does not match the files beside it'
             }
+
+            # And the signature again, on this side of the artifact hand-over,
+            # against the same public half the program carries. The build job
+            # already did this; doing it again here costs milliseconds and is
+            # the last moment before these bytes become a release that installed
+            # copies will act on.
+            $public = [System.Security.Cryptography.RSA]::Create()
+            try {
+              $public.ImportFromPem((Get-Content -Raw "$env:GITHUB_WORKSPACE\key\ctxmenu\release-signing.pub.pem"))
+              $signed = $public.VerifyData(
+                [System.IO.File]::ReadAllBytes((Resolve-Path 'checksums.txt')),
+                [Convert]::FromBase64String((Get-Content -Raw 'checksums.txt.sig')),
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+              if (-not $signed) {
+                throw 'checksums.txt.sig does not verify against the public key of this commit'
+              }
+            } finally {
+              $public.Dispose()
+            }
+            Write-Host 'assets complete, digests recomputed, signature verified'
           } finally {
             Pop-Location
           }
-
-      # ---------------------------------------------------------------------
-      # Code signing goes here, once there is a certificate.
-      #
-      # There is none today, and the difference matters more than it looks:
-      #
-      #   * An OV certificate (~300 EUR a year) removes the "unknown publisher"
-      #     line but not the SmartScreen warning -- that only fades once enough
-      #     people have downloaded the signed binary and Windows has built a
-      #     reputation for it.
-      #   * An EV certificate (~600 EUR a year, on a hardware token or in a
-      #     cloud HSM) carries reputation from the first download, and is what
-      #     "no warning at all" actually costs.
-      #   * A self-signed certificate changes nothing for anyone but the
-      #     machine that trusts it, and is worse than none: it looks like a
-      #     signature without being one.
-      #
-      # With a certificate in Azure Trusted Signing or a PKCS#11 token, the step
-      # is one action between this comment and the upload, and it must run
-      # *before* the checksums are attached -- signing changes the file, and a
-      # digest taken before it would be wrong.
-      # ---------------------------------------------------------------------
 
       - name: Attach the assets to the release
         shell: pwsh

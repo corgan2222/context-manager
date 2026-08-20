@@ -104,6 +104,16 @@ pub struct Settings {
     pub custom_extensions: Vec<String>,
     /// Hide file types that have no entries of their own.
     pub hide_empty_types: bool,
+    /// Ask GitHub once per start whether there is a newer release.
+    ///
+    /// On by default, and that is a decision worth writing down: the program is
+    /// a single file that people copy wherever they like, so there is no
+    /// installer and no service to notice that a version has gone stale. The
+    /// request is one GET to the public API, carries no token and no account,
+    /// and nothing is downloaded or replaced without a second click. Turning it
+    /// off stops the request entirely — the check-now button in the About
+    /// window still works, because asking is then the user's own decision.
+    pub check_for_updates: bool,
     /// Also list the entries that apply to *every* file when a file type is
     /// selected.
     ///
@@ -122,6 +132,7 @@ impl Default for Settings {
             custom_extensions: Vec::new(),
             hide_empty_types: true,
             include_generic_entries: false,
+            check_for_updates: true,
         }
     }
 }
@@ -267,6 +278,7 @@ mod tests {
             custom_extensions: vec![".xyz".into(), ".foo".into()],
             hide_empty_types: false,
             include_generic_entries: true,
+            check_for_updates: false,
         };
 
         let json = serde_json::to_string(&settings).expect("serialisable");
@@ -285,6 +297,10 @@ mod tests {
         assert_eq!(loaded.theme, ThemeChoice::Light);
         assert!(loaded.custom_extensions.is_empty());
         assert!(loaded.hide_empty_types, "missing field takes the default");
+        assert!(
+            loaded.check_for_updates,
+            "a file written before the updater existed still asks for updates"
+        );
     }
 
     #[test]
