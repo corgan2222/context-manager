@@ -14,6 +14,10 @@ const config = {
   // `Cannot find module 'nanoid/non-secure'` from postcss and a 500 on
   // global.css. Set NEXT_DIST_DIR for the build to give it its own directory,
   // and the dev server keeps running: NEXT_DIST_DIR=.next-build npm run build
+  //
+  // The export follows distDir, so with the variable set the finished site
+  // lands in .next-build/ rather than in out/. Whoever checks the export by
+  // hand looks there; CI sets nothing and keeps writing to out/.
   distDir: process.env.NEXT_DIST_DIR ?? '.next',
   // GitHub Pages serves a project site under /<repo>, not at the root, so
   // every link and asset needs the prefix. Set here rather than only in the
