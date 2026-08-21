@@ -1,0 +1,76 @@
+name: Docs
+
+# The documentation site is built from website/ and published to GitHub Pages.
+#
+# Separate from ci.yml because it has nothing to do with the program: it needs
+# Node, it needs no Rust, and a failing docs build must not read as a failing
+# build of ctxmenu itself.
+on:
+  push:
+    branches: [main]
+    paths:
+      - website/**
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - website/**
+      - .github/workflows/docs.yml
+  # So the site can be published once without waiting for a change to it.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Every push and pull request: does it build at all? `next build` runs the
+  # type check too, so a broken component or a bad MDX import fails here
+  # rather than after the deploy. This job needs no write access and holds
+  # none.
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      # `npm ci` rather than `npm install`: it installs exactly what the
+      # lockfile names and fails when the two disagree, so a build here can
+      # never quietly use a different version than the one committed.
+      - run: npm ci
+
+      - run: npm run build
+
+      # The artefact is only worth uploading from main; on a pull request the
+      # build above is the whole point.
+      - name: Upload the site
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: website/out
+
+  # Publishing happens only from main, and only this job may write.
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v6
+      - id: deployment
+        uses: actions/deploy-pages@v5
