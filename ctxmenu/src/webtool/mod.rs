@@ -153,10 +153,17 @@ pub fn run(id: &str, file: &Path, batch: Option<&batch::Batch>) -> Result<Outcom
         }
 
         WebMode::Upload(upload) => {
+            // The name goes in before anything is checked or asked, because
+            // `…/dav/files/me/{name}` is not the address the request will use
+            // and neither the check nor the question should be answered about
+            // a template. Only the three placeholders that name the file, see
+            // `fill_name`.
+            let endpoint = fill_name(&upload.endpoint, file);
+
             // Before the question rather than after it: agreeing to send a file
             // over a connection this tool was never allowed to use would be an
             // agreement to nothing, and the answer is remembered.
-            permitted(&upload.endpoint, web.allow_insecure)?;
+            permitted(&endpoint, web.allow_insecure)?;
 
             // The one place in this program where data leaves the machine.
             // Asked once per favourite and recorded, so it is a decision about
@@ -183,7 +190,7 @@ pub fn run(id: &str, file: &Path, batch: Option<&batch::Batch>) -> Result<Outcom
                             name = favourite.name,
                             file = file.display(),
                             kilobytes = size.div_ceil(1024),
-                            host = host_of(&upload.endpoint),
+                            host = host_of(&endpoint),
                         ),
                     )
                 });
@@ -215,10 +222,10 @@ pub fn run(id: &str, file: &Path, batch: Option<&batch::Batch>) -> Result<Outcom
                 }
             };
 
-            let answer = http::send(&upload.endpoint, &upload.method, &upload.headers, request)
-                .with_context(|| format!("{} {}", upload.method, upload.endpoint))?;
+            let answer = http::send(&endpoint, &upload.method, &upload.headers, request)
+                .with_context(|| format!("{} {endpoint}", upload.method))?;
 
-            apply_result(upload, &answer, file, web.allow_insecure)
+            apply_result(upload, &endpoint, &answer, file, web.allow_insecure)
         }
     }
 }
@@ -291,6 +298,26 @@ fn absolute(address: &str, endpoint: &str) -> Result<String> {
     Ok(format!("{scheme}://{host}{address}"))
 }
 
+/// Whether a follow-up request may carry the key, which is all or nothing.
+///
+/// The key belongs to the host the file was sent to. TinyPNG answers `201`
+/// with a `Location` on `api.tinify.com` and refuses that address without the
+/// same `Authorization` line, so a result behind a key is a real shape and has
+/// to work. A service that instead names a bucket, a CDN or a signed link
+/// somewhere else is naming a host the user never agreed to, and handing it
+/// the key would be the mistake `decisions/0029` already refuses to make with
+/// redirects — only quieter, because nothing would go wrong that anybody sees.
+fn same_host<'a>(
+    address: &str,
+    endpoint: &str,
+    headers: &'a [crate::favourites::Header],
+) -> &'a [crate::favourites::Header] {
+    match host_of(address).eq_ignore_ascii_case(host_of(endpoint)) {
+        true => headers,
+        false => &[],
+    }
+}
+
 /// Just the host of an address, for the question before sending.
 ///
 /// The whole endpoint including path and key would be noise in a dialog whose
@@ -325,19 +352,18 @@ fn took_the_job(answer: &http::Answer) -> bool {
 /// Turns the answer into something the user can see or keep.
 fn apply_result(
     upload: &Upload,
+    endpoint: &str,
     answer: &http::Answer,
     file: &Path,
     allow_insecure: bool,
 ) -> Result<Outcome> {
-    let endpoint = &upload.endpoint;
-
     // Before anything is fetched or written: what came back may be a receipt
     // rather than a result, and every path below would make a mess of it —
     // `Save` would write the receipt out under a picture's name. Asking after
     // the job first turns it back into the answer the other branches expect.
     let job = match took_the_job(answer) && !matches!(upload.result, ResultAction::Report) {
         false => None,
-        true => Some(awaited(upload, answer, allow_insecure)?),
+        true => Some(awaited(upload, endpoint, answer, allow_insecure)?),
     };
 
     match &upload.result {
@@ -356,7 +382,7 @@ fn apply_result(
                 // service's own progress and went through the same checks.
                 Some(job) => job.address.clone(),
                 None => {
-                    let address = absolute(&locate(source, answer)?, endpoint)?;
+                    let address = absolute(&locate(source, answer, file)?, endpoint)?;
                     permitted(&address, allow_insecure)?;
                     address
                 }
@@ -371,18 +397,24 @@ fn apply_result(
             ))
         }
 
-        ResultAction::Save { source, suffix } => {
+        ResultAction::Save {
+            source,
+            suffix,
+            extension,
+        } => {
             let bytes = match (&job, source) {
                 (Some(job), _) => {
-                    http::download(&job.address).with_context(|| job.address.clone())?
+                    let headers = same_host(&job.address, endpoint, &upload.headers);
+                    http::download(&job.address, headers).with_context(|| job.address.clone())?
                 }
                 (None, ResultSource::Body) => answer.body.clone(),
                 (None, other) => {
                     // The service answered with an address rather than the
                     // file; fetching it is the other half of the job.
-                    let address = absolute(&locate(other, answer)?, endpoint)?;
+                    let address = absolute(&locate(other, answer, file)?, endpoint)?;
                     permitted(&address, allow_insecure)?;
-                    http::download(&address).with_context(|| address.clone())?
+                    let headers = same_host(&address, endpoint, &upload.headers);
+                    http::download(&address, headers).with_context(|| address.clone())?
                 }
             };
 
@@ -390,7 +422,7 @@ fn apply_result(
                 bail!("\x1eAntwort ohne Inhalt\x1fempty answer\x1d, nothing to save");
             }
 
-            let target = free_name(file, suffix);
+            let target = free_name(file, suffix, extension);
             std::fs::write(&target, &bytes).with_context(|| format!("{}", target.display()))?;
             // Named after the file that was written, not the one that was
             // clicked: the result is what the user is looking for afterwards,
@@ -454,14 +486,19 @@ struct Finished {
 }
 
 /// Waits for a job the service took in rather than did.
-fn awaited(upload: &Upload, receipt: &http::Answer, allow_insecure: bool) -> Result<Finished> {
+fn awaited(
+    upload: &Upload,
+    endpoint: &str,
+    receipt: &http::Answer,
+    allow_insecure: bool,
+) -> Result<Finished> {
     let poll = match &upload.poll {
         Some(poll) => poll.clone(),
         // Nothing written down, which is every favourite made before this
         // existed. The service describes itself and its description says where
         // it takes questions, so ask it — that beats telling the user their
         // tool box has to be built again.
-        None => discovered(&upload.endpoint, allow_insecure)?,
+        None => discovered(endpoint, allow_insecure)?,
     };
 
     let receipt: serde_json::Value = serde_json::from_slice(&receipt.body).context(
@@ -478,7 +515,7 @@ fn awaited(upload: &Upload, receipt: &http::Answer, allow_insecure: bool) -> Res
             )
         })?;
 
-    let asking = absolute(&asking_after(&poll.path, &id)?, &upload.endpoint)?;
+    let asking = absolute(&asking_after(&poll.path, &id)?, endpoint)?;
     permitted(&asking, allow_insecure)?;
 
     let where_it_stands = frame_path(&poll, &upload.result).context(
@@ -519,7 +556,7 @@ fn awaited(upload: &Upload, receipt: &http::Answer, allow_insecure: bool) -> Res
                 bail!("\x1eDer Auftrag ist fehlgeschlagen\x1fthe job failed\x1d: {trouble}");
             }
             if let Some(named) = json_path(&frame, &where_it_stands) {
-                let address = absolute(&named, &upload.endpoint)?;
+                let address = absolute(&named, endpoint)?;
                 permitted(&address, allow_insecure)?;
                 return Ok(Finished {
                     address,
@@ -728,7 +765,7 @@ fn took_a_while(job: &Option<Finished>) -> String {
 }
 
 /// Digs the result address out of the answer.
-fn locate(source: &ResultSource, answer: &http::Answer) -> Result<String> {
+fn locate(source: &ResultSource, answer: &http::Answer, file: &Path) -> Result<String> {
     match source {
         ResultSource::Body => {
             let text = String::from_utf8_lossy(&answer.body).trim().to_string();
@@ -749,8 +786,68 @@ fn locate(source: &ResultSource, answer: &http::Answer) -> Result<String> {
                 format!("\x1eKein Feld {path} in der Antwort\x1fno field {path} in the answer\x1d")
             })
         }
+        ResultSource::Built { url } => {
+            // The answer only has to be JSON if the template asks it for
+            // something. A template of `{sha256}` alone reaches a page named
+            // after the file, and a service that answers in plain text would
+            // otherwise fail here for no reason at all.
+            let value = serde_json::from_slice(&answer.body).unwrap_or(serde_json::Value::Null);
+            built(url, &value, file)
+        }
     }
 }
+
+/// Puts the fields an answer names into an address template.
+///
+/// Every substituted value is percent-encoded, `/` included, so that whatever
+/// the service sends stays one segment of the path it was written into. A
+/// service that answers `{"data":{"id":"../../somewhere"}}` is then asking for
+/// a page called `..%2F..%2Fsomewhere`, which is a 404 rather than a different
+/// page — the same reasoning as in [`fill`], and here it matters more, because
+/// the value is a stranger's rather than the user's own file name.
+fn built(template: &str, answer: &serde_json::Value, file: &Path) -> Result<String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(before);
+        let (path, tail) = after.split_once('}').with_context(|| {
+            format!(
+                "\x1eIn der Adressvorlage fehlt eine schließende Klammer\
+                 \x1fthe address template is missing a closing brace\x1d: {template}"
+            )
+        })?;
+        let path = path.trim();
+
+        let found = match path {
+            // Not a field of the answer at all: the digest of the file that
+            // was just sent. Every service that checks files names its page
+            // after that digest, while the answer to an upload carries an
+            // opaque job id whose page address none of them documents
+            // (checked against VirusTotal, 2026-08-21). Computing it here is
+            // the difference between a usable menu entry and a guess.
+            SHA256 => {
+                let bytes = std::fs::read(file).with_context(|| format!("{}", file.display()))?;
+                crate::update::sha256(&bytes)
+            }
+            field => json_path(answer, field)
+                .filter(|value| !value.trim().is_empty())
+                .with_context(|| {
+                    format!(
+                        "\x1eKein Feld {field} in der Antwort\x1fno field {field} in the answer\x1d"
+                    )
+                })?,
+        };
+        out.push_str(&encode(&found));
+        rest = tail;
+    }
+
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// The one name in an address template that is not a field of the answer.
+pub const SHA256: &str = "sha256";
 
 /// Follows a dotted path such as `output.url` through a JSON value.
 ///
@@ -778,25 +875,42 @@ fn json_path(value: &serde_json::Value, path: &str) -> Option<String> {
 /// would otherwise end the query string early and quietly change what the tool
 /// is asked to do.
 pub fn fill(template: &str, file: &Path) -> String {
-    let name = file.file_name().unwrap_or_default().to_string_lossy();
-    let stem = file.file_stem().unwrap_or_default().to_string_lossy();
-    let ext = file
-        .extension()
-        .map(|e| e.to_string_lossy().to_string())
-        .unwrap_or_default();
     let dir = file
         .parent()
         .map(|d| d.to_string_lossy().to_string())
         .unwrap_or_default();
     let path = file.to_string_lossy();
 
+    fill_name(template, file)
+        .replace("{dir}", &encode(&dir))
+        .replace("{fileurl}", &file_url(file))
+        .replace("{path}", &encode(&path))
+}
+
+/// The three placeholders that name the file and nothing else.
+///
+/// This is what an upload endpoint gets, and the difference to [`fill`] is the
+/// point: `{path}`, `{dir}` and `{fileurl}` say where the file sits on *this*
+/// machine, and an upload endpoint is the one address here that a stranger
+/// reads. `C:/Users/<somebody>/Desktop` in a request line would leave the
+/// house for no reason at all.
+///
+/// A service that wants the target name in its path needs exactly these three:
+/// WebDAV puts it there (`…/remote.php/dav/files/me/{name}`), and so do Bunny
+/// Storage, Azure Blob and filebin.net. Without them every file such a
+/// favourite sends lands under one and the same name.
+pub fn fill_name(template: &str, file: &Path) -> String {
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+
     template
         .replace("{name}", &encode(&name))
         .replace("{stem}", &encode(&stem))
         .replace("{ext}", &encode(&ext))
-        .replace("{dir}", &encode(&dir))
-        .replace("{fileurl}", &file_url(file))
-        .replace("{path}", &encode(&path))
 }
 
 /// `file:///C:/Ordner/Bild.png`
@@ -835,13 +949,20 @@ pub fn encode(value: &str) -> String {
 /// `bild.min_2.png`. Overwriting is never on offer: the original is the
 /// user's, and a web tool that answers with rubbish must not be able to
 /// destroy it.
-pub fn free_name(original: &Path, suffix: &str) -> PathBuf {
+pub fn free_name(original: &Path, suffix: &str, wanted: &str) -> PathBuf {
     let directory = original.parent().unwrap_or_else(|| Path::new("."));
     let stem = original.file_stem().unwrap_or_default().to_string_lossy();
-    let extension = original
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
+    let wanted = wanted.trim().trim_start_matches('.');
+    let extension = match wanted.is_empty() {
+        // A converter answers with a different kind of file than it was given,
+        // and the name has to say so or Windows opens the result in the wrong
+        // program.
+        false => format!(".{wanted}"),
+        true => original
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default(),
+    };
     let suffix = suffix.trim();
 
     let mut candidate = directory.join(format!("{stem}{suffix}{extension}"));
@@ -986,6 +1107,171 @@ mod tests {
     }
 
     #[test]
+    fn an_endpoint_takes_the_name_and_never_the_path() {
+        let file = Path::new(r"C:\Users\jemand\Bilder\Sonne & Meer.png");
+
+        assert_eq!(
+            fill_name("https://cloud.example/dav/files/me/{name}", file),
+            "https://cloud.example/dav/files/me/Sonne%20%26%20Meer.png"
+        );
+
+        // The whole point of the second function: an upload endpoint is read
+        // by a stranger, and these three name a place on this machine.
+        for placeholder in ["{path}", "{dir}", "{fileurl}"] {
+            let template = format!("https://x.example/{placeholder}");
+            assert_eq!(
+                fill_name(&template, file),
+                template,
+                "{placeholder} must survive untouched in an endpoint"
+            );
+        }
+        assert!(
+            !fill_name("https://x.example/{path}", file).contains("jemand"),
+            "no part of a local path may reach a foreign address"
+        );
+    }
+
+    /// A path the address tests never read: none of their templates asks for
+    /// the file's digest, and `built` only touches the disk when one does.
+    fn unread_file() -> &'static Path {
+        Path::new(r"C:ild.png")
+    }
+
+    #[test]
+    fn an_address_is_built_from_what_the_answer_names() {
+        let answer: serde_json::Value =
+            serde_json::from_str(r#"{"data":{"id":"abc123","type":"analysis"}}"#).unwrap();
+
+        assert_eq!(
+            built(
+                "https://vt.example/gui/file/{data.id}",
+                &answer,
+                unread_file()
+            )
+            .unwrap(),
+            "https://vt.example/gui/file/abc123"
+        );
+        assert_eq!(
+            built(
+                "https://vt.example/{data.type}/{data.id}",
+                &answer,
+                unread_file()
+            )
+            .unwrap(),
+            "https://vt.example/analysis/abc123"
+        );
+        assert_eq!(
+            built("https://vt.example/plain", &answer, unread_file()).unwrap(),
+            "https://vt.example/plain",
+            "a template without braces is an address already"
+        );
+    }
+
+    #[test]
+    fn a_built_address_keeps_the_answer_inside_one_segment() {
+        let escaping: serde_json::Value =
+            serde_json::from_str(r#"{"data":{"id":"../../../admin"}}"#).unwrap();
+
+        let address = built(
+            "https://vt.example/gui/file/{data.id}",
+            &escaping,
+            unread_file(),
+        )
+        .unwrap();
+        assert!(
+            address.starts_with("https://vt.example/gui/file/"),
+            "a service must not climb out of the path it was given: {address}"
+        );
+        assert!(!address.contains("/admin"), "got {address}");
+    }
+
+    /// The digest is the only name in a template that the answer does not
+    /// hold, and a service that checks files is the reason it exists.
+    #[test]
+    fn an_address_can_be_built_from_the_file_itself() {
+        let directory = std::env::temp_dir().join("ctxmenu_built_sha_test");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("temp directory");
+        let file = directory.join("bild.png");
+        std::fs::write(&file, b"abc").expect("write");
+
+        // The published vector for "abc".
+        let address = built(
+            "https://vt.example/gui/file/{sha256}",
+            &serde_json::Value::Null,
+            &file,
+        )
+        .expect("the digest needs no answer at all");
+        assert_eq!(
+            address,
+            "https://vt.example/gui/file/ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_built_address_without_its_field_is_an_error_not_a_gap() {
+        let answer: serde_json::Value = serde_json::from_str(r#"{"data":{"id":""}}"#).unwrap();
+
+        assert!(
+            built(
+                "https://vt.example/gui/file/{data.id}",
+                &answer,
+                unread_file()
+            )
+            .is_err(),
+            "an empty id would build an address to the wrong page"
+        );
+        assert!(
+            built(
+                "https://vt.example/gui/file/{data.missing}",
+                &answer,
+                unread_file()
+            )
+            .is_err(),
+            "a field that is not there is not an empty one"
+        );
+        assert!(
+            built(
+                "https://vt.example/gui/file/{data.id",
+                &answer,
+                unread_file()
+            )
+            .is_err(),
+            "an unclosed brace is a typo, not a literal"
+        );
+    }
+
+    #[test]
+    fn the_key_follows_the_result_only_on_the_same_host() {
+        let key = [crate::favourites::Header {
+            name: "Authorization".into(),
+            value: "Basic secret".into(),
+        }];
+
+        assert_eq!(
+            same_host(
+                "https://api.tinify.com/output/2xnsp7",
+                "https://api.tinify.com/shrink",
+                &key
+            )
+            .len(),
+            1,
+            "TinyPNG names its output on its own host and wants the same key"
+        );
+        assert!(
+            same_host(
+                "https://some-bucket.s3.amazonaws.com/x",
+                "https://api.tinify.com/shrink",
+                &key
+            )
+            .is_empty(),
+            "a bucket somewhere else is a host the user never agreed to"
+        );
+    }
+
+    #[test]
     fn the_result_never_overwrites_the_original() {
         let directory = std::env::temp_dir().join("ctxmenu_webtool_name_test");
         let _ = std::fs::remove_dir_all(&directory);
@@ -994,20 +1280,37 @@ mod tests {
         let original = directory.join("bild.png");
         std::fs::write(&original, b"x").expect("write");
 
-        let first = free_name(&original, ".min");
+        let first = free_name(&original, ".min", "");
         assert_eq!(first.file_name().unwrap(), "bild.min.png");
         assert_ne!(first, original, "the original must never be the target");
 
         std::fs::write(&first, b"y").expect("write");
-        let second = free_name(&original, ".min");
+        let second = free_name(&original, ".min", "");
         assert_eq!(second.file_name().unwrap(), "bild.min_2.png");
 
         let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
+    fn a_converter_names_its_answer_after_what_it_produced() {
+        // Without this a converted file is `brief.pdf.docx`: a PDF wearing the
+        // extension of the file it was made from, which Windows hands to Word.
+        // Bare names rather than paths: only the last part is under test.
+        let name = free_name(Path::new("brief.docx"), "", "pdf");
+        assert_eq!(name.file_name().unwrap(), "brief.pdf");
+
+        // A leading dot is what a person types, and both forms mean the same.
+        let dotted = free_name(Path::new("brief.docx"), "", ".pdf");
+        assert_eq!(dotted.file_name().unwrap(), "brief.pdf");
+
+        // And the suffix still works beside it.
+        let both = free_name(Path::new("brief.docx"), ".klein", "pdf");
+        assert_eq!(both.file_name().unwrap(), "brief.klein.pdf");
+    }
+
+    #[test]
     fn a_file_without_an_extension_still_gets_a_usable_name() {
-        let name = free_name(Path::new(r"C:\a\LIESMICH"), ".neu");
+        let name = free_name(Path::new(r"C:\a\LIESMICH"), ".neu", "");
         assert_eq!(name.file_name().unwrap(), "LIESMICH.neu");
     }
 
@@ -1033,6 +1336,7 @@ mod tests {
         let save = ResultAction::Save {
             source: ResultSource::Body,
             suffix: ".neu".into(),
+            extension: String::new(),
         };
 
         // The polite signal. `from: body` means the answer *is* the file, so
@@ -1046,6 +1350,7 @@ mod tests {
         assert!(
             apply_result(
                 &upload("http://x.invalid/y", save.clone()),
+                "http://x.invalid/y",
                 &accepted,
                 file,
                 true
@@ -1064,6 +1369,7 @@ mod tests {
         assert!(
             apply_result(
                 &upload("http://x.invalid/y", save.clone()),
+                "http://x.invalid/y",
                 &lying,
                 file,
                 true
@@ -1076,6 +1382,7 @@ mod tests {
         assert!(
             apply_result(
                 &upload("http://x.invalid/y", ResultAction::Report),
+                "http://x.invalid/y",
                 &accepted,
                 file,
                 true
@@ -1095,6 +1402,7 @@ mod tests {
         assert!(
             apply_result(
                 &upload("http://x.invalid/y", save),
+                "http://x.invalid/y",
                 &ordinary,
                 &target,
                 true
@@ -1172,6 +1480,7 @@ mod tests {
         assert!(
             apply_result(
                 &upload("https://tool.example/api", open),
+                "https://tool.example/api",
                 &answer,
                 Path::new("bild.png"),
                 true
@@ -1194,6 +1503,7 @@ mod tests {
         assert!(
             apply_result(
                 &upload("https://tool.example/api", open_located),
+                "https://tool.example/api",
                 &located,
                 Path::new("bild.png"),
                 true
@@ -1297,6 +1607,7 @@ mod tests {
                     path: "downloadUrl".into(),
                 },
                 suffix: ".neu".into(),
+                extension: String::new(),
             },
         );
         task.poll = Some(Poll::at("/api/jobs/{jobId}/progress"));
@@ -1307,7 +1618,8 @@ mod tests {
             body: br#"{"jobId":"abc","async":true}"#.to_vec(),
         };
 
-        let outcome = apply_result(&task, &receipt, &file, true).expect("the job is waited out");
+        let outcome = apply_result(&task, &task.endpoint.clone(), &receipt, &file, true)
+            .expect("the job is waited out");
         assert!(
             outcome.message.contains("bild.neu.png"),
             "{}",
@@ -1364,6 +1676,7 @@ mod tests {
                     path: "downloadUrl".into(),
                 },
                 suffix: ".neu".into(),
+                extension: String::new(),
             },
         );
         task.poll = Some(Poll::at("/api/jobs/{jobId}/progress"));
@@ -1375,8 +1688,14 @@ mod tests {
         };
 
         let started = Instant::now();
-        let error = apply_result(&task, &receipt, Path::new("bild.png"), true)
-            .expect_err("a failed job is an error");
+        let error = apply_result(
+            &task,
+            &task.endpoint.clone(),
+            &receipt,
+            Path::new("bild.png"),
+            true,
+        )
+        .expect_err("a failed job is an error");
         assert!(
             started.elapsed() < Duration::from_secs(20),
             "a failed job must not be waited out"
@@ -1493,6 +1812,7 @@ mod tests {
                 path: "downloadUrl".into(),
             },
             suffix: ".neu".into(),
+            extension: String::new(),
         };
         assert_eq!(
             frame_path(&plain, &save).as_deref(),
@@ -1525,7 +1845,8 @@ mod tests {
                 &plain,
                 &ResultAction::Save {
                     source: ResultSource::Body,
-                    suffix: ".neu".into()
+                    suffix: ".neu".into(),
+                    extension: String::new(),
                 }
             ),
             None

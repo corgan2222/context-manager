@@ -12,6 +12,7 @@ import {
   LayoutGrid,
   MousePointerClick,
   PencilLine,
+  Plug,
   RefreshCw,
   Rocket,
   Scale,
@@ -42,7 +43,7 @@ const docs = defineDocs({
 // frontmatter. Listed one by one rather than reached through the whole of
 // lucide-react: a namespace import pulls every icon into the bundle, and a
 // named handful is what the site actually draws. Exported because the cards on
-// the documentation index draw the same twelve, and two lists would drift.
+// the documentation index draw from the same list, and two lists would drift.
 export const pageIcons = {
   Archive,
   Bot,
@@ -52,6 +53,7 @@ export const pageIcons = {
   LayoutGrid,
   MousePointerClick,
   PencilLine,
+  Plug,
   RefreshCw,
   Rocket,
   Scale,

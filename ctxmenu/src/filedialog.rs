@@ -50,6 +50,12 @@ pub const ICONS: Filter<'static> = Filter(&[
     ("\x1eAlle Dateien\x1fAll files\x1d", "*.*"),
 ]);
 
+/// ShareX's own uploader files, which this program reads as favourites.
+pub const UPLOADERS: Filter<'static> = Filter(&[
+    ("ShareX-UploaderShareX uploaders", "*.sxcu"),
+    ("Alle DateienAll files", "*.*"),
+]);
+
 /// Opens the file picker. `None` means the user cancelled, which is an answer
 /// and not a failure.
 ///

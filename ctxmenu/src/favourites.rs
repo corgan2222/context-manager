@@ -59,6 +59,19 @@ pub struct Favourite {
     /// Free text; not shown in menus, only in this application.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The catalogue entry this was made from, if it was made from one.
+    ///
+    /// Which tab shows it hangs off this. A tool picked from the list of
+    /// services belongs with the services afterwards -- that is where the
+    /// person who picked it will look for it -- while one built by hand in the
+    /// form belongs in the favourites. `sxcu` for one read out of a ShareX
+    /// file, which is the same kind of thing arriving by another door.
+    ///
+    /// Absent from every favourite written before this existed, and absent
+    /// again as soon as it is empty, so an older version of the program reads
+    /// the file exactly as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,6 +216,46 @@ pub struct Header {
     pub value: String,
 }
 
+impl Header {
+    /// The one line curl writes for you.
+    ///
+    /// Documentation for TinyPNG, pixeldrain, Zamzar and Docparser shows
+    /// `curl --user api:KEY`, and curl turns those two halves into
+    /// `Authorization: Basic YXBpOktFWQ==`. This program sends header values
+    /// exactly as typed, so without this the user has to encode the pair by
+    /// hand — which is a thing nobody does correctly at the second attempt.
+    pub fn basic(user_and_secret: &str) -> Header {
+        Header {
+            name: "Authorization".into(),
+            value: format!("Basic {}", base64(user_and_secret.as_bytes())),
+        }
+    }
+}
+
+/// Standard base64, padded. `update::signature` decodes; this encodes.
+///
+/// Twelve lines rather than a dependency: the alphabet is fixed, the input is
+/// a header value rather than a stream, and a crate for it would be the only
+/// thing in the tree that this file needs.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let bits = chunk.iter().enumerate().fold(0u32, |bits, (index, byte)| {
+            bits | (u32::from(*byte) << (16 - 8 * index))
+        });
+
+        for slot in 0..4 {
+            match slot <= chunk.len() {
+                true => out.push(ALPHABET[(bits >> (18 - 6 * slot)) as usize & 0x3f] as char),
+                false => out.push('='),
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "body", rename_all = "lowercase")]
 pub enum UploadBody {
@@ -234,6 +287,17 @@ pub enum ResultAction {
         /// added instead.
         #[serde(default = "default_suffix")]
         suffix: String,
+        /// The extension the result carries, without a dot, where it differs
+        /// from the original's.
+        ///
+        /// Empty for everything that answers with the same kind of file it was
+        /// given, which is most of them: a compressed PNG is still a PNG.
+        /// A converter is the other case, and without this its answer would be
+        /// `brief.pdf.docx` — a PDF wearing the extension of the file it was
+        /// made from, which Windows opens in Word and which no one can see is
+        /// wrong until it fails.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        extension: String,
     },
     /// Open the address the service answered with.
     Open {
@@ -259,6 +323,16 @@ pub enum ResultSource {
     Location,
     /// The answer is JSON and names it in a field, addressed as `output.url`.
     Json { path: String },
+    /// The answer names a *piece* of the address, and the address is built
+    /// around it.
+    ///
+    /// `https://www.virustotal.com/gui/file/{data.id}` reaches the report page
+    /// of a file VirusTotal has taken in. Services that check or analyse a
+    /// file answer this way as a rule: they hand back an id, because the thing
+    /// worth looking at is a page of theirs and not a file of yours. Each pair
+    /// of braces holds a dotted path of the same shape [`Self::Json`] takes,
+    /// and every one of them has to be found or the address is not built.
+    Built { url: String },
 }
 
 impl Favourite {
@@ -707,6 +781,7 @@ mod tests {
             id: "test".into(),
             name: name.into(),
             icon: None,
+            from: None,
             note: None,
             tool: Tool::Program {
                 path: PathBuf::from(r"C:\Windows\notepad.exe"),
@@ -720,6 +795,7 @@ mod tests {
             id: "web".into(),
             name: "Webtool".into(),
             icon: None,
+            from: None,
             note: None,
             tool: Tool::Web(WebTool {
                 mode,
@@ -951,6 +1027,7 @@ mod tests {
                         path: "output.url".into(),
                     },
                     suffix: ".min".into(),
+                    extension: String::new(),
                 },
             }))),
         ];
@@ -1250,7 +1327,8 @@ mod tests {
                 source: ResultSource::Json {
                     path: "downloadUrl".into()
                 },
-                suffix: ".neu".into()
+                suffix: ".neu".into(),
+                extension: String::new(),
             }
         );
 
@@ -1281,5 +1359,55 @@ mod tests {
             "empty means: wherever the ordinary answer names it"
         );
         assert_eq!(poll, Poll::at("/jobs/{jobId}/progress"));
+    }
+
+    /// The vectors from RFC 4648, plus the one line the documentation of
+    /// TinyPNG shows. Three lengths, because the padding is where a hand
+    /// written encoder goes wrong.
+    #[test]
+    fn base64_matches_the_published_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn a_basic_header_is_what_curl_would_have_sent() {
+        let header = Header::basic("api:abc");
+        assert_eq!(header.name, "Authorization");
+        assert_eq!(header.value, "Basic YXBpOmFiYw==");
+    }
+
+    #[test]
+    fn a_built_result_survives_the_file_it_is_written_to() {
+        let json = r#"{
+            "endpoint": "https://www.virustotal.com/api/v3/files",
+            "body": "multipart",
+            "field": "file",
+            "result": "open",
+            "source": {
+                "from": "built",
+                "url": "https://www.virustotal.com/gui/file/{data.id}"
+            }
+        }"#;
+
+        let upload: Upload = serde_json::from_str(json).expect("reads");
+        let ResultAction::Open { source } = &upload.result else {
+            panic!("open, with a source");
+        };
+        assert_eq!(
+            source,
+            &ResultSource::Built {
+                url: "https://www.virustotal.com/gui/file/{data.id}".into()
+            }
+        );
+
+        // And back out again, because the window writes this file too.
+        let text = serde_json::to_string(&upload).expect("writes");
+        assert!(text.contains(r#""from":"built""#), "{text}");
     }
 }

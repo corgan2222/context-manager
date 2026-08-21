@@ -162,6 +162,9 @@ pub struct Template {
     /// The service's published logo, as a web address. Fetched once when
     /// the service is saved and kept as a local `.ico`; empty means none.
     pub icon: &'static str,
+    /// The name of the same logo inside this binary, for the row in the
+    /// catalogue. Drawing it must not wait for a network.
+    pub logo: &'static str,
 }
 
 /// The templates on offer. Deliberately short: a wrong entry here costs more
@@ -179,6 +182,30 @@ pub const TEMPLATES: &[Template] = &[
         result_path: "downloadUrl",
         allow_insecure: true,
         icon: "https://raw.githubusercontent.com/snapotter-hq/SnapOtter/main/branding/logo-64.png",
+        logo: "snapotter",
+    },
+    Template {
+        // Self-hosted as well, and the reason the address hint carries a port:
+        // the container's own default is 8080, and the description sits at a
+        // path Springdoc does not use by default. Both come out of the
+        // project's `application.properties`
+        // (`springdoc.api-docs.path=/v1/api-docs`), and its own API guide
+        // shows `X-API-KEY` with a `fileInput` part -- read 2026-08-21.
+        //
+        // Not yet measured against a running instance: the public demo at
+        // stirlingpdf.io now serves the new single-page app rather than an API,
+        // so the two facts above stand on the project's own source and
+        // documentation rather than on a request that was made. Whoever runs
+        // one first, check it and take this note out.
+        name: "Stirling-PDF",
+        address_hint: "http://<host>:8080/v1/api-docs",
+        // Empty on purpose: these endpoints answer with the finished PDF in
+        // the body rather than with an address, which is what an empty result
+        // path means here. See `a_service_without_a_result_path_expects_the_file_itself`.
+        result_path: "",
+        allow_insecure: true,
+        icon: "https://corgan2222.github.io/context-manager/icons/stirling-pdf.png",
+        logo: "stirling-pdf",
     },
     Template {
         // The empty template: everything blank, for a service nobody has
@@ -188,6 +215,7 @@ pub const TEMPLATES: &[Template] = &[
         result_path: "",
         allow_insecure: false,
         icon: "",
+        logo: "",
     },
 ];
 
@@ -227,6 +255,16 @@ pub fn spec_candidates(url: &str) -> Vec<String> {
             "/api/openapi.json",
             "/api-docs",
             "/v3/api-docs",
+            // Springdoc's default is `/v3/api-docs` above; Stirling-PDF moves
+            // it, and says so in its own `application.properties`
+            // (`springdoc.api-docs.path=/v1/api-docs`, read 2026-08-21). One
+            // more candidate costs one request on the first run and nothing
+            // afterwards -- the address that answered is remembered.
+            "/v1/api-docs",
+            // Gitea and Forgejo both serve their whole description here, at
+            // the root of the instance (verified against gitea.com and
+            // codeberg.org, 2026-08-21).
+            "/swagger.v1.json",
         ] {
             let candidate = format!("{origin}{path}");
             if !out.contains(&candidate) {
@@ -365,6 +403,9 @@ pub fn favourite_for(
 
     Favourite {
         id: format!("{}__{}", service.id, id_for(&tool.summary)),
+        // A tool of a service belongs to that service, which the services
+        // tab already shows on its own.
+        from: None,
         name,
         // The service's icon, so every tool of one service shares one face.
         // Only newly taken-over favourites see this — ones recorded earlier
@@ -397,6 +438,7 @@ pub fn favourite_for(
                         },
                     },
                     suffix: suffix.to_string(),
+                    extension: String::new(),
                 },
             })),
             allow_insecure: service.allow_insecure,
@@ -553,7 +595,8 @@ mod tests {
                 source: ResultSource::Json {
                     path: "downloadUrl".into()
                 },
-                suffix: ".klein".into()
+                suffix: ".klein".into(),
+                extension: String::new(),
             }
         );
 
@@ -628,7 +671,8 @@ mod tests {
             upload.result,
             ResultAction::Save {
                 source: ResultSource::Body,
-                suffix: ".neu".into()
+                suffix: ".neu".into(),
+                extension: String::new(),
             }
         );
     }

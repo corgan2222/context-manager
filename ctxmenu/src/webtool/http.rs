@@ -436,7 +436,14 @@ pub fn stream(url: &str, headers: &[Header], patience: std::time::Duration) -> R
 }
 
 /// Fetches a result the service pointed at.
-pub fn download(url: &str) -> Result<Vec<u8>> {
+///
+/// `headers` is what the upload carried, and it is not always right to repeat
+/// it: the caller decides, and [`crate::webtool::same_host`] is where that
+/// decision is made. TinyPNG names its output under `api.tinify.com` and wants
+/// the same `Authorization` line for it, so an empty list here would make that
+/// service unusable; a service that names a bucket somewhere else must not be
+/// handed the key, so passing the list on unconditionally would be worse.
+pub fn download(url: &str, headers: &[Header]) -> Result<Vec<u8>> {
     let target = Url::parse(url)?;
 
     let session = Handle::session()?;
@@ -444,6 +451,16 @@ pub fn download(url: &str) -> Result<Vec<u8>> {
         .context("WinHttpSetTimeouts")?;
     let connect = Handle::connect(&session, &target)?;
     let request = Handle::request(&connect, &target, "GET", Redirects::Refuse)?;
+
+    if !headers.is_empty() {
+        let mut lines = String::new();
+        for header in headers {
+            lines.push_str(&format!("{}: {}\r\n", header.name, header.value));
+        }
+        let wide: Vec<u16> = lines.encode_utf16().collect();
+        unsafe { WinHttpAddRequestHeaders(request.0, &wide, WINHTTP_ADDREQ_FLAG_ADD) }
+            .context("WinHttpAddRequestHeaders")?;
+    }
 
     unsafe { WinHttpSendRequest(request.0, None, None, 0, 0, 0) }.context("WinHttpSendRequest")?;
     unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }

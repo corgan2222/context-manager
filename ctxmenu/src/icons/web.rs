@@ -28,7 +28,9 @@ pub fn localise(icon: &str) -> Result<String> {
         return Ok(trimmed.to_string());
     }
 
-    let bytes = crate::webtool::http::download(trimmed)?;
+    // No headers: a logo is a public address by definition, and the key of a
+    // service has no business in a request for one.
+    let bytes = crate::webtool::http::download(trimmed, &[])?;
     let ico = match &bytes {
         png if png.starts_with(&[0x89, b'P', b'N', b'G']) => ico_from_png(png)?,
         ico if ico.starts_with(&[0, 0, 1, 0]) => bytes.clone(),
@@ -45,6 +47,35 @@ pub fn localise(icon: &str) -> Result<String> {
     }
     std::fs::write(&path, ico)
         .with_context(|| format!("\x1eSchreiben\x1fwriting\x1d: {}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+/// Writes bytes that are already in hand as an `.ico`, and answers with its
+/// path.
+///
+/// The other half of [`localise`], for a picture that never was on the web:
+/// the catalogue carries its logos inside the binary, and the window can only
+/// draw a file. Written once -- an existing file of the right name is taken as
+/// the same picture, because the name comes from the catalogue and the
+/// catalogue ships with the program.
+pub fn stored(name: &str, png: &[u8]) -> Result<String> {
+    let base = dirs::data_local_dir().context("kein LOCALAPPDATAno local data directory")?;
+    let path = base
+        .join("ctxmenu")
+        .join("icons")
+        .join(format!("catalogue-{name}.ico"));
+
+    if path.exists() {
+        return Ok(path.display().to_string());
+    }
+
+    let ico = ico_from_png(png)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Ordner anlegencreating: {}", parent.display()))?;
+    }
+    std::fs::write(&path, ico)
+        .with_context(|| format!("Schreibenwriting: {}", path.display()))?;
     Ok(path.display().to_string())
 }
 

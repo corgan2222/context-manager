@@ -13,6 +13,185 @@ turns every one you tick into a menu entry.
 
 ![The Services tab: the tools read out of one OpenAPI description, grouped the way the service groups itself.](/images/08-services_en.web.png)
 
+## The services already built in
+
+Twenty-one services are built in, by group. Picking one from this list fills
+in every field but the key.
+
+### Share images
+
+<Cards>
+  <Card
+    title="Imgur"
+    href="https://imgur.com"
+    icon={<img src="/context-manager/icons/imgur.png" alt="" width="20" height="20" />}
+    description="Uploads an image and hands back its address"
+  />
+  <Card
+    title="ImgBB"
+    href="https://imgbb.com"
+    icon={<img src="/context-manager/icons/imgbb.png" alt="" width="20" height="20" />}
+    description="Uploads an image and hands back its address"
+  />
+  <Card
+    title="Freeimage.host"
+    href="https://freeimage.host"
+    icon={<img src="/context-manager/icons/freeimage-host.png" alt="" width="20" height="20" />}
+    description="Uploads an image and hands back its address"
+  />
+</Cards>
+
+### Share files
+
+<Cards>
+  <Card
+    title="Catbox"
+    href="https://catbox.moe"
+    icon={<img src="/context-manager/icons/catbox.png" alt="" width="20" height="20" />}
+    description="Puts any file up for good, up to 200 MB"
+  />
+  <Card
+    title="Gofile"
+    href="https://gofile.io"
+    icon={<img src="/context-manager/icons/gofile.png" alt="" width="20" height="20" />}
+    description="Puts any file up, no account needed"
+  />
+</Cards>
+
+### Edit images
+
+<Cards>
+  <Card
+    title="remove.bg"
+    href="https://www.remove.bg"
+    icon={<img src="/context-manager/icons/removebg.png" alt="" width="20" height="20" />}
+    description="Takes the background out of a photo"
+  />
+  <Card
+    title="PhotoRoom"
+    href="https://www.photoroom.com"
+    icon={<img src="/context-manager/icons/photoroom.png" alt="" width="20" height="20" />}
+    description="Takes the background out of a photo"
+  />
+  <Card
+    title="Stability AI"
+    href="https://stability.ai"
+    icon={<img src="/context-manager/icons/stability-ai.png" alt="" width="20" height="20" />}
+    description="Enlarges an image four times over"
+  />
+  <Card
+    title="TinyPNG"
+    href="https://tinypng.com"
+    icon={<img src="/context-manager/icons/tinypng.png" alt="" width="20" height="20" />}
+    description="Makes a PNG or JPEG smaller"
+  />
+</Cards>
+
+### Documents
+
+<Cards>
+  <Card
+    title="Stirling-PDF"
+    href="https://www.stirlingpdf.com"
+    icon={<img src="/context-manager/icons/stirling-pdf.png" alt="" width="20" height="20" />}
+    description="Shrinks a PDF, on a server of your own"
+  />
+  <Card
+    title="Gotenberg"
+    href="https://gotenberg.dev"
+    icon={<img src="/context-manager/icons/gotenberg.png" alt="" width="20" height="20" />}
+    description="Turns an Office document into a PDF"
+  />
+  <Card
+    title="Nutrient DWS"
+    href="https://www.nutrient.io"
+    icon={<img src="/context-manager/icons/nutrient.png" alt="" width="20" height="20" />}
+    description="Turns a file into a PDF"
+  />
+</Cards>
+
+### Share text
+
+<Cards>
+  <Card
+    title="paste.rs"
+    href="https://paste.rs"
+    icon={<img src="/context-manager/icons/paste-rs.png" alt="" width="20" height="20" />}
+    description="Shares a text file and hands back its address"
+  />
+  <Card
+    title="bpa.st"
+    href="https://bpa.st"
+    icon={<img src="/context-manager/icons/bpast.png" alt="" width="20" height="20" />}
+    description="Shares a text file; the address is in the report"
+  />
+</Cards>
+
+### Development
+
+<Cards>
+  <Card
+    title="Gitea"
+    href="https://about.gitea.com"
+    icon={<img src="/context-manager/icons/gitea.png" alt="" width="20" height="20" />}
+    description="Attaches the file to an issue"
+  />
+  <Card
+    title="Forgejo"
+    href="https://forgejo.org"
+    icon={<img src="/context-manager/icons/forgejo.png" alt="" width="20" height="20" />}
+    description="Attaches the file to an issue"
+  />
+  <Card
+    title="Zipline"
+    href="https://zipline.diced.sh"
+    icon={<img src="/context-manager/icons/zipline.png" alt="" width="20" height="20" />}
+    description="Puts the file on a host of your own"
+  />
+</Cards>
+
+### Storage of your own
+
+<Cards>
+  <Card
+    title="Nextcloud"
+    href="https://nextcloud.com"
+    icon={<img src="/context-manager/icons/nextcloud.png" alt="" width="20" height="20" />}
+    description="Puts the file into your own Nextcloud"
+  />
+  <Card
+    title="Bunny Storage"
+    href="https://bunny.net"
+    icon={<img src="/context-manager/icons/bunny.png" alt="" width="20" height="20" />}
+    description="Puts the file into a storage zone"
+  />
+  <Card
+    title="MinIO"
+    href="https://min.io"
+    icon={<img src="/context-manager/icons/minio.png" alt="" width="20" height="20" />}
+    description="Puts the file into an open bucket"
+  />
+</Cards>
+
+### Check a file
+
+<Cards>
+  <Card
+    title="VirusTotal"
+    href="https://www.virustotal.com"
+    icon={<img src="/context-manager/icons/virustotal.png" alt="" width="20" height="20" />}
+    description="Has the file checked; the report opens"
+  />
+</Cards>
+
+
+The list is a [JSON file in the repository](https://github.com/corgan2222/context-manager/blob/main/ctxmenu/templates.json):
+adding a service is a pull request on a text file.
+
+A service described by OpenAPI is the other kind: it brings in many tools at
+once rather than one. The technical detail for both is in
+[Service formats](/docs/formats).
+
 ## The service the numbers come from
 
 ![](/images/snapotter-logo.web.png)
