@@ -519,23 +519,22 @@ Everything that can be read is then read out of the description:
   not unambiguous, it stays a text field with the description above it:
   better no field than a wrong one, because a wrong one sends nonsense to a
   real service, while an overlooked one costs a checkbox.
-- **What is left out.** Endpoints whose description says up front that they
-  only ever queue a job do not appear in the list. A queued answer as such
-  is no longer a dead end — see below — but an endpoint that never answers
-  any other way is one whose progress path and settings have to be right
-  before it is worth offering, and a description alone does not prove they
-  are. On the test service, that is 52 of 232. Their count is shown anyway,
-  with a button that reveals them.
+- **Queued answers are not a dead end.** Endpoints that answer with a job
+  number first are listed like any other and marked "works in the
+  background": a favourite made of one follows the job over the service's
+  progress path and saves the finished file. The declaration alone decides
+  nothing — on the test service, the same endpoint answered directly and
+  with a job number in turns — so the runtime looks at the real answer.
 
 You check items individually or by category, and create them in one batch.
 
-![The Services tab listing 180 tools read out of one OpenAPI description](docs/images/08-services_en.web.png)
+![The Services tab listing the tools read out of one OpenAPI description](docs/images/08-services_en.web.png)
 
-*One address, read out: 180 usable tools, grouped the way the service groups
+*One address, read out: the tools grouped the way the service groups
 itself — "Image" alone holds 81. "Settings" opens the form built from the
 tool's own options, the arrow opens its page in the service's documentation.
-The 52 tools that only answer with a job number are left out of the list and
-counted above it.*
+Tools that answer with a job number first carry a "works in the background"
+badge and can be created like any other.*
 
 What a service says about itself then lives in every favourite — the
 address, the key, where the answer names the finished file — and every tool
