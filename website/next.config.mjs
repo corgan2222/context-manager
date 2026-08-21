@@ -9,6 +9,12 @@ const config = {
   // 500 in development and the build silently relies on the same loader.
   output: 'export',
   images: { unoptimized: true },
+  // `next dev` and `next build` both write here, and a build run while the
+  // dev server is up leaves it reading half a cache: the symptom is
+  // `Cannot find module 'nanoid/non-secure'` from postcss and a 500 on
+  // global.css. Set NEXT_DIST_DIR for the build to give it its own directory,
+  // and the dev server keeps running: NEXT_DIST_DIR=.next-build npm run build
+  distDir: process.env.NEXT_DIST_DIR ?? '.next',
   // GitHub Pages serves a project site under /<repo>, not at the root, so
   // every link and asset needs the prefix. Set here rather than only in the
   // workflow: a path that is right in CI and wrong locally is a path nobody
