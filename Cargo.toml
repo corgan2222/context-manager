@@ -112,7 +112,7 @@ rustc-hash = "2"
 # spells the same element `desktop4:`, `desktop5:` or `desktop10:` depending on
 # which Windows version the package targets, so matching on prefixes by hand
 # would miss packages rather than fail loudly.
-roxmltree = "0.20"
+roxmltree = "0.21"
 
 [workspace.dependencies.windows]
 version = "0.62.2"
