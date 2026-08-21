@@ -1627,10 +1627,12 @@ impl App {
 
         app.reload_backups();
 
-        // What the last update left behind, and the question whether there is
-        // another one. Both on threads: one touches the disk, the other the
-        // network, and the window is opening.
+        // What the last update left behind, the handler DLL it may have
+        // brought, and the question whether there is another one. All on
+        // threads: two touch the disk, one the network, and the window is
+        // opening.
         std::thread::spawn(crate::update::clean_up);
+        std::thread::spawn(crate::handler::refresh_deployed);
         if app.settings.check_for_updates {
             app.start_update_check(&cc.egui_ctx);
         }

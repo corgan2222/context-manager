@@ -347,8 +347,8 @@ fn export_one(full: &str, file: &Path) -> Result<Captured> {
 
     let mut last = None;
     for attempt in 0..RETRY_ATTEMPTS {
-        match run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
-            None => {
+        let failed = match run_reg(&["export", full, &file.to_string_lossy(), "/y"])? {
+            None if export_carries_a_key(file) => {
                 // Reported, not silently swallowed: how often this happens and
                 // on which attempt it clears is the only way the number above
                 // stops being a guess. Silence here means it never retried.
@@ -360,13 +360,18 @@ fn export_one(full: &str, file: &Path) -> Result<Captured> {
                 }
                 return Ok(Captured::Exported);
             }
-            Some(reason) => {
-                last = Some(reason);
-                match retry_delay(attempt + 1, RETRY_ATTEMPTS, RETRY_STEP) {
-                    Some(delay) => std::thread::sleep(delay),
-                    None => break,
-                }
-            }
+            // Exit 0 with a file that carries no readable key: the same lost
+            // write as a spoken failure, so it takes the same retry.
+            None => "\x1ereg.exe meldete Erfolg, die Datei tr\u{e4}gt keinen lesbaren Schl\u{fc}s\
+                     selblock\x1freg.exe reported success, the file carries no readable key block\
+                     \x1d"
+                .to_string(),
+            Some(reason) => reason,
+        };
+        last = Some(failed);
+        match retry_delay(attempt + 1, RETRY_ATTEMPTS, RETRY_STEP) {
+            Some(delay) => std::thread::sleep(delay),
+            None => break,
         }
     }
 
@@ -374,6 +379,40 @@ fn export_one(full: &str, file: &Path) -> Result<Captured> {
     // failure rather than as an absence, which is the safe direction: a
     // failure is left alone on restore, an absence is removed.
     Ok(Captured::Failed(last.expect("at least one attempt")))
+}
+
+/// Whether the file `reg.exe` wrote actually carries a key.
+///
+/// Exit code 0 is not enough: on a contended runner the payload of a small
+/// export hangs on a single flush, and when that write is lost, `reg.exe`
+/// still answers 0 over a file of nothing but BOM and header. `reg import`
+/// answers 0 for such a file too and restores nothing — measured 2026-08-21.
+/// A file without a single `[HKEY_` line is therefore a failed attempt, not
+/// a backup.
+fn export_carries_a_key(file: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return false;
+    };
+    decode_reg_file(&bytes).contains("[HKEY_")
+}
+
+/// The text of a `.reg` file: UTF-16 LE with BOM since format 5.00, plain
+/// bytes for the older ANSI form.
+///
+/// Lossy on purpose. Registry names and `REG_SZ` data are raw WCHAR
+/// sequences that Windows never validates, so a complete export may carry a
+/// lone surrogate — and the needle this feeds, `[HKEY_`, is ASCII, which a
+/// replacement character can neither destroy nor forge. A strict decode
+/// would declare such a backup empty and burn every retry on it.
+fn decode_reg_file(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// What a backup found at one path.
@@ -549,7 +588,16 @@ pub fn restore(directory: &Path) -> Result<RestoreReport> {
     for entry in present {
         let file = directory.join(&entry.file);
         match run_reg(&["import", &file.to_string_lossy()])? {
-            None => report.restored += 1,
+            // Exit 0 is also reg import's answer for a file that names no
+            // key at all, so the registry is asked before this counts.
+            // Only a clear "no such key" is a failure — an unreadable
+            // answer must not turn a restored key into an alarm.
+            None if presence(&entry.registry_path) != Presence::Absent => report.restored += 1,
+            None => report.failures.push(format!(
+                "{}: \x1eImport meldete Erfolg, der Schl\u{fc}ssel fehlt\
+                 \x1fimport reported success, the key is missing\x1d",
+                entry.registry_path
+            )),
             Some(reason) => report.failures.push(format!(
                 "{}: \x1ereg import fehlgeschlagen\x1freg import failed\x1d: {reason}",
                 entry.registry_path
@@ -902,5 +950,119 @@ mod tests {
     fn the_backup_root_sits_under_local_appdata() {
         let root = root_dir().expect("LOCALAPPDATA exists on Windows");
         assert!(root.ends_with(r"ctxmenu\backups"), "got {root:?}");
+    }
+
+    /// The UTF-16 LE bytes `reg.exe` writes: BOM, then the text.
+    fn reg_file_bytes(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_header_only_export_file_carries_no_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "ctxmenu_selftest_backup_headercheck_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let header = dir.join("header.reg");
+        std::fs::write(
+            &header,
+            reg_file_bytes("Windows Registry Editor Version 5.00\r\n\r\n"),
+        )
+        .expect("write");
+        assert!(!export_carries_a_key(&header), "header alone is no backup");
+
+        let full = dir.join("full.reg");
+        std::fs::write(
+            &full,
+            reg_file_bytes(
+                "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\SOFTWARE\\x]\r\n",
+            ),
+        )
+        .expect("write");
+        assert!(export_carries_a_key(&full));
+
+        let ansi = dir.join("ansi.reg");
+        std::fs::write(
+            &ansi,
+            b"REGEDIT4\r\n\r\n[HKEY_CURRENT_USER\\SOFTWARE\\x]\r\n",
+        )
+        .expect("write");
+        assert!(export_carries_a_key(&ansi), "the pre-5.00 form has no BOM");
+
+        let empty = dir.join("empty.reg");
+        std::fs::write(&empty, b"").expect("write");
+        assert!(!export_carries_a_key(&empty));
+        assert!(!export_carries_a_key(&dir.join("does_not_exist.reg")));
+
+        // Registry names and REG_SZ data are raw WCHARs, so a complete
+        // export may carry a lone surrogate. It must not hide the key block.
+        let surrogate = dir.join("surrogate.reg");
+        let mut bytes = reg_file_bytes(
+            "Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\SOFTWARE\\x]\r\n\"",
+        );
+        bytes.extend([0x00, 0xD8]); // lone high surrogate U+D800
+        bytes.extend(reg_file_bytes("\"=\"y\"\r\n").split_off(2));
+        std::fs::write(&surrogate, bytes).expect("write");
+        assert!(
+            export_carries_a_key(&surrogate),
+            "a lone surrogate must not hide the key block"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The chain the CI hit twice: `reg.exe` lost the payload of a small
+    /// export but answered 0; importing the header-only file answered 0 as
+    /// well, and restore counted `restored` while the key stayed missing.
+    /// The count now asks the registry, not the exit code.
+    #[test]
+    fn an_import_that_restored_nothing_is_a_failure_not_a_success() {
+        let (_, full) = selftest_path("import_noop");
+
+        let dir = std::env::temp_dir().join(format!(
+            "ctxmenu_selftest_backup_importnoop_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("0.reg"),
+            reg_file_bytes("Windows Registry Editor Version 5.00\r\n\r\n"),
+        )
+        .expect("write");
+        let manifest = BackupManifest {
+            created_at: chrono::Local::now(),
+            action: "selftest".into(),
+            entries: vec![BackupEntry {
+                registry_path: full.clone(),
+                scope: "HKCU".into(),
+                file: "0.reg".into(),
+            }],
+            missing: Vec::new(),
+            notes: Vec::new(),
+            absent: Vec::new(),
+        };
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialises"),
+        )
+        .expect("write");
+
+        let report = restore(&dir).expect("restore runs");
+        assert_eq!(report.restored, 0, "nothing came back, nothing may count");
+        assert_eq!(report.failed(), 1);
+        assert!(
+            report.failures[0].contains("the key is missing"),
+            "the report must say what went wrong, got {:?}",
+            report.failures
+        );
+        assert!(report.failures[0].contains(&full));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
