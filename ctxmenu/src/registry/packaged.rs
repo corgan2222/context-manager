@@ -44,7 +44,11 @@ use crate::model::Scope;
 const REPOSITORY_PACKAGES: &str = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages";
 
 /// Package lists live here, relative to either hive.
-const PACKAGED_COM_PACKAGE: &str = "Software\\Classes\\PackagedCom\\Package";
+///
+/// Shared with `crate::handler`, which has to clear its own entry here when
+/// the deployment stack no longer knows the package: one name for one key,
+/// so the two modules cannot drift apart on where they are looking.
+pub(crate) const PACKAGED_COM_PACKAGE: &str = "Software\\Classes\\PackagedCom\\Package";
 
 /// Everything the new menu gets from installed packages.
 #[derive(Debug, Default, Clone, Serialize)]

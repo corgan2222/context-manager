@@ -1138,8 +1138,18 @@ pub struct App {
     classic_menu: bool,
     /// Whether the handler package that serves own entries to the new menu
     /// is registered. Read at startup and after each install or remove —
-    /// never in the frame path, it is a registry enumeration.
+    /// never in the frame path, it asks the deployment stack.
     handler_installed: bool,
+    /// Whether the package files are deployed while the registration is not.
+    ///
+    /// The state a user lands in without doing anything: Windows removes an
+    /// unsigned sparse package by itself (measured 2026-08-21, six hours
+    /// after a registration nobody had touched). Before 1.5.1 the checkbox
+    /// could not show it, because it was reading a key that stays behind —
+    /// it claimed a handler that was gone. Now the tick is simply off, and
+    /// this field is what lets the tooltip say why rather than leave the
+    /// user to guess what they did wrong.
+    handler_lost: bool,
     /// The last error already written to the log.
     ///
     /// An error dialog re-sets itself every frame it stays open, so without
@@ -1534,6 +1544,8 @@ impl App {
             classic_menu: crate::registry::win11::classic_menu(),
             handler_installed: crate::registry::win11::has_new_menu()
                 && crate::handler::is_installed(),
+            handler_lost: crate::registry::win11::has_new_menu()
+                && crate::handler::registration_lost(),
             logged_error: None,
             drop_target: None,
             search: start.search,
@@ -3007,9 +3019,14 @@ impl App {
                     let mut wanted = self.handler_installed;
                     if ui
                         .checkbox(&mut wanted, self.tr.btn_handler)
-                        .on_hover_text(match self.handler_installed {
-                            true => self.tr.tip_handler_remove,
-                            false => self.tr.tip_handler_install,
+                        // Three states, not two. "Off" covers both "never
+                        // switched on" and "switched on and Windows took it
+                        // away again", and only the second one owes the user
+                        // an explanation.
+                        .on_hover_text(match (self.handler_installed, self.handler_lost) {
+                            (true, _) => self.tr.tip_handler_remove,
+                            (false, true) => self.tr.tip_handler_lost,
+                            (false, false) => self.tr.tip_handler_install,
                         })
                         .changed()
                     {
@@ -3102,9 +3119,14 @@ impl App {
                 true => crate::handler::install(),
                 false => crate::handler::remove(),
             };
+            // Whatever the outcome, the two flags are re-read rather than
+            // assumed from `wanted`. That is the lesson of 1.5.0: the only
+            // honest answer comes from asking again.
+            self.handler_installed = crate::handler::is_installed();
+            self.handler_lost = crate::handler::registration_lost();
+
             match outcome {
                 Ok(true) => {
-                    self.handler_installed = crate::handler::is_installed();
                     self.dialog = Some(Dialog::Note(
                         match wanted {
                             true => self.tr.msg_handler_installed,
@@ -3113,9 +3135,14 @@ impl App {
                         .to_string(),
                     ));
                 }
-                // The UAC prompt was declined — a decision, not a fault, and
-                // not worth a window of its own.
-                Ok(false) => {}
+                // The UAC prompt was declined. A decision, not a fault — but
+                // it used to be answered with nothing at all, and a click
+                // that leaves no trace is indistinguishable from a broken
+                // one. It is also not always a decision: a policy can refuse
+                // the prompt without ever showing it.
+                Ok(false) => {
+                    self.dialog = Some(Dialog::Note(self.tr.msg_handler_cancelled.to_string()))
+                }
                 Err(error) => self.dialog = Some(Dialog::Error(format!("{error:#}"))),
             }
         }

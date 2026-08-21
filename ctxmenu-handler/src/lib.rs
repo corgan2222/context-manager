@@ -32,6 +32,53 @@ use windows::core::*;
 /// Must match the `Clsid` in the sparse package's `AppxManifest.xml`.
 const CLSID_HANDLER: GUID = GUID::from_u128(0xC898E0C0_879E_4A3E_AF7E_631D99C7DE44);
 
+/// Live objects handed out by this DLL, plus outstanding `LockServer` locks.
+///
+/// The number `DllCanUnloadNow` answers from. Until 1.5.1 that function
+/// returned `S_FALSE` unconditionally, which says "never unload me": the
+/// `dllhost` surrogate then kept the DLL mapped for its own lifetime, and a
+/// mapped file out of the package folder is a file Windows cannot clear away
+/// when the package is unregistered — the folder goes to
+/// `WindowsApps\Deleted\` and pieces of the registration stay behind.
+/// Whether that is what left the stale `PackagedCom` key on the 2026-08-21
+/// VM was not proven; that the unconditional answer breaks the COM contract
+/// was.
+static ALIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Counts one live object for as long as it exists.
+///
+/// A field in every type this DLL hands to the shell, so the count follows
+/// the objects without any call site having to remember it.
+///
+/// **Construct it with [`Alive::new`], never as the bare literal `Alive`.**
+/// It is a unit struct, so `Alive` compiles anywhere `Alive::new()` does —
+/// and counts nothing, because the counting happens in the constructor. The
+/// same reason rules out `Default::default()` at a call site: clippy's
+/// `default_constructed_unit_structs` would tell the next reader to simplify
+/// it to `Alive`, which is the one edit that silently breaks this file.
+/// `Default` still exists so `RootCommand` can go on deriving it.
+#[derive(Debug)]
+struct Alive;
+
+impl Alive {
+    fn new() -> Self {
+        ALIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Default for Alive {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        ALIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// What this DLL needs to know about one recorded entry.
 ///
 /// A tolerant twin of `NewEntry`: only the fields the menu needs, unknown
@@ -107,6 +154,22 @@ enum Applies {
     Perceived(String),
 }
 
+/// An extension in the form a selection reports it: lowercase, dot included.
+///
+/// Records written before 1.5.1 can hold a dotless extension. The window
+/// normalised on its way into the registry but not on its way into
+/// `entries.json`, so somebody who typed `png` has `{"ExtAssoc":"png"}` on
+/// disk while [`selection`] builds `".png"` from the file itself. Comparing
+/// those two hides the entry, which is exactly what it did.
+///
+/// The window fixes the writing side, but a file already on disk is not
+/// rewritten until its entry is touched again, and this DLL has no business
+/// rewriting the user's file to make a menu appear. So it reads both forms.
+fn dotted(raw: &str) -> String {
+    let bare = raw.trim().trim_start_matches('*').trim_start_matches('.');
+    format!(".{}", bare.to_lowercase())
+}
+
 /// The window's `Category` as this DLL needs it.
 ///
 /// Unknown variants fall back to `Everything`: a new category in a newer
@@ -132,12 +195,12 @@ fn applies(category: &serde_json::Value) -> Applies {
         if let Some(ext) = object.get("ExtAssoc").or(object.get("ExtDirect"))
             && let Some(ext) = ext.as_str()
         {
-            return Applies::Ext(ext.to_lowercase());
+            return Applies::Ext(dotted(ext));
         }
         if let Some(prog) = object.get("ProgId")
             && let Some(ext) = prog.get("from_ext").and_then(|v| v.as_str())
         {
-            return Applies::Ext(ext.to_lowercase());
+            return Applies::Ext(dotted(ext));
         }
         if let Some(perceived) = object.get("PerceivedType").and_then(|v| v.as_str()) {
             return Applies::Perceived(perceived.to_lowercase());
@@ -314,6 +377,7 @@ struct LeafCommand {
     icon: Option<String>,
     /// The parent's category; a child applies wherever its submenu does.
     category: serde_json::Value,
+    _alive: Alive,
 }
 
 impl IExplorerCommand_Impl for LeafCommand_Impl {
@@ -369,6 +433,7 @@ struct SubmenuCommand {
     icon: Option<String>,
     category: serde_json::Value,
     children: Vec<Child>,
+    _alive: Alive,
 }
 
 impl IExplorerCommand_Impl for SubmenuCommand_Impl {
@@ -416,6 +481,7 @@ impl IExplorerCommand_Impl for SubmenuCommand_Impl {
                     command: child.command.clone(),
                     icon: child.icon.clone(),
                     category: self.category.clone(),
+                    _alive: Alive::new(),
                 }
                 .into()
             })
@@ -435,6 +501,7 @@ struct RootCommand {
     /// object for one menu build.
     matching: std::cell::RefCell<Vec<Entry>>,
     selection: std::cell::RefCell<Option<Selection>>,
+    _alive: Alive,
 }
 
 impl RootCommand_Impl {
@@ -536,6 +603,7 @@ impl IExplorerCommand_Impl for RootCommand_Impl {
                     command: entry.command,
                     icon: entry.icon,
                     category: entry.category,
+                    _alive: Alive::new(),
                 }
                 .into(),
                 false => SubmenuCommand {
@@ -543,6 +611,7 @@ impl IExplorerCommand_Impl for RootCommand_Impl {
                     icon: entry.icon,
                     category: entry.category,
                     children: entry.children,
+                    _alive: Alive::new(),
                 }
                 .into(),
             })
@@ -556,6 +625,7 @@ impl IExplorerCommand_Impl for RootCommand_Impl {
 struct CommandEnum {
     commands: Vec<IExplorerCommand>,
     position: std::cell::Cell<usize>,
+    _alive: Alive,
 }
 
 impl CommandEnum {
@@ -563,6 +633,7 @@ impl CommandEnum {
         Self {
             commands,
             position: std::cell::Cell::new(0),
+            _alive: Alive::new(),
         }
     }
 }
@@ -622,7 +693,16 @@ impl IClassFactory_Impl for Factory_Impl {
         let command: IExplorerCommand = RootCommand::default().into();
         unsafe { command.query(iid, object).ok() }
     }
-    fn LockServer(&self, _lock: BOOL) -> Result<()> {
+    fn LockServer(&self, lock: BOOL) -> Result<()> {
+        // A lock is a caller saying "keep the server alive even with no
+        // objects out". It counts the same as an object, which is the whole
+        // reason `ALIVE` is an isize and not a usize: an unbalanced unlock
+        // must go negative and be visible, not wrap around into a number
+        // that claims two billion live objects.
+        match lock.as_bool() {
+            true => ALIVE.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            false => ALIVE.fetch_sub(1, std::sync::atomic::Ordering::SeqCst),
+        };
         Ok(())
     }
 }
@@ -640,17 +720,141 @@ extern "system" fn DllGetClassObject(
     unsafe { factory.query(iid, object) }
 }
 
+/// May COM unload this DLL?
+///
+/// `S_OK` once nothing of ours is alive any more, `S_FALSE` while something
+/// is. The contract, in other words — and what this function did not do
+/// until 1.5.1, when it answered `S_FALSE` no matter what and so told every
+/// host it could never be unloaded. See [`ALIVE`] for what that costs.
+///
+/// A negative count would mean more releases than acquisitions, which is a
+/// bug in this file rather than a reason to keep the DLL loaded; `<= 0`
+/// therefore reads as "nothing alive" instead of pretending otherwise.
 #[unsafe(no_mangle)]
 extern "system" fn DllCanUnloadNow() -> HRESULT {
-    S_FALSE
+    match ALIVE.load(std::sync::atomic::Ordering::SeqCst) <= 0 {
+        true => S_OK,
+        false => S_FALSE,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Serialises the two tests that read `ALIVE` as an absolute number.
+    ///
+    /// `cargo test` runs threads in parallel and the counter is global, so
+    /// without this each of them would see the other's objects. Poisoning is
+    /// ignored deliberately: a panic in one of them must not turn the other
+    /// into a second, confusing failure.
+    static COUNTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn value(raw: &str) -> serde_json::Value {
         serde_json::from_str(raw).expect("test JSON parses")
+    }
+
+    /// Regression: a record written before 1.5.1 can carry `png` where the
+    /// selection reports `.png`. Comparing the two literally hid the entry
+    /// from the new menu while the classic menu showed it, because only the
+    /// registry path had been normalised.
+    #[test]
+    fn an_extension_recorded_without_its_dot_still_matches() {
+        for raw in [
+            r#"{"ExtAssoc": "png"}"#,
+            r#"{"ExtAssoc": "PNG"}"#,
+            r#"{"ExtAssoc": "*.png"}"#,
+            r#"{"ExtDirect": "png"}"#,
+            r#"{"ProgId": {"prog_id": "pngfile", "from_ext": "png"}}"#,
+        ] {
+            assert!(
+                matches(&entry_with(raw), &files_only()),
+                "an entry recorded as {raw} must reach a .png selection"
+            );
+        }
+        assert!(
+            !matches(&entry_with(r#"{"ExtAssoc": "jpg"}"#), &files_only()),
+            "tolerance about the dot is not tolerance about the extension"
+        );
+    }
+
+    /// Regression for 1.5.0, where `DllCanUnloadNow` answered `S_FALSE`
+    /// unconditionally: the surrogate then held the DLL — and with it a file
+    /// out of the package folder — for its whole lifetime.
+    #[test]
+    fn a_live_object_holds_the_dll_and_dropping_it_lets_go() {
+        let _serial = COUNTING.lock().unwrap_or_else(|held| held.into_inner());
+        assert_eq!(DllCanUnloadNow(), S_OK, "nothing of ours is alive yet");
+
+        let command: IExplorerCommand = RootCommand::default().into();
+        assert_eq!(
+            DllCanUnloadNow(),
+            S_FALSE,
+            "an object is out; unloading now would pull the code from under it"
+        );
+
+        drop(command);
+        assert_eq!(DllCanUnloadNow(), S_OK, "the last object is gone");
+    }
+
+    /// Every type handed to the shell carries the count, not just the root.
+    ///
+    /// A leaf and a submenu outlive the enumerator that produced them — the
+    /// shell holds them for as long as the menu is up. Each is built from a
+    /// struct literal, where `Alive::new()` is one careless simplification
+    /// away from the bare `Alive` that counts nothing. This is what notices.
+    #[test]
+    fn a_leaf_and_a_submenu_hold_the_dll_as_the_root_does() {
+        let _serial = COUNTING.lock().unwrap_or_else(|held| held.into_inner());
+        assert_eq!(DllCanUnloadNow(), S_OK, "nothing of ours is alive yet");
+
+        let leaf: IExplorerCommand = LeafCommand {
+            display_name: "leaf".into(),
+            command: String::new(),
+            icon: None,
+            category: value(r#""AllFiles""#),
+            _alive: Alive::new(),
+        }
+        .into();
+        assert_eq!(DllCanUnloadNow(), S_FALSE, "the leaf is out");
+
+        let submenu: IExplorerCommand = SubmenuCommand {
+            display_name: "submenu".into(),
+            icon: None,
+            category: value(r#""AllFiles""#),
+            children: Vec::new(),
+            _alive: Alive::new(),
+        }
+        .into();
+
+        drop(leaf);
+        assert_eq!(
+            DllCanUnloadNow(),
+            S_FALSE,
+            "the submenu is still out; one release must not free the DLL"
+        );
+
+        drop(submenu);
+        assert_eq!(DllCanUnloadNow(), S_OK, "both are gone");
+    }
+
+    /// A `LockServer(TRUE)` with no objects out has to hold the DLL just as
+    /// an object does — that is the entire purpose of the call.
+    #[test]
+    fn a_server_lock_holds_the_dll_on_its_own() {
+        let _serial = COUNTING.lock().unwrap_or_else(|held| held.into_inner());
+        let factory: IClassFactory = Factory.into();
+        assert_eq!(
+            DllCanUnloadNow(),
+            S_OK,
+            "a class object is the host's to hold, not ours to count"
+        );
+
+        unsafe { factory.LockServer(true) }.expect("locking succeeds");
+        assert_eq!(DllCanUnloadNow(), S_FALSE, "the lock holds the DLL");
+
+        unsafe { factory.LockServer(false) }.expect("unlocking succeeds");
+        assert_eq!(DllCanUnloadNow(), S_OK, "the lock is released");
     }
 
     fn files_only() -> Selection {
