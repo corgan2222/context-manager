@@ -102,9 +102,11 @@ pub enum Usable {
     Yes,
     /// Wants something else filled in first.
     NeedsSettings,
-    /// Answers `202` with a job id. Fetching the result means asking again
-    /// until it is done, which this program cannot do — offering it would
-    /// produce an entry that reports success and saves nothing.
+    /// The description declares a `202` answer: the service queues the job
+    /// and returns a job id instead of the file. `webtool::awaited` follows
+    /// such a job at run time and saves the finished file, as long as the
+    /// service names a progress path to ask at. The services tab still hides
+    /// these tools by default and creates no entries from them.
     Asynchronous,
 }
 

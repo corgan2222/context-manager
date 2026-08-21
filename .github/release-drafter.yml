@@ -134,6 +134,24 @@ template: |
   Get-FileHash .\ctxmenu.exe -Algorithm SHA256
   ```
 
+  `checksums.txt.sig` answers the question the checksums cannot: not "did this
+  file arrive intact" but "was it made by this project". It is an RSA-4096
+  signature (SHA-256, PKCS#1 v1.5) over the bytes of `checksums.txt`, stored
+  as base64. The signing key was generated outside GitHub; its public half is
+  committed at `ctxmenu/release-signing.pub.pem` and compiled into every
+  binary, and the program checks this signature itself before it self-updates.
+  To check it by hand, take the key from the tagged source rather than from
+  beside the download, and let OpenSSL do the rest:
+
+  ```sh
+  curl -LO https://github.com/$OWNER/$REPOSITORY/raw/v$RESOLVED_VERSION/ctxmenu/release-signing.pub.pem
+  openssl base64 -d -in checksums.txt.sig -out checksums.txt.sig.bin
+  openssl dgst -sha256 -verify release-signing.pub.pem -signature checksums.txt.sig.bin checksums.txt
+  ```
+
+  `Verified OK` means the checksum list is the author's, and the checksums in
+  turn cover every other file here.
+
   The binary is not code-signed yet, so Windows SmartScreen will warn on first
   run. Why that is, and what it would cost to change, is written down in
   `.github/workflows/release.yml`.
