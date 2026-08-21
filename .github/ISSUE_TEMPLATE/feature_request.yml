@@ -1,0 +1,41 @@
+name: Feature request
+description: Something ctxmenu should be able to do.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should ctxmenu be able to do
+      description: One ability per issue reads best.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What does it solve
+      description: >-
+        The situation that makes you want it — what you were trying to do,
+        and what stood in the way.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where would it live
+      options:
+        - Categories tab
+        - File types tab
+        - Programs tab
+        - Favourites tab
+        - Services tab
+        - Backups tab
+        - Editor / creating entries
+        - Own entries in the Windows 11 menu
+        - Self-update
+        - Command line
+        - Somewhere else / not sure
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today
+      description: Workarounds, other tools, or "not at all".
