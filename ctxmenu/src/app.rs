@@ -1232,12 +1232,6 @@ pub struct App {
     /// Filters the tool list. With 351 endpoints the list is unusable without
     /// it, and it is the first thing anyone reaches for.
     service_search: String,
-    /// Whether the tools that answer with a job number are listed at all.
-    ///
-    /// Off: they cannot be made into a working entry, and on the test service
-    /// they are 52 of 232 — a fifth of the list that exists only to be greyed
-    /// out. The count stays visible so nothing disappears silently.
-    service_show_async: bool,
     /// Receives a fetched description: the address that answered and its tools.
     service_rx: Option<Receiver<FetchedSpec>>,
 
@@ -1575,7 +1569,6 @@ impl App {
             service_fields: rustc_hash::FxHashMap::default(),
             service_open: None,
             service_search: String::new(),
-            service_show_async: false,
             service_rx: None,
             update: UpdateState::default(),
             update_rx: None,
@@ -3946,15 +3939,7 @@ impl App {
             return;
         }
 
-        let hidden = match self.service_show_async {
-            true => 0,
-            false => self
-                .service_tools
-                .iter()
-                .filter(|tool| tool.usable == spec::Usable::Asynchronous)
-                .count(),
-        };
-        let listed = self.service_tools.len() - hidden;
+        let listed = self.service_tools.len();
 
         let mut create = false;
         ui.horizontal(|ui| {
@@ -3995,37 +3980,13 @@ impl App {
             });
         });
 
-        // What was left out, and the way back in. Silently dropping a fifth of
-        // a service's endpoints would be the kind of helpfulness nobody can
-        // check.
-        if hidden > 0 {
-            ui.horizontal(|ui| {
-                ui.small(
-                    self.tr
-                        .fmt_svc_async_hidden
-                        .replacen("{}", &hidden.to_string(), 1),
-                );
-                if ui
-                    .small_button(self.tr.svc_show_async)
-                    .on_hover_text(self.tr.tip_svc_show_async)
-                    .clicked()
-                {
-                    self.service_show_async = true;
-                }
-            });
-        }
         ui.separator();
 
         let needle = self.service_search.to_lowercase();
         let Some(grouping) = self.service_grouping.clone() else {
             return;
         };
-        let groups = group_tools(
-            &self.service_tools,
-            &needle,
-            &grouping,
-            self.service_show_async,
-        );
+        let groups = group_tools(&self.service_tools, &needle, &grouping);
 
         if groups.is_empty() {
             ui.add_space(12.0);
@@ -4060,11 +4021,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 if ui.small_button(self.tr.svc_pick_all).clicked() {
                                     for index in &indices {
-                                        if self.service_tools[*index].usable
-                                            != spec::Usable::Asynchronous
-                                        {
-                                            self.service_picked.insert(*index);
-                                        }
+                                        self.service_picked.insert(*index);
                                     }
                                 }
                                 if ui.small_button(self.tr.svc_pick_none).clicked() {
@@ -4090,17 +4047,12 @@ impl App {
     /// One tool: tick box, name, and whatever it wants filled in.
     fn service_tool_row(&mut self, ui: &mut Ui, index: usize) {
         let tool = self.service_tools[index].clone();
-        let usable = tool.usable != spec::Usable::Asynchronous;
         let mut ticked = self.service_picked.contains(&index);
 
         ui.horizontal(|ui| {
-            let box_ = ui.add_enabled(usable, egui::Checkbox::new(&mut ticked, &tool.summary));
-            let box_ = match usable {
-                true => box_.on_hover_text(&tool.path),
-                // Greyed with the reason rather than hidden: "why is this one
-                // missing" is a worse question than "why is this one grey".
-                false => box_.on_disabled_hover_text(self.tr.tip_svc_async),
-            };
+            let box_ = ui
+                .add(egui::Checkbox::new(&mut ticked, &tool.summary))
+                .on_hover_text(&tool.path);
             if box_.changed() {
                 match ticked {
                     true => self.service_picked.insert(index),
@@ -4108,40 +4060,44 @@ impl App {
                 };
             }
 
-            if !usable {
-                ui.small(self.tr.svc_async);
-            } else {
-                // One tool, one click. Ticking a box and then finding the
-                // button that acts on the ticks is two steps for what is
-                // usually a decision about a single tool; the boxes stay for
-                // the case they were built for, which is a whole category.
+            // One tool, one click. Ticking a box and then finding the
+            // button that acts on the ticks is two steps for what is
+            // usually a decision about a single tool; the boxes stay for
+            // the case they were built for, which is a whole category.
+            if ui
+                .small_button(self.glyphs.new.to_string())
+                .on_hover_text(self.tr.tip_svc_add_one)
+                .clicked()
+            {
+                self.create_one_tool(index);
+            }
+
+            if tool.settings != spec::Settings::None {
+                let open = self.service_open == Some(index);
                 if ui
-                    .small_button(self.glyphs.new.to_string())
-                    .on_hover_text(self.tr.tip_svc_add_one)
+                    .small_button(match open {
+                        true => self.tr.svc_settings_hide,
+                        false => self.tr.svc_settings_show,
+                    })
+                    .on_hover_text(self.tr.tip_svc_settings)
                     .clicked()
                 {
-                    self.create_one_tool(index);
+                    self.service_open = match open {
+                        true => None,
+                        false => Some(index),
+                    };
                 }
+                if self.service_settings_filled(index, &tool) {
+                    ui.small(self.tr.svc_settings_set);
+                }
+            }
 
-                if tool.settings != spec::Settings::None {
-                    let open = self.service_open == Some(index);
-                    if ui
-                        .small_button(match open {
-                            true => self.tr.svc_settings_hide,
-                            false => self.tr.svc_settings_show,
-                        })
-                        .on_hover_text(self.tr.tip_svc_settings)
-                        .clicked()
-                    {
-                        self.service_open = match open {
-                            true => None,
-                            false => Some(index),
-                        };
-                    }
-                    if self.service_settings_filled(index, &tool) {
-                        ui.small(self.tr.svc_settings_set);
-                    }
-                }
+            // Worth knowing, no reason to refuse: a favourite made of this
+            // tool gets a job number first and fetches the finished file
+            // over the service's progress path.
+            if tool.usable == spec::Usable::Asynchronous {
+                ui.small(self.tr.svc_async)
+                    .on_hover_text(self.tr.tip_svc_async);
             }
 
             // The service's own documentation, at the place this tool sits.
@@ -7388,13 +7344,9 @@ fn group_tools(
     tools: &[spec::Tool],
     needle: &str,
     grouping: &grouping::Grouping,
-    with_async: bool,
 ) -> Vec<(String, Vec<usize>)> {
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (index, tool) in tools.iter().enumerate() {
-        if !with_async && tool.usable == spec::Usable::Asynchronous {
-            continue;
-        }
         if !needle.is_empty() && !matches_tool(tool, needle) {
             continue;
         }
@@ -9393,7 +9345,7 @@ mod tests {
             tool("Convert", None),
         ];
 
-        let groups = group_tools(&tools, "", &grouped(&tools), false);
+        let groups = group_tools(&tools, "", &grouped(&tools));
 
         // Biggest group first, and inside it the order the description listed
         // them in.
@@ -9408,19 +9360,23 @@ mod tests {
         let tools = vec![tool("Compress", Some("Image")), tool("Merge", Some("PDF"))];
         let grouping = grouped(&tools);
 
-        assert_eq!(group_tools(&tools, "compress", &grouping, false).len(), 1);
+        assert_eq!(group_tools(&tools, "compress", &grouping).len(), 1);
         // By path: every tool's path carries its name here.
         assert_eq!(
-            group_tools(&tools, "/api/v1/tools/merge", &grouping, false)[0].1,
+            group_tools(&tools, "/api/v1/tools/merge", &grouping)[0].1,
             vec![1]
         );
         // By group: the whole group answers.
-        assert_eq!(group_tools(&tools, "image", &grouping, false)[0].1, vec![0]);
-        assert!(group_tools(&tools, "nothing like this", &grouping, false).is_empty());
+        assert_eq!(group_tools(&tools, "image", &grouping)[0].1, vec![0]);
+        assert!(group_tools(&tools, "nothing like this", &grouping).is_empty());
     }
 
     #[test]
-    fn tools_that_only_hand_back_a_job_number_stay_out_of_the_list() {
+    fn tools_that_hand_back_a_job_number_are_listed_like_any_other() {
+        // They used to be hidden from the days the program could not follow
+        // a job. It can, and the runtime decides on the real answer anyway —
+        // the declaration this filter hung on was measured unreliable (the
+        // same tool answered 200, 202, 200).
         let mut tools = vec![
             tool("Compress", Some("Image")),
             tool("Transcribe", Some("Audio")),
@@ -9428,14 +9384,7 @@ mod tests {
         tools[1].usable = spec::Usable::Asynchronous;
         let grouping = grouped(&tools);
 
-        // Off by default: on the test service these are 52 of 232, and none of
-        // them can become a working entry.
-        let groups = group_tools(&tools, "", &grouping, false);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].1, vec![0]);
-
-        // But reachable, so nothing vanishes without a way back.
-        assert_eq!(group_tools(&tools, "", &grouping, true).len(), 2);
+        assert_eq!(group_tools(&tools, "", &grouping).len(), 2);
     }
 
     #[test]

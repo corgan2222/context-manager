@@ -553,23 +553,24 @@ Aus der Beschreibung wird dann alles gelesen, was sich lesen lässt:
   nicht eindeutig ist, bleibt es beim Textfeld mit der Beschreibung darüber —
   lieber kein Feld als ein falsches, denn ein falsch erkanntes schickt Unsinn
   an einen echten Dienst, ein übersehenes kostet ein Ankreuzfeld.
-- **Was ausgelassen wird.** Endpunkte, deren Beschreibung von vornherein sagt,
-  dass sie ausschließlich einen Auftrag einreihen, stehen nicht in der Liste.
-  Eine Auftragsantwort als solche ist keine Sackgasse mehr — sie wird
-  abgewartet, siehe oben —, aber bei einem Endpunkt, der nie anders antwortet,
-  müssen Fortschrittspfad und Einstellungen stimmen, bevor er das Anbieten wert
-  ist, und eine Beschreibung allein belegt das nicht. Am Testdienst sind das 52
-  von 232. Ihre Zahl steht trotzdem da, mit einem Knopf, der sie einblendet.
+- **Auftragsantworten sind keine Sackgasse.** Endpunkte, die zuerst mit einer
+  Auftragsnummer antworten, stehen wie alle anderen in der Liste und tragen
+  „arbeitet im Hintergrund": ein daraus angelegter Favorit folgt dem Auftrag
+  über den Fortschrittspfad des Dienstes und speichert die fertige Datei. Die
+  Deklaration allein entscheidet nichts — am Testdienst antwortete derselbe
+  Endpunkt abwechselnd direkt und mit Auftragsnummer —, also zählt die echte
+  Antwort.
 
 Angekreuzt wird einzeln oder kategorienweise, angelegt auf einen Schlag.
 
-![Der Reiter Dienste mit 180 Werkzeugen aus einer OpenAPI-Beschreibung](images/08-services_en.web.png)
+![Der Reiter Dienste mit den Werkzeugen einer OpenAPI-Beschreibung](images/08-services_en.web.png)
 
-*Eine Adresse, ausgelesen: 180 brauchbare Werkzeuge, gruppiert so, wie der
-Dienst sich selbst gruppiert — „Image" allein hält 81. „Einstellungen" öffnet
-das aus den eigenen Optionen des Werkzeugs gebaute Formular, der Pfeil dessen
-Seite in der Dokumentation des Dienstes. Die 52 Werkzeuge, die nur mit einer
-Auftragsnummer antworten, stehen nicht in der Liste und werden darüber gezählt.*
+*Eine Adresse, ausgelesen: die Werkzeuge, gruppiert so, wie der Dienst sich
+selbst gruppiert — „Image" allein hält 81. „Einstellungen" öffnet das aus den
+eigenen Optionen des Werkzeugs gebaute Formular, der Pfeil dessen Seite in der
+Dokumentation des Dienstes. Werkzeuge, die zuerst mit einer Auftragsnummer
+antworten, tragen „arbeitet im Hintergrund" und lassen sich wie alle anderen
+anlegen.*
 
 Was ein Dienst über sich selbst sagt, steht danach in jedem Favoriten — die
 Adresse, der Schlüssel, die Stelle, an der die Antwort die fertige Datei nennt —

@@ -105,8 +105,9 @@ pub enum Usable {
     /// The description declares a `202` answer: the service queues the job
     /// and returns a job id instead of the file. `webtool::awaited` follows
     /// such a job at run time and saves the finished file, as long as the
-    /// service names a progress path to ask at. The services tab still hides
-    /// these tools by default and creates no entries from them.
+    /// service names a progress path to ask at. The services tab lists these
+    /// tools like any other and marks them with a badge — the declaration is
+    /// unreliable anyway, and the runtime decides on the real answer.
     Asynchronous,
 }
 
