@@ -1,0 +1,193 @@
+---
+title: Contributing, security and licence
+description: How to report a bug, how to report a vulnerability privately, and the one rule every change is measured against.
+---
+
+The project has one maintainer and takes changes through pull requests. The
+rules live in [CONTRIBUTING.md](https://github.com/corgan2222/context-manager/blob/main/CONTRIBUTING.md),
+[SECURITY.md](https://github.com/corgan2222/context-manager/blob/main/SECURITY.md)
+and [AI_POLICY.md](https://github.com/corgan2222/context-manager/blob/main/AI_POLICY.md).
+This page says what they contain and where each one applies.
+
+## The one rule
+
+**Measured, not assumed.**
+
+Windows behaves differently from its own documentation in more than one place.
+The program therefore claims nothing that has not been verified on a real
+system. Where a number is missing, no claim is made either. A change based on
+"should work in theory" is not one. A number without a date is a suspicion.
+
+Everything else in the contribution rules follows from that sentence.
+
+## Reporting a bug
+
+The repository has issue forms under `.github/ISSUE_TEMPLATE`. Pick *Bug
+report* and the form asks for what the maintainer needs to reproduce the
+problem:
+
+- **The ctxmenu version.** The About window names it, and so do the file
+  properties of the `.exe`.
+- **The Windows version and build.** `winver` shows both. The build decides
+  which menus exist on your machine.
+- **Which menu.** The new Windows 11 menu is the short one on the first
+  right-click. The classic menu sits behind *Show more options*. The form also
+  accepts "Both / not menu-related".
+- **Where in the program.** A dropdown lists the tabs, the editor, own entries
+  in the Windows 11 menu, the self-update and the command line.
+- **What happened.** The steps to get there, what you expected, and what you
+  saw instead.
+- **The affected registry key**, if an entry is involved.
+
+The last field is optional but it is the one that shortens most reports. The
+detail pane shows the full path of the selected entry and copies it with one
+click.
+
+![The Categories tab with an entry selected, its detail pane showing the full registry path of the entry](/images/02-entry-detail_en.web.png)
+
+For a missing ability, pick *Feature request* instead. That form asks what
+ctxmenu should be able to do, what situation makes you want it, where in the
+program it would live, and how you solve it today. One ability per issue reads
+best.
+
+<Callout type="warn" title="Read the log before you paste it">
+The log at `%LOCALAPPDATA%\ctxmenu\ctxmenu.log` names registry paths and file
+names from your own machine. Review the excerpt before it goes into a public
+issue.
+</Callout>
+
+## Reporting a vulnerability
+
+A security vulnerability does not belong in an issue. An issue is public the
+moment it is filed, and every reader is someone who can act on it before a fix
+exists.
+
+Two private channels exist, and both are fine:
+
+- **A private report through GitHub.** Open the *Security* tab of the
+  repository and choose *Report a vulnerability*. This one is preferred. The
+  report, the discussion and the fix stay in one place, and you see the patch
+  before it goes public.
+- **Email to `stefan@knaak.org`** with `ctxmenu security` in the subject.
+  Nothing is encrypted on the receiving end. If a detail is too sensitive for
+  plaintext mail, ask briefly for a different channel.
+
+A useful report carries the same details as a bug report: the version from the
+About window, the Windows build, the steps to trigger it, and the log excerpt
+if you have one. Review the log first, for the reason above.
+
+Only the latest release gets fixes. There is no branch on which an older
+version continues to be maintained.
+
+[SECURITY.md](https://github.com/corgan2222/context-manager/blob/main/SECURITY.md)
+lists what counts as a vulnerability and what does not. Four properties put the
+program in scope at all: it writes to the registry, some of it under `HKLM`; it
+requests elevated privileges and restarts itself; it sends files to addresses
+the user entered and stores the keys for that; and since 1.4.0 it replaces its
+own executable with one it fetched from GitHub. Plaintext keys in
+`%LOCALAPPDATA%\ctxmenu\` and the SmartScreen warning on an unsigned `.exe` are
+documented behaviour, not findings.
+
+You can expect acknowledgment of receipt within three days and an assessment
+within two weeks. If nothing arrives after a week, the mail was lost, so follow
+up through the other channel.
+
+## Sending a change
+
+<Steps>
+
+<Step>
+### Set up the toolchain
+
+Rust 1.95 or newer, target `x86_64-pc-windows-msvc`, plus the Visual Studio
+Build Tools with the C++ toolchain.
+</Step>
+
+<Step>
+### Branch from `origin/main`
+
+`main` is protected and takes no direct push, not from a contributor and not
+from the maintainer. Start every change on its own branch.
+
+```powershell
+git fetch origin
+git switch -c feature/short-name origin/main    # or bugfix/, docs/, chore/
+```
+
+Those four prefixes are read by `.github/release-drafter.yml`, which sorts the
+pull request into the right heading of the next release notes. Name the part
+after the prefix in English. A branch name reaches the pull request list and
+the release notes.
+</Step>
+
+<Step>
+### Run the four checks
+
+```powershell
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release
+```
+
+All four must be green. `-D warnings` is not negotiable. The same checks run as
+git hooks once you install pre-commit, and CI runs them again and decides.
+</Step>
+
+<Step>
+### Open the pull request
+
+Three checks must pass before a merge: `check` for formatting, clippy and
+tests, `release-build` for the release profile, and `secrets` for gitleaks over
+the whole history. The branch must also be up to date with `main`. Rebase onto
+`origin/main` and push with `--force-with-lease` when another pull request
+lands first.
+</Step>
+
+</Steps>
+
+What a pull request is expected to contain: one test per new pure function,
+with a test name that is a complete sentence stating what holds; small
+functions named after what they do; comments that explain why rather than what;
+English in the code, including identifiers and comments; and a commit message
+in complete sentences.
+
+Changes to the registry carry the strictest rules. Nothing is deleted without a
+backup, and that is enforced by the type system rather than by review:
+`write::delete_tree` takes a `BackupToken`, and the only source of one is a
+successful `backup::export`. Write attempts against `HKLM` belong in a
+throwaway VM.
+
+New dependencies, rewrites without a bug behind them, features Windows does not
+offer, and machine-generated translations tend to get rejected.
+
+## AI tools
+
+The project states in
+[AI_POLICY.md](https://github.com/corgan2222/context-manager/blob/main/AI_POLICY.md)
+that the maintainer uses AI tools when writing code for it: drafting,
+refactoring, tests, documentation. Everything they produce is read before it
+lands, and nothing is committed that the maintainer has not reviewed and
+understood.
+
+Contributors may use whatever tools help them. Two limits apply. Before you
+open a pull request, make sure you can explain every change in the diff, not
+just the summary. And do not point an agent at the repository and let it file
+issues or pull requests on its own, because those get closed unread. The same
+holds for bug reports: run the code, hit the bug, then describe what happened.
+
+German and English both work in issues and discussions.
+
+## Licence
+
+MIT, copyright 2026 Stefan Knaak. The full text is in
+[LICENSE](https://github.com/corgan2222/context-manager/blob/main/LICENSE).
+It permits use, copying, modification, merging, publishing, distribution,
+sublicensing and sale, on the condition that the copyright notice and the
+permission notice travel with every copy. The software comes without warranty
+of any kind.
+
+The licences of the crates the program links against are listed in
+[docs/THIRD-PARTY-NOTICES.md](https://github.com/corgan2222/context-manager/blob/main/docs/THIRD-PARTY-NOTICES.md).
+Behaviour in issues and pull requests is covered by the
+[code of conduct](https://github.com/corgan2222/context-manager/blob/main/CODE_OF_CONDUCT.md).

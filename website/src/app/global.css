@@ -1,0 +1,49 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+/* HeroUI-flavoured palette.
+ *
+ * Two things carry that look: a saturated blue that only ever appears on
+ * something interactive, and radii large enough that every surface reads as a
+ * card. Everything else stays neutral so the blue keeps its meaning. */
+:root {
+  --color-fd-primary: #006fee;
+  --color-fd-accent: #e4e4e7;
+  --color-fd-accent-foreground: #18181b;
+  --color-fd-ring: #006fee;
+
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+}
+
+.dark {
+  /* Near-black rather than a grey, the way HeroUI's dark theme sits: the page
+   * is the darkest surface and every card lifts off it. */
+  --color-fd-background: #09090b;
+  --color-fd-card: #111113;
+  --color-fd-popover: #111113;
+  --color-fd-muted: #18181b;
+  --color-fd-border: #27272a;
+  --color-fd-accent: #1c1c1f;
+  --color-fd-accent-foreground: #fafafa;
+  --color-fd-primary: #4796ff;
+  --color-fd-ring: #4796ff;
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
+
+/* The landing page's hero gradient. Kept to one soft wash behind the headline
+ * rather than a coloured band: the screenshots below it carry the colour. */
+.hero-wash {
+  background:
+    radial-gradient(60rem 30rem at 50% -10%, color-mix(in oklab, #006fee 18%, transparent), transparent),
+    radial-gradient(40rem 20rem at 80% 0%, color-mix(in oklab, #7828c8 12%, transparent), transparent);
+}

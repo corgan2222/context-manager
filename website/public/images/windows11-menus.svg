@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 460" width="960" height="460" role="img" aria-label="Windows 11 shows a short menu whose second half is behind Show more options. ctxmenu manages both halves: packaged entries in the upper menu, registry verbs in the classic one.">
+  <style>
+    :root { color-scheme: light dark; }
+    .bg     { fill: #ffffff; }
+    .panel  { fill: #f4f4f5; stroke: #e4e4e7; }
+    .row    { fill: #ffffff; }
+    .ink    { fill: #18181b; }
+    .dim    { fill: #71717a; }
+    .faint  { fill: #a1a1aa; }
+    .sans   { font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+    .mono   { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+    .icon   { fill: none; stroke: #71717a; stroke-width: 1.6; stroke-linecap: round; }
+    .accent { fill: #006fee; }
+    .accentstroke { stroke: #006fee; }
+    .rule   { stroke: #e4e4e7; }
+    @media (prefers-color-scheme: dark) {
+      .bg    { fill: #09090b; }
+      .panel { fill: #18181b; stroke: #27272a; }
+      .row   { fill: #1f1f23; }
+      .ink   { fill: #fafafa; }
+      .dim   { fill: #a1a1aa; }
+      .faint { fill: #52525b; }
+      .icon  { stroke: #a1a1aa; }
+      .accent { fill: #4796ff; }
+      .accentstroke { stroke: #4796ff; }
+      .rule  { stroke: #27272a; }
+    }
+  </style>
+
+  <rect class="bg" width="960" height="460" rx="16"/>
+
+  <!-- LEFT: the Windows 11 menu -->
+  <text class="sans dim" x="60" y="44" font-size="13" letter-spacing="1.5">WINDOWS 11 · WHAT YOU SEE FIRST</text>
+  <rect class="panel" x="60" y="58" width="330" height="252" rx="14" stroke-width="1.5"/>
+
+  <!-- icon row -->
+  <g class="icon">
+    <path d="M92 92 l14 14 M106 92 l-14 14"/>
+    <rect x="140" y="90" width="14" height="16" rx="2"/>
+    <path d="M196 90 h16 v16 h-16 z"/>
+    <path d="M246 98 h16 M254 90 v16"/>
+    <path d="M300 92 h16 M304 92 v14 h8 v-14"/>
+  </g>
+  <line class="rule" x1="76" y1="124" x2="374" y2="124" stroke-width="1"/>
+
+  <g class="sans ink" font-size="14">
+    <text x="96" y="152">Open</text>
+    <text x="96" y="184">Open with</text>
+    <text x="96" y="216">Copy as path</text>
+    <text x="96" y="248">Properties</text>
+  </g>
+  <g class="faint" font-size="12">
+    <text class="sans" x="330" y="184">&#8250;</text>
+  </g>
+
+  <line class="rule" x1="76" y1="266" x2="374" y2="266" stroke-width="1"/>
+  <text class="sans accent" x="96" y="292" font-size="14" font-weight="600">Show more options</text>
+  <text class="sans faint" x="278" y="292" font-size="13">Shift+F10</text>
+
+  <text class="sans dim" x="60" y="336" font-size="13">Half the menu is one click further away.</text>
+
+  <!-- arrow between -->
+  <path class="accentstroke" d="M410 184 L446 184" stroke-width="2" fill="none" stroke-dasharray="4 4"/>
+  <path class="accent" d="M454 184 l-10 -6 v12 z"/>
+
+  <!-- RIGHT: the classic menu -->
+  <text class="sans dim" x="470" y="44" font-size="13" letter-spacing="1.5">THE CLASSIC MENU · WHAT IS REALLY THERE</text>
+  <rect class="panel" x="470" y="58" width="430" height="330" rx="14" stroke-width="1.5"/>
+
+  <g class="sans ink" font-size="14">
+    <text x="506" y="92">Open</text>
+    <text x="506" y="122">Edit with Notepad++</text>
+    <text x="506" y="152">7-Zip</text>
+    <text x="506" y="182">Scan with Defender</text>
+    <text x="506" y="212">Open with Code</text>
+    <text x="506" y="242">Git Bash Here</text>
+    <text x="506" y="272">TortoiseGit</text>
+    <text x="506" y="302">Send to</text>
+    <text x="506" y="332">Properties</text>
+  </g>
+  <g class="faint sans" font-size="12">
+    <text x="866" y="152">&#8250;</text>
+    <text x="866" y="272">&#8250;</text>
+    <text x="866" y="302">&#8250;</text>
+  </g>
+  <text class="sans dim" x="470" y="368" font-size="13">Nine entries here. Grown over years, from nine different installers.</text>
+
+  <!-- FOOTER: what ctxmenu does -->
+  <line class="rule" x1="60" y1="404" x2="900" y2="404" stroke-width="1"/>
+  <circle class="accent" cx="72" cy="432" r="5"/>
+  <text class="sans ink" x="90" y="437" font-size="15" font-weight="600">ctxmenu manages both.</text>
+  <text class="sans dim" x="290" y="437" font-size="14">Packaged entries in the upper menu, registry verbs in the classic one, in one list.</text>
+</svg>
