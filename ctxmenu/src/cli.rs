@@ -120,9 +120,10 @@ Verwendung:
                             Kennung steht in services.json
   ctxmenu --new <kategorie> Fenster mit offenem Editor für einen neuen
                             Eintrag dieser Kategorie, mit Beispiel gefüllt:
-                            allfiles, allfilesystemobjects, directory,
-                            directorybackground, folder, desktopbackground,
-                            drive. Geschrieben wird nichts
+                            allfiles, allfilesystemobjects, unknown,
+                            directory, directorybackground, directoryaudio,
+                            directoryimage, directoryvideo, folder,
+                            desktopbackground, drive. Geschrieben wird nichts
   ctxmenu --lang de|en [...]
                             Diesen Lauf in dieser Sprache: das Fenster ebenso
                             wie jeder Unterbefehl. Steht vor dem Befehl; die
@@ -206,9 +207,10 @@ Usage:
                             services.json
   ctxmenu --new <category>  open the window with the editor for a new entry
                             in that category, filled in with an example:
-                            allfiles, allfilesystemobjects, directory,
-                            directorybackground, folder, desktopbackground,
-                            drive. Nothing is written
+                            allfiles, allfilesystemobjects, unknown,
+                            directory, directorybackground, directoryaudio,
+                            directoryimage, directoryvideo, folder,
+                            desktopbackground, drive. Nothing is written
   ctxmenu --lang de|en [...]
                             run in that language: the window and every
                             subcommand alike. Goes in front of the command;

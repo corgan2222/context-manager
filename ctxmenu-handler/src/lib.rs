@@ -72,6 +72,10 @@ fn entries_path() -> Option<PathBuf> {
 /// Every failure mode is an empty list: no file means nothing created, and
 /// a damaged file is the window's problem to report — a context menu is no
 /// place for an error dialog.
+///
+/// Element by element, not all or nothing: the window's reader keeps an
+/// element it cannot parse in the file on purpose, and one such element
+/// must cost the menu that element, never the whole list.
 fn read_entries() -> Vec<Entry> {
     let Some(path) = entries_path() else {
         return Vec::new();
@@ -79,7 +83,17 @@ fn read_entries() -> Vec<Entry> {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+    parse_entries(&raw)
+}
+
+fn parse_entries(raw: &str) -> Vec<Entry> {
+    let Ok(elements) = serde_json::from_str::<Vec<serde_json::Value>>(raw) else {
+        return Vec::new();
+    };
+    elements
+        .into_iter()
+        .filter_map(|element| serde_json::from_value(element).ok())
+        .collect()
 }
 
 /// Where an entry wants to appear, reduced to what a selection can answer.
@@ -748,5 +762,20 @@ mod tests {
         // CreateProcessW is the part worth pinning.
         let line = "notepad.exe \"%1\"".replace("%1", r"C:\p\a.txt");
         assert_eq!(line, "notepad.exe \"C:\\p\\a.txt\"");
+    }
+
+    /// One element that is no entry at all — a hand-edited note, a stray
+    /// string — must cost the menu that element, never the whole list. The
+    /// window's reader keeps such an element in the file on purpose, so an
+    /// all-or-nothing read here would blank the flyout for good.
+    #[test]
+    fn a_poison_element_costs_itself_not_the_list() {
+        let raw = r#"["notiz", {"display_name": "Echt", "command": "C:\\t.exe", "category": "Directory"}, 42]"#;
+        let entries = parse_entries(raw);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display_name, "Echt");
+
+        assert!(parse_entries("kein json").is_empty());
+        assert!(parse_entries("[]").is_empty());
     }
 }

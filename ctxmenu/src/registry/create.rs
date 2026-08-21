@@ -549,21 +549,13 @@ fn category_relative(category: &Category) -> Result<String> {
         Category::AllFilesystemObjects => r"AllFilesystemObjects\shell".into(),
         Category::Directory => r"Directory\shell".into(),
         Category::DirectoryBackground => r"Directory\Background\shell".into(),
+        Category::Unknown => r"Unknown\shell".into(),
+        Category::DirectoryAudio => r"SystemFileAssociations\Directory.Audio\shell".into(),
+        Category::DirectoryImage => r"SystemFileAssociations\Directory.Image\shell".into(),
+        Category::DirectoryVideo => r"SystemFileAssociations\Directory.Video\shell".into(),
         Category::Folder => r"Folder\shell".into(),
         Category::DesktopBackground => r"DesktopBackground\Shell".into(),
         Category::Drive => r"Drive\shell".into(),
-
-        // Scannable and hideable, but not creatable yet: every shipped
-        // version reads `entries.json` strictly, and a category it does not
-        // know makes that reader set the whole file aside as damaged — the
-        // Win11 handler's input included. These four open up once a tolerant
-        // reader has been shipped for a release.
-        Category::Unknown
-        | Category::DirectoryAudio
-        | Category::DirectoryImage
-        | Category::DirectoryVideo => bail!(
-            "\x1eFür diese Kategorie können keine Einträge angelegt werden\x1fcannot create entries for\x1d {category:?}"
-        ),
 
         // One extension: `.png` only.
         Category::ExtAssoc(ext) => {
@@ -765,7 +757,7 @@ pub fn entries_path() -> Result<PathBuf> {
 /// `record_in` then writing that empty list straight back plus the one new
 /// entry, so a single damaged byte cost the record of everything this tool had
 /// made. The registry keys survive that; the knowledge of which of them are
-/// ours does not, and that is what the planned Windows 11 handler reads.
+/// ours does not, and that is what the Windows 11 handler reads.
 pub fn recorded() -> Result<Vec<NewEntry>> {
     recorded_in(&entries_path()?)
 }
@@ -773,14 +765,59 @@ pub fn recorded() -> Result<Vec<NewEntry>> {
 /// The same, from a named file, so the case above can be tested without
 /// touching the record the user's own entries are in.
 fn recorded_in(file: &Path) -> Result<Vec<NewEntry>> {
-    match std::fs::read_to_string(file) {
+    Ok(record_file(file)?.known)
+}
+
+/// The record as the file holds it: what this build understands, and the
+/// raw elements it does not.
+struct RecordFile {
+    known: Vec<NewEntry>,
+    /// Elements this build could not read at all — a category a newer build
+    /// invented, a hand-edited stray. Kept and written back verbatim, so one
+    /// strange element never costs the record of everything else. "Damaged"
+    /// is reserved for a file that is not a JSON array at all.
+    ///
+    /// The promise is per element, not per field: an element this build
+    /// *can* read is re-serialised from the struct, and an unknown extra
+    /// field in it does not survive the next write. Carrying fields across
+    /// builds is compatibility this file does not promise — the decision
+    /// that settled the old-exe question settled this with it.
+    foreign: Vec<serde_json::Value>,
+}
+
+fn record_file(file: &Path) -> Result<RecordFile> {
+    let raw = match std::fs::read_to_string(file) {
         // Nothing but whitespace is what an interrupted write leaves behind
         // and says exactly as much as no file at all.
-        Ok(raw) if raw.trim().is_empty() => Ok(Vec::new()),
-        Ok(raw) => serde_json::from_str(&raw).with_context(|| format!("{file:?}")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(anyhow::Error::from(error).context(format!("{file:?}"))),
+        Ok(raw) if raw.trim().is_empty() => {
+            return Ok(RecordFile {
+                known: Vec::new(),
+                foreign: Vec::new(),
+            });
+        }
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RecordFile {
+                known: Vec::new(),
+                foreign: Vec::new(),
+            });
+        }
+        Err(error) => return Err(anyhow::Error::from(error).context(format!("{file:?}"))),
+    };
+
+    let elements: Vec<serde_json::Value> =
+        serde_json::from_str(&raw).with_context(|| format!("{file:?}"))?;
+    let mut record = RecordFile {
+        known: Vec::new(),
+        foreign: Vec::new(),
+    };
+    for element in elements {
+        match serde_json::from_value::<NewEntry>(element.clone()) {
+            Ok(entry) => record.known.push(entry),
+            Err(_) => record.foreign.push(element),
+        }
     }
+    Ok(record)
 }
 
 /// Notes the entry, replacing an earlier line for the same key in the same
@@ -796,8 +833,8 @@ fn record_in(file: &Path, entry: &NewEntry) -> Result<Option<String>> {
     // A damaged file is carried out of the way rather than written over. What
     // stands in it is the only record of what this tool created, and a copy
     // the user can still repair by hand is worth more than a tidy directory.
-    let (mut all, note) = match recorded_in(file) {
-        Ok(all) => (all, None),
+    let (mut record, note) = match record_file(file) {
+        Ok(record) => (record, None),
         Err(_) => {
             let aside = set_aside(file)?;
             let note = format!(
@@ -805,16 +842,22 @@ fn record_in(file: &Path, entry: &NewEntry) -> Result<Option<String>> {
                  \x1fentries.json was damaged and has been put aside as\x1d: {}",
                 aside.display()
             );
-            (Vec::new(), Some(note))
+            (
+                RecordFile {
+                    known: Vec::new(),
+                    foreign: Vec::new(),
+                },
+                Some(note),
+            )
         }
     };
 
-    all.retain(|existing| {
+    record.known.retain(|existing| {
         existing.key_name != entry.key_name || existing.category != entry.category
     });
-    all.push(entry.clone());
+    record.known.push(entry.clone());
 
-    store(file, &all)?;
+    store(file, &record)?;
     Ok(note)
 }
 
@@ -837,9 +880,19 @@ fn set_aside(file: &Path) -> Result<PathBuf> {
 /// a JSON document behind — the very damage the paragraph above has to cope
 /// with. Writing beside the file and renaming means a reader sees either the
 /// old record or the new one.
-fn store(file: &Path, all: &[NewEntry]) -> Result<()> {
+fn store(file: &Path, record: &RecordFile) -> Result<()> {
+    let mut elements: Vec<serde_json::Value> = record
+        .known
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<_, _>>()?;
+    // The elements this build could not read go back exactly as they came
+    // in, at the end — order across the two halves is not a promise, the
+    // submenu order lives in the key names.
+    elements.extend(record.foreign.iter().cloned());
+
     let temporary = file.with_extension("json.neu");
-    std::fs::write(&temporary, serde_json::to_string_pretty(all)?)
+    std::fs::write(&temporary, serde_json::to_string_pretty(&elements)?)
         .with_context(|| format!("{temporary:?}"))?;
     std::fs::rename(&temporary, file).with_context(|| format!("{file:?}"))?;
     Ok(())
@@ -848,27 +901,33 @@ fn store(file: &Path, all: &[NewEntry]) -> Result<()> {
 /// Forgets whatever was recorded for this registry key.
 ///
 /// Called after a successful delete. Without it `entries.json` keeps naming an
-/// entry the user has removed — and that file is the input for the planned
+/// entry the user has removed — and that file is the input for the
 /// Windows 11 handler, so a stale line there would eventually put the deleted
 /// item back in the menu.
+///
+/// Reaches the entries this build can read. A foreign element (a category
+/// from a newer build) names a target this build cannot compute, so deleting
+/// its key by hand leaves the record standing until a build that reads it
+/// does the forgetting — the accepted flip side of keeping foreign elements
+/// at all.
 pub fn forget_target(target: &RegTarget) -> Result<()> {
     forget_target_in(&entries_path()?, target)
 }
 
 fn forget_target_in(file: &Path, target: &RegTarget) -> Result<()> {
     let wanted = target.full_path().to_lowercase();
-    let mut list = recorded_in(file)?;
-    let before = list.len();
+    let mut record = record_file(file)?;
+    let before = record.known.len();
 
-    list.retain(|entry| {
+    record.known.retain(|entry| {
         entry
             .target()
             .map(|t| t.full_path().to_lowercase() != wanted)
             .unwrap_or(true)
     });
 
-    if list.len() != before {
-        store(file, &list)?;
+    if record.known.len() != before {
+        store(file, &record)?;
     }
     Ok(())
 }
@@ -880,12 +939,14 @@ pub fn forget(category: &Category, key_name: &str) -> Result<()> {
 }
 
 fn forget_in(file: &Path, category: &Category, key_name: &str) -> Result<()> {
-    let mut all = recorded_in(file)?;
-    let before = all.len();
-    all.retain(|entry| entry.key_name != key_name || &entry.category != category);
+    let mut record = record_file(file)?;
+    let before = record.known.len();
+    record
+        .known
+        .retain(|entry| entry.key_name != key_name || &entry.category != category);
 
-    if all.len() != before {
-        store(file, &all)?;
+    if record.known.len() != before {
+        store(file, &record)?;
     }
     Ok(())
 }
@@ -1105,15 +1166,9 @@ mod tests {
     #[test]
     fn entries_always_land_in_the_users_own_hive() {
         for category in Category::BASE {
-            // The four newest base categories are deliberately not creatable
-            // until a tolerant entries.json reader has shipped — see
-            // category_relative.
-            if !category_is_creatable(&category) {
-                continue;
-            }
             let mut e = entry(category, "x");
             e.key_name = "ctxmenu_x".into();
-            let target = e.target().expect("creatable base categories create");
+            let target = e.target().expect("base categories are creatable");
             assert_eq!(
                 target.scope(),
                 Scope::User,
@@ -1815,5 +1870,63 @@ mod tests {
                 .iter()
                 .any(|p| matches!(p.fault(), Fault::UnusualPosition(value) if value == "Last"))
         );
+    }
+
+    /// One element a future build wrote — a category this build has never
+    /// heard of — must neither fail the read nor be lost by the next write.
+    /// The old reader failed the whole file on one such element, and
+    /// `record_in` then set the record of everything aside as damaged.
+    #[test]
+    fn an_element_from_a_newer_build_survives_read_and_write() {
+        let scratch = Scratch::new("foreign-element");
+        let file = scratch.entries();
+
+        let mut known = entry(Category::Directory, r#""C:\t.exe" "%1""#);
+        known.key_name = "ctxmenu_bekannt".into();
+        record_in(&file, &known).expect("records");
+
+        // Splice in what a future build would write: same shape, a category
+        // word this build does not know.
+        let mut elements: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("readable"))
+                .expect("an array");
+        let foreign = serde_json::json!({
+            "key_name": "ctxmenu_aus_der_zukunft",
+            "display_name": "Zukunft",
+            "command": "C:\\t.exe",
+            "category": "SomethingFromTheFuture"
+        });
+        elements.push(foreign.clone());
+        std::fs::write(
+            &file,
+            serde_json::to_string_pretty(&elements).expect("serialises"),
+        )
+        .expect("writable");
+
+        // Reading understands what it can and fails nothing.
+        let read = recorded_in(&file).expect("one foreign element is not damage");
+        assert_eq!(read.len(), 1);
+
+        // Writing keeps the foreign element verbatim.
+        let mut second = entry(Category::Drive, r#""C:\t.exe" "%1""#);
+        second.key_name = "ctxmenu_zweiter".into();
+        record_in(&file, &second).expect("records");
+
+        let after: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("readable"))
+                .expect("an array");
+        assert_eq!(after.len(), 3, "two known plus the foreign one");
+        assert!(
+            after.contains(&foreign),
+            "the foreign element must come back verbatim"
+        );
+
+        // Forgetting a known entry leaves the foreign one alone as well.
+        forget_in(&file, &known.category, &known.key_name).expect("forgets");
+        let final_elements: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("readable"))
+                .expect("an array");
+        assert_eq!(final_elements.len(), 2);
+        assert!(final_elements.contains(&foreign));
     }
 }
