@@ -208,18 +208,29 @@ pub fn installed() -> Vec<String> {
             continue;
         };
 
-        for name in super::scan::subkey_names(&root) {
-            if !name.starts_with('.') {
-                continue;
+        let mut collect = |key: &windows_registry::Key| {
+            for name in super::scan::subkey_names(key) {
+                if !name.starts_with('.') {
+                    continue;
+                }
+                // `normalize_ext` also refuses the nonsense that turns up
+                // here: a bare dot, names with spaces, `.` inside the name.
+                let Some(ext) = normalize_ext(&name) else {
+                    continue;
+                };
+                if seen.insert(ext.clone()) {
+                    all.push(ext);
+                }
             }
-            // `normalize_ext` also refuses the nonsense that turns up here:
-            // a bare dot, names with spaces, `.` inside the name.
-            let Some(ext) = normalize_ext(&name) else {
-                continue;
-            };
-            if seen.insert(ext.clone()) {
-                all.push(ext);
-            }
+        };
+        collect(&root);
+        // An extension can exist under `SystemFileAssociations` alone, with
+        // no `<classes>\.ext` key — the shell serves its menu regardless
+        // (measured 2026-08-21: `.264` carries MediaInfo there and has no
+        // extension key). Without this, "every registered extension" misses
+        // exactly the entries most competing tools miss too.
+        if let Ok(sfa) = root.open("SystemFileAssociations") {
+            collect(&sfa);
         }
     }
 
@@ -271,7 +282,8 @@ pub struct Resolution {
     pub perceived_type: Option<String>,
     /// Value names under `HKCR\<ext>\OpenWithProgids`.
     pub open_with_progids: Vec<String>,
-    /// Does the extension key exist anywhere?
+    /// Does Windows know the extension — a `<classes>\.ext` key, or one
+    /// under `SystemFileAssociations`, in any hive?
     pub registered: bool,
 }
 
@@ -359,6 +371,25 @@ pub fn resolve(ext: &str) -> Resolution {
                 if !name.trim().is_empty() && !resolution.open_with_progids.contains(&name) {
                     resolution.open_with_progids.push(name);
                 }
+            }
+        }
+    }
+
+    // The SFA-only case: no `<classes>\.ext` key, but a menu under
+    // `SystemFileAssociations\.ext` that the shell serves anyway. Such an
+    // extension is registered too; without this the scan would drop its
+    // level-4 sources at the `registered` gate.
+    if !resolution.registered {
+        for scope in Scope::ALL {
+            if paths::root_key(scope)
+                .open(format!(
+                    r"{}\SystemFileAssociations\{ext}",
+                    scope.classes_path()
+                ))
+                .is_ok()
+            {
+                resolution.registered = true;
+                break;
             }
         }
     }
@@ -726,5 +757,36 @@ mod tests {
             "only {} curated types, the list should cover about 100",
             CURATED.len()
         );
+    }
+
+    /// An extension that exists under `SystemFileAssociations` alone: the
+    /// shell serves its menu, so the scan must see it. The gap the
+    /// comparison against ShellMenuView found — dozens of verbs like
+    /// MediaInfo on `.264` were invisible because nothing listed the
+    /// extension and the `registered` gate stayed shut.
+    #[test]
+    fn an_sfa_only_extension_is_registered_and_listed() {
+        let relative = r"Software\Classes\SystemFileAssociations\.ctxmenu_selftest_sfa";
+        let _ = CURRENT_USER.remove_tree(relative);
+        CURRENT_USER
+            .create(format!(r"{relative}\shell\selftest"))
+            .expect("HKCU is writable");
+
+        let resolution = resolve(".ctxmenu_selftest_sfa");
+        // installed() walks an index-based RegEnumKeyExW loop; a sibling
+        // test deleting its own key under the same parent mid-walk shifts
+        // the indices and can skip one name. One retry separates that
+        // transient from a real gap.
+        let listed = (0..2).any(|_| installed().contains(&".ctxmenu_selftest_sfa".to_string()));
+        let level_four = sources_for(&resolution).iter().any(|s| {
+            s.relative
+                .eq_ignore_ascii_case(r"SystemFileAssociations\.ctxmenu_selftest_sfa\shell")
+        });
+
+        let _ = CURRENT_USER.remove_tree(relative);
+
+        assert!(resolution.registered, "SFA alone must count as registered");
+        assert!(listed, "every-type must walk the SFA-only extension");
+        assert!(level_four, "the level-4 source must be offered");
     }
 }

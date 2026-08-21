@@ -101,10 +101,16 @@ fn applies(category: &serde_json::Value) -> Applies {
     if let Some(name) = category.as_str() {
         return match name {
             "AllFiles" => Applies::Files,
+            // Files no program has claimed: never a folder, so files are the
+            // honest approximation the selection can answer.
+            "Unknown" => Applies::Files,
             "Directory" | "Folder" | "Drive" => Applies::Folders,
             // A background click hands the folder itself to the handler, so
             // folders are the closest a selection-based answer gets.
             "DirectoryBackground" | "DesktopBackground" => Applies::Folders,
+            // The folder-content menus: which template a folder carries is
+            // the shell's knowledge, folders are the honest approximation.
+            "DirectoryAudio" | "DirectoryImage" | "DirectoryVideo" => Applies::Folders,
             _ => Applies::Everything,
         };
     }

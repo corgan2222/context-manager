@@ -8100,7 +8100,14 @@ fn creatable_category(category: &Category) -> Option<Category> {
         // and is the place this program creates entries.
         Category::ProgId { from_ext, .. } => Some(Category::ExtAssoc(from_ext.clone())),
         Category::ExtDirect(ext) => Some(Category::ExtAssoc(ext.clone())),
-        base if Category::BASE.contains(base) => Some(base.clone()),
+        // Through the same gate the create path uses: the newest base
+        // categories are scannable but not yet creatable, and a "new entry"
+        // button that fails on click is worse than none.
+        base if Category::BASE.contains(base)
+            && crate::registry::create::category_is_creatable(base) =>
+        {
+            Some(base.clone())
+        }
         _ => None,
     }
 }
@@ -8455,8 +8462,12 @@ fn category_label(category: &Category, tr: &'static Strings) -> &'static str {
     match category {
         Category::AllFiles => tr.cat_all_files,
         Category::AllFilesystemObjects => tr.cat_all_filesystem_objects,
+        Category::Unknown => tr.cat_unknown,
         Category::Directory => tr.cat_directory,
         Category::DirectoryBackground => tr.cat_directory_background,
+        Category::DirectoryAudio => tr.cat_directory_audio,
+        Category::DirectoryImage => tr.cat_directory_image,
+        Category::DirectoryVideo => tr.cat_directory_video,
         Category::Folder => tr.cat_folder,
         Category::DesktopBackground => tr.cat_desktop_background,
         Category::Drive => tr.cat_drive,

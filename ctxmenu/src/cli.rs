@@ -178,8 +178,9 @@ Verwendung:
 
 Optionen:
   --category <name>   Nur eine Kategorie:
-                      allfiles, allfilesystemobjects, directory,
-                      directorybackground, folder, desktopbackground, drive
+                      allfiles, allfilesystemobjects, unknown, directory,
+                      directorybackground, directoryaudio, directoryimage,
+                      directoryvideo, folder, desktopbackground, drive
   --scope <name>      user | machine | machine32 | all
                       (Vorgabe: all)
   --all-types         Auch die Dateityp-Kette, für die vorgegebene Liste und
@@ -263,8 +264,9 @@ Usage:
 
 Options:
   --category <name>   single category only:
-                      allfiles, allfilesystemobjects, directory,
-                      directorybackground, folder, desktopbackground, drive
+                      allfiles, allfilesystemobjects, unknown, directory,
+                      directorybackground, directoryaudio, directoryimage,
+                      directoryvideo, folder, desktopbackground, drive
   --scope <name>      user | machine | machine32 | all
                       (default: all)
   --all-types         walk the file type chain for the curated list plus
@@ -2153,9 +2155,13 @@ mod tests {
     fn the_creatable_categories_are_read_off_the_model() {
         let slugs = creatable_slugs();
         for category in Category::BASE {
-            assert!(
+            // Exactly the creatable ones, no more and no fewer: the newest
+            // base categories are scannable but deliberately not creatable
+            // until a tolerant entries.json reader has shipped.
+            assert_eq!(
                 slugs.contains(&category.slug()),
-                "{slugs} omits {}",
+                crate::registry::create::category_is_creatable(&category),
+                "{slugs} disagrees with the model about {}",
                 category.slug()
             );
         }
