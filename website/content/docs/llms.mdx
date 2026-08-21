@@ -1,0 +1,58 @@
+---
+title: LLMs.txt
+description: The documentation in plain text, for coding assistants that read it before they answer.
+icon: Bot
+---
+
+Every page of this site is also served as plain Markdown, and the whole set is
+served as two text files. An assistant that reads them answers about ctxmenu
+from the documentation rather than from what it happens to remember.
+
+## The files
+
+<Cards>
+  <Card
+    href="https://corgan2222.github.io/context-manager/llms.txt"
+    title="/llms.txt"
+    description="One line per page: title, address, description. The index an assistant reads first."
+  />
+  <Card
+    href="https://corgan2222.github.io/context-manager/llms-full.txt"
+    title="/llms-full.txt"
+    description="Every page, in full, in one file. Larger, and enough to answer without fetching anything else."
+  />
+</Cards>
+
+A single page is available on its own as well. Append `content.md` to its
+address under `/llms.mdx`, so the Windows 11 page becomes:
+
+```
+https://corgan2222.github.io/context-manager/llms.mdx/docs/windows-11/content.md
+```
+
+The **Copy Markdown** button at the top of every page copies that same text to
+the clipboard.
+
+## Using it
+
+Claude Code, Cursor, Windsurf and the like take a URL in the prompt:
+
+```
+Use the ctxmenu documentation from https://corgan2222.github.io/context-manager/llms-full.txt
+```
+
+For a project that touches ctxmenu often, put the line in the file your
+assistant reads at startup — `CLAUDE.md`, `.cursorrules`, or whatever the tool
+calls it — and it is loaded without being asked for.
+
+<Callout title="What the files are worth">
+  They are generated from the same MDX the site renders, at build time. A page
+  that changes here changes there in the same deploy, so an assistant reading
+  them is never a release behind.
+</Callout>
+
+## What is not here
+
+No MCP server, and no agent skill. Both would have to be hosted and kept
+running; two text files are served by the same static host as the rest of the
+site and cannot fall over on their own.

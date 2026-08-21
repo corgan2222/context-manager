@@ -2,6 +2,22 @@ import { loader } from 'fumadocs-core/source';
 import { docsContentRoute, docsImageRoute, docsRoute } from './shared';
 import { defineDocs } from 'fumadocs-mdx/macro';
 import { metaSchema, pageSchema } from 'fumadocs-core/source/schema';
+import { createElement } from 'react';
+import {
+  Archive,
+  Bot,
+  Cloud,
+  Hammer,
+  LayoutGrid,
+  MousePointerClick,
+  PencilLine,
+  RefreshCw,
+  Rocket,
+  Scale,
+  Sparkles,
+  Table2,
+  Terminal,
+} from 'lucide-react';
 
 const docs = defineDocs({
   dir: 'content/docs',
@@ -16,10 +32,37 @@ const docs = defineDocs({
   },
 });
 
+// The icons the sidebar draws in front of each page, named in that page's
+// frontmatter. Listed one by one rather than reached through the whole of
+// lucide-react: a namespace import pulls every icon into the bundle, and a
+// named handful is what the site actually draws.
+const pageIcons = {
+  Archive,
+  Bot,
+  Cloud,
+  Hammer,
+  LayoutGrid,
+  MousePointerClick,
+  PencilLine,
+  RefreshCw,
+  Rocket,
+  Scale,
+  Sparkles,
+  Table2,
+  Terminal,
+};
+
 // See https://fumadocs.dev/docs/headless/source-api for more info
 export const source = loader({
   baseUrl: docsRoute,
   source: docs.toFumadocsSource(),
+  icon(icon) {
+    if (icon && icon in pageIcons) {
+      return createElement(pageIcons[icon as keyof typeof pageIcons], {
+        className: 'size-4',
+      });
+    }
+  },
   plugins: [],
 });
 

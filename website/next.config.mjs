@@ -14,6 +14,11 @@ const config = {
   // workflow: a path that is right in CI and wrong locally is a path nobody
   // tests. `npm run dev` therefore also runs under /context-manager.
   basePath: '/context-manager',
+  // Without this the export writes docs.html and no docs/index.html, so a
+  // typed or shared /docs/ answers 404 while /docs answers 200. Static hosts
+  // resolve a directory to its index, and GitHub Pages redirects the form
+  // without the slash to the one with it, so writing index files serves both.
+  trailingSlash: true,
   reactStrictMode: true,
 };
 
