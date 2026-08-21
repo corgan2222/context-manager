@@ -33,6 +33,10 @@
 
 html {
   scrollbar-gutter: stable;
+  /* Declared here as well as in the metadata: a stylesheet reaches a reader
+   * even where a meta tag is stripped, and both are read by the extensions
+   * that darken pages on their own. */
+  color-scheme: dark;
 }
 
 html > body[data-scroll-locked] {

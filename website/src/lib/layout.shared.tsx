@@ -19,5 +19,8 @@ export function baseOptions(): BaseLayoutProps {
       ),
     },
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
+    // The site has one theme. A switch that cannot switch anything is a
+    // control that lies.
+    themeSwitch: { enabled: false },
   };
 }
