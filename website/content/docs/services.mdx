@@ -13,6 +13,91 @@ turns every one you tick into a menu entry.
 
 ![The Services tab: the tools read out of one OpenAPI description, grouped the way the service groups itself.](/images/08-services_en.web.png)
 
+## The service the numbers come from
+
+![](/images/snapotter-logo.web.png)
+
+Every figure on this page was measured against
+[SnapOtter](https://snapotter.com/), and the program ships a template for it:
+pick it in the services tab and only the host and the key are left to fill in.
+
+SnapOtter is a self-hosted file processing platform, AGPL-3.0, run on your own
+machine so the files never leave the network. Its own site counted 243 tools on
+21 August 2026 — 107 for images, 57 for video, 27 for audio, 29 for PDF and
+documents, 23 for files.
+
+Of those, **232 arrive as menu entries**, in seven groups:
+
+| Group | Tools |
+|---|---|
+| Image | 96 |
+| Video | 52 |
+| PDF | 30 |
+| Audio | 26 |
+| Files | 26 |
+| Features | 1 |
+| Pipelines | 1 |
+
+Two things account for the difference between 243 and 232. An endpoint that
+takes no file cannot become a menu entry, so it is not offered. And the groups
+above are not the five the website advertises: they are measured from the
+service's own paths, which is why PDF stands on its own here and documents sit
+under Files.
+
+Nothing about the program is tied to this service. Any description published as
+OpenAPI works the same way, and the empty template exists for exactly that.
+
+## From an address to a menu entry
+
+<Steps>
+
+<Step>
+### Add the service
+
+Pick the template, paste the address of the documentation page, and add the key
+if the service wants one. The key is stored locally and sent with every request.
+`Result is named in` says where the service puts the address of the finished
+file in its answer — for SnapOtter that is `downloadUrl`.
+
+![The Edit service dialog: template, address, key, and where the result is named.](/images/services-edit_en.web.png)
+</Step>
+
+<Step>
+### Read what came back
+
+The tools arrive grouped and counted, and the search field above them reads
+names, paths and groups at once. A tool marked *works in the background* answers
+with a job number rather than a file; the program follows it either way.
+
+![The services tab after reading the description: 232 tools in seven groups.](/images/services-tools_en.web.png)
+</Step>
+
+<Step>
+### Set the options you want fixed
+
+Where an endpoint documents options, `Settings` opens them as a form. Whatever
+is filled in here is fixed for that menu entry, so a compression entry can carry
+its quality and its target size and ask nothing at run time.
+
+![The image group opened, with the settings of one tool showing mode, quality and target size.](/images/services-options_en.web.png)
+</Step>
+
+<Step>
+### Place it
+
+`+` puts the ticked tools in the menu — either as their own entries or gathered
+in one submenu. From there a right-click sends the file and the answer comes
+back as a notification.
+
+![The finished menu: a Send to SnapOtter submenu holding three entries, and one tool placed on its own.](/images/services-menu_en.web.png)
+
+The menu above was taken on a German system: *An SnapOtter senden* is the
+submenu, holding *Verkleinern*, *Metadaten entfernen* and *Fürs Web optimieren*
+— resize, strip metadata, optimise for the web.
+</Step>
+
+</Steps>
+
 ## What happens to the address
 
 <Steps>
