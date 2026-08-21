@@ -1,0 +1,185 @@
+---
+title: Service formats
+description: What an API has to look like for the program to speak to it.
+icon: Plug
+---
+
+Every service documents itself with a curl line. This page says which curl
+lines the program can reproduce, which it cannot, and where each part of one
+goes in the form.
+
+It describes what an upload favourite sends. The services tab reads the same
+shapes out of an OpenAPI description instead of asking for them; the last
+section says what such a description has to contain.
+
+## Before you fill anything in
+
+Twenty-one services are built in, and picking one in the services tab fills
+every field but the key. The list is a
+[JSON file in the repository](https://github.com/corgan2222/context-manager/blob/main/ctxmenu/templates.json):
+adding a service is a pull request on a text file, and the fields in it are the
+ones this page describes. The rest of the page is for a service that is not on
+that list.
+
+## One request, and what it carries
+
+A favourite sends the clicked file in a single request. There is no session
+before it and no second call to finish it.
+
+| Part | What is possible |
+|---|---|
+| Method | `POST` or `PUT` |
+| Endpoint | A whole address, query string included. `{name}`, `{stem}` and `{ext}` are filled in from the clicked file, which is what a service wants that carries the target name in its path |
+| Body | `multipart/form-data` with one file field, or the raw file as the whole body |
+| Field name | Anything the service asks for. `file` is the default because most services use it |
+| Extra fields | Any number of plain form fields beside the file, multipart only |
+| Headers | Any number of name and value pairs, sent exactly as typed |
+| Content type | Derived from the extension: `image/png`, `application/pdf`, `video/mp4`, and `application/octet-stream` for everything unknown |
+
+<Callout>
+Only those three placeholders, and only those. `{path}`, `{dir}` and
+`{fileurl}` name a place on your own machine, and an upload endpoint is the one
+address here a stranger reads. They stay untouched in an endpoint and are
+filled in only for the two modes that open an address.
+</Callout>
+
+## Reading a curl example
+
+Documentation is written for curl, the form asks for fields. This is the whole
+translation.
+
+| In the documentation | In the form |
+|---|---|
+| `-X POST`, `--request POST` | Method `POST` |
+| `-T file.png`, `--upload-file` | Method `PUT` |
+| `-F "file=@photo.png"` | Body `multipart`, field name `file` |
+| `-F "image_file=@photo.jpg"` | Body `multipart`, field name `image_file` |
+| `--data-binary @photo.jpg` | Body `raw` |
+| `-F "size=auto"` | A form field beside the file, name `size`, value `auto` |
+| `-H "X-Api-Key: abc"` | A header line, name `X-Api-Key`, value `abc` |
+| `-H "Authorization: Bearer abc"` | A header line, written out the same way |
+| `?key=abc` in the address | Leave it in the endpoint. The endpoint is a whole address, query string included |
+| `-o result.png` | Result: save beside the original |
+
+<Callout>
+`-u api:abc` is the one line curl does something for you: it builds
+`Authorization: Basic YXBpOmFiYw==` out of the two halves. Type `api:abc` into
+the header's value field and press **Basic**, which does the same. Everything
+else in a header value is sent exactly as it stands.
+</Callout>
+
+## Where the finished file is named
+
+Four answers cover the services measured so far. Which one applies is set per
+favourite.
+
+<Steps>
+
+<Step>
+### The answer is the file
+
+The response body is the finished file, and it is written beside the original.
+`shot.png` becomes `shot.min.png`, with the suffix you set, and an existing
+file is never overwritten: a counter is added instead.
+
+This is the shape of remove.bg, Clipdrop, PhotoRoom, Stirling-PDF and
+Gotenberg, and it is the least work of the four: nothing has to be parsed.
+</Step>
+
+<Step>
+### The answer names an address
+
+Either in the `Location` header of a successful answer, or in a JSON field
+addressed by a dotted path. `secure_url` reaches a field at the top,
+`data.link` reaches one inside an object, and a step that is a number reaches
+into an array, so curl's `Files[0].Url` is written `Files.0.Url` here.
+
+The address is fetched and the file saved, or opened in the browser, whichever
+the favourite says.
+</Step>
+
+<Step>
+### The address is built around what came back
+
+For a service that answers with an id rather than with an address. The template
+carries the field in braces —
+`https://www.virustotal.com/gui/file/{sha256}` — and everything put in is
+percent-encoded, so whatever the service sends stays one segment of the path it
+was written into.
+
+`{sha256}` is the one name that does not come out of the answer: it is the
+digest of the file that was just sent. Services that check files name their
+page after that digest while answering an upload with nothing but a job id.
+</Step>
+
+<Step>
+### Nothing but a report
+
+Status and size, for a service whose answer is of no further use.
+</Step>
+
+</Steps>
+
+A saved result keeps the original's extension unless the favourite says
+otherwise. A converter is the case where it has to: without an extension of its
+own the answer would be `brief.pdf.docx`, a PDF wearing the extension of the
+file it was made from, which Windows hands to Word.
+
+## Jobs a service only takes in
+
+A busy service may answer with a receipt rather than a result. The program
+recognises two: HTTP 202, and a 200 whose body carries `"async": true`. Both
+mean the same thing, and which one arrives is a property of how busy the
+service is, not of the endpoint, so it cannot be decided when the favourite is
+made.
+
+The way back is a path under the service's own address, with the job id in
+braces: `/api/v1/jobs/{jobId}/progress`. Two more settings say where the
+receipt names the job, and where a progress frame names the finished file.
+
+The finished file has to be named there as an **address**. A service that
+answers with an id, leaving the address to be assembled from it, cannot be
+followed.
+
+## What it will not do
+
+Each of these rules out a service completely, and each has a reason worth
+knowing before you go looking.
+
+| Not possible | Why, and who it affects |
+|---|---|
+| OAuth, and tokens that expire | The program stores what you type and sends it unchanged. It cannot run a consent flow in a browser or trade a refresh token for a new one. Dropbox, OneDrive, Google Drive, Box, Flickr, YouTube |
+| Signed requests | AWS Signature V4 computes a signature per request out of the key, the time and the body. A presigned address works, but it expires. S3, R2, Backblaze, MinIO with keys |
+| Uploads in several steps | Create a task, read an address out of the answer, send the file there, start the work, collect the result. CloudConvert, iLovePDF, Adobe, WeTransfer |
+| The content as a form field | The file is attached as a file. A paste service that wants the text as the value of `api_paste_code`, or inside a JSON body, gets nothing it can use. Pastebin, GitHub Gist, GitLab snippets |
+| Encryption before sending | Send and PrivateBin encrypt in the browser and hand the server ciphertext. There is no server-side path around it, by design |
+| A result behind a header on another host | The key follows the result only where the address stays on the host the file was sent to. TinyPNG names its output under its own host and works; a service that names a bucket or a CDN somewhere else is naming a host you never agreed to, and it does not get the key |
+
+## What a description has to contain
+
+The services tab does the same thing from an OpenAPI document, one address for
+a hundred entries. An operation becomes a menu entry when three things hold:
+its method is `post`, `put` or `patch`, its request body is
+`multipart/form-data`, and one of the fields in it is `string` or `binary`.
+
+The address to paste is the documentation page. The machine-readable document
+behind it is looked for at the address itself and then at `openapi.json`,
+`swagger.json` and `openapi.yaml` beside it, and at `/openapi.json`,
+`/swagger.json`, `/api/openapi.json`, `/api-docs`, `/v3/api-docs`,
+`/v1/api-docs` and `/swagger.v1.json` from the root. The last two are there for
+Stirling-PDF, which moves the Springdoc default, and for Gitea and Forgejo,
+which serve their whole description at the root of the instance. Whichever answered is remembered, so the next refresh is one request.
+
+Two settings are asked once per service rather than once per tool: the header
+line that carries the key, and the dotted path where an answer names the
+finished file. Leave that path empty and the answer is taken to be the file
+itself.
+
+## Two limits that apply throughout
+
+`https://` always, `http://` only where the tick box for it is set on that
+favourite, and nothing else: a `file:` address in an answer is refused rather
+than opened. Redirects are refused as well and reported with the address they
+pointed at, because a redirect can move a file and its key to a host you never
+agreed to. And an answer larger than 256 MB is refused: a service that replies
+with a gigabyte is not one the program is talking to on purpose.

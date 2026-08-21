@@ -1446,7 +1446,15 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
                         fields: Vec::new(),
                         poll: None,
                         result: match result.as_str() {
-                            "save" => ResultAction::Save { source, suffix },
+                            "save" => ResultAction::Save {
+                                source,
+                                suffix,
+                                // No flag for it: the command line builds the
+                                // ordinary favourite, and a converter that
+                                // renames its answer is a thing the window
+                                // sets up.
+                                extension: String::new(),
+                            },
                             "open" => ResultAction::Open { source },
                             _ => ResultAction::Report,
                         },
@@ -1472,6 +1480,9 @@ fn parse_favourite(args: &[String]) -> Result<FavouriteCommand> {
 
             Ok(FavouriteCommand::Add(Box::new(Favourite {
                 id: String::new(),
+                // Typed out on the command line rather than picked from the
+                // catalogue, so it belongs with the favourites.
+                from: None,
                 name,
                 icon,
                 note: None,

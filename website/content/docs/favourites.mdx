@@ -76,6 +76,31 @@ each correctly encoded. For a search, a wiki, a ticket form.
 
 </Steps>
 
+## Twenty-one services are already in it
+
+A new web favourite offers a list of the services this program knows, by group:
+share images, share files, edit images, documents, share text, development,
+storage of your own, check a file. One click fills in the endpoint, the method,
+the body shape, the field name, the header line and where the answer names the
+result — everything except the key, which no list can hold. Where a key is
+needed, the note says where to get one.
+
+Two of them do something worth naming. **TinyPNG** documents `--user api:KEY`;
+type that pair into the header's value field and press **Basic**, and the line
+curl would have built is built. **VirusTotal** answers an upload with a job id
+and no address, so the address of the page is built from the file's own
+SHA-256 instead — which is how it names its pages anyway.
+
+The list is a [JSON file in the repository](https://github.com/corgan2222/context-manager/blob/main/ctxmenu/templates.json),
+not code: adding a service is a pull request on a text file. The
+[formats page](/docs/formats) says what may go in it.
+
+Beside the list stands **From a .sxcu file**, which reads an uploader file
+ShareX published for a service. What such a file holds that this program cannot
+do — content in a form field rather than an attached file, an answer read by
+regular expression — ends the import with a sentence naming that thing, rather
+than with a favourite that fails later at a real service.
+
 ## What it refuses, and what it asks
 
 **You are asked before the first upload.** Once per tool, naming the
@@ -90,6 +115,12 @@ as agreed to from the start and send on the first click.
 **Unencrypted `http://` is refused** unless it has been allowed for this one
 favourite. Sending a file across the network in the clear is meant to be a
 decision, not a default.
+
+**A key does not follow a result to another host.** Where a service answers
+with an address, that address is fetched with the same headers only if it is on
+the host the file went to; TinyPNG names its output under its own host and
+needs them. An address on a bucket or a CDN somewhere else is a host nobody
+agreed to, and it is fetched without them.
 
 **A redirect ends the request.** A `3xx` is not followed; the program reports
 which address it pointed at instead. The question before the upload named one

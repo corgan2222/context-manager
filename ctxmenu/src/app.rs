@@ -26,6 +26,7 @@ use crate::registry::plan::{Action, Operation, Plan, Report};
 use crate::registry::scan::{self, ScanOptions};
 use crate::service::{self, Service, grouping, spec};
 use crate::settings::{Language, Settings, ThemeChoice};
+use crate::templates;
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -125,6 +126,9 @@ const HINT_PROGRAM: &str = "C:\\Program Files\\Werkzeug\\werkzeug.exe";
 const HINT_ARGS: &str = "--flag \"%1\"";
 const HINT_URL: &str = "https://squoosh.app";
 const HINT_ENDPOINT: &str = "https://api.tinify.com/shrink";
+/// The shape of a built address, shown where one is asked for. A real one:
+/// this is what reaches the report of a file VirusTotal has just taken in.
+const HINT_BUILT: &str = "https://www.virustotal.com/gui/file/{data.id}";
 /// Placeholders in the service form.
 const HINT_SERVICE_NAME: &str = "SnapOtter";
 const HINT_SPEC_URL: &str = "http://192.168.2.11:1349/api/docs/";
@@ -1210,6 +1214,12 @@ pub struct App {
     /// view exactly once instead of fighting the mouse wheel every frame.
     favourite_scroll: bool,
 
+    /// Where each catalogue logo sits on disk, by template id.
+    ///
+    /// Filled when the services tab is entered, never in a frame: the first
+    /// call writes files. Empty until then, and empty entries simply draw no
+    /// picture.
+    catalogue_logos: Vec<(String, String)>,
     /// The services a favourite can be made from (`services.json`).
     services: Vec<Service>,
     service_error: Option<String>,
@@ -1573,6 +1583,7 @@ impl App {
             // error, unlike theirs, is kept -- see above.
             services,
             service_error,
+            catalogue_logos: catalogue_logos(),
             service_focus: None,
             service_tools: Vec::new(),
             service_grouping: None,
@@ -2010,7 +2021,10 @@ impl App {
             return None;
         }
 
-        let count = self.favourites.len();
+        // The same view the list draws, so the cursor cannot land on a row
+        // this tab does not show.
+        let own = self.own_favourites();
+        let count = own.len();
         if count == 0 {
             self.favourite_focus = None;
             return None;
@@ -2045,7 +2059,7 @@ impl App {
             return None;
         }
 
-        let index = self.favourite_focus?;
+        let index = *own.get(self.favourite_focus?)?;
         match (enter, delete) {
             (true, _) => Some(FavouriteAction::Place(index)),
             (_, true) => Some(FavouriteAction::Remove(index)),
@@ -3359,6 +3373,25 @@ impl App {
         let _ = ctx;
     }
 
+    /// The favourites this tab shows, as indices into the whole list.
+    ///
+    /// Everything somebody built here by hand. What came out of the catalogue
+    /// is shown by the services tab instead, because that is where they picked
+    /// it and where they will look for it -- the alternative, showing all of
+    /// them twice, was the confusion this split came out of.
+    ///
+    /// Indices rather than a copied list: every action on a favourite is an
+    /// index into the file's own order, and a second numbering would be a
+    /// second thing to keep right.
+    fn own_favourites(&self) -> Vec<usize> {
+        self.favourites
+            .iter()
+            .enumerate()
+            .filter(|(_, favourite)| favourite.from.is_none())
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// The tool box.
     ///
     /// Deliberately not a tree and not a table: this list is short by nature —
@@ -3389,9 +3422,15 @@ impl App {
             ui.separator();
         }
 
-        if self.favourites.is_empty() {
+        let own = self.own_favourites();
+        if own.is_empty() {
             ui.add_space(12.0);
             ui.label(self.tr.fav_empty);
+            ui.add_space(8.0);
+            // Not an error and not nothing: a fresh installation has an empty
+            // list here and a full one under services, and saying so beats
+            // leaving somebody to find that out.
+            ui.label(self.tr.fav_empty_services);
             return;
         }
 
@@ -3405,9 +3444,13 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let count = self.favourites.len();
-                for (index, favourite) in self.favourites.iter().enumerate() {
-                    let current = focus == Some(index);
+                let count = own.len();
+                for (seen, &index) in own.iter().enumerate() {
+                    let favourite = &self.favourites[index];
+                    // `seen` is where the row is on screen, `index` is where
+                    // it is in the file. The cursor follows the eye, every
+                    // action follows the file.
+                    let current = focus == Some(seen);
                     // The cursor has to be visible or the arrow keys look
                     // broken: the list would move and nothing on screen would
                     // say so.
@@ -3456,7 +3499,7 @@ impl App {
                                     }
                                     if ui
                                         .add_enabled(
-                                            index + 1 < count,
+                                            seen + 1 < count,
                                             egui::Button::new("\u{2193}").small(),
                                         )
                                         .on_hover_text(self.tr.tip_fav_down)
@@ -3466,7 +3509,7 @@ impl App {
                                     }
                                     if ui
                                         .add_enabled(
-                                            index > 0,
+                                            seen > 0,
                                             egui::Button::new("\u{2191}").small(),
                                         )
                                         .on_hover_text(self.tr.tip_fav_up)
@@ -3497,7 +3540,7 @@ impl App {
                             .interact(rect, ui.id().with(("fav-row", index)), egui::Sense::click())
                             .clicked()
                     {
-                        clicked_row = Some(index);
+                        clicked_row = Some(seen);
                     }
                     if current && scroll {
                         ui.scroll_to_rect(row.response.rect, None);
@@ -3530,10 +3573,23 @@ impl App {
         }
     }
 
+    /// What every write to the favourites file runs through.
+    ///
+    /// A failure goes two ways on purpose. The line above the list is where it
+    /// belongs and where it stays; the dialog is what makes it arrive. Both
+    /// tabs write this file now, and the line lives in one of them -- so a
+    /// save that failed from the services tab used to look exactly like a save
+    /// that worked, which is the worst thing a button can do.
     fn after_favourite_change(&mut self, outcome: anyhow::Result<()>) {
         match outcome {
             Ok(()) => self.reload_favourites(),
-            Err(error) => self.favourite_error = Some(format!("{error:#}")),
+            Err(error) => {
+                let text = format!("{error:#}");
+                self.favourite_error = Some(text.clone());
+                self.dialog = Some(Dialog::Error(
+                    crate::bilingual::pick(&text, self.settings.language).into_owned(),
+                ));
+            }
         }
     }
 
@@ -3543,6 +3599,9 @@ impl App {
 
     fn reload_services(&mut self) {
         (self.services, self.service_error) = services_from_load(service::load());
+        // This tab shows the single-entry kind too, and that list is written
+        // by the other process as well.
+        self.reload_favourites();
     }
 
     /// What clicking a service's name does: mark it, and go and read what it
@@ -3817,23 +3876,46 @@ impl App {
     }
 
     /// Left panel of the services tab: which service, and the buttons for it.
+    /// The left half of the services tab: what is set up, and what is on
+    /// offer.
+    ///
+    /// Both in one list on purpose. Before this the tab showed the services
+    /// somebody had already configured, while the ones the program knows sat
+    /// behind a button, inside a dialog, in a row of small buttons - reported
+    /// on 2026-08-21 as "nobody finds that without instructions", and rightly.
+    /// What a person looking at this tab wants to know is which services they
+    /// can use, and that is one question with one answer.
+    ///
+    /// Two kinds live here and are told apart by a line at the row rather than
+    /// by a tab: a service described by OpenAPI brings in as many entries as
+    /// it has tools, and a template brings in exactly one.
     fn service_list(&mut self, ui: &mut Ui) {
         let mut fetch = None;
         let mut edit = None;
-        let mut remove = None;
         let mut new_service = false;
+        let mut on_favourite = None;
+        let mut from_service_template = None;
+        let mut from_template = None;
+        let mut import_sxcu = false;
+
+        let tr = self.tr;
+        let focus = self.service_focus;
+        let services = &self.services;
+        let favourites = &self.favourites;
+        let logos = &self.catalogue_logos;
+        let icons = &mut self.icons;
 
         egui::Panel::left("services")
             .resizable(true)
-            .default_size(260.0)
+            .default_size(280.0)
             .show(ui, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.heading(self.tr.tab_services);
+                    ui.heading(tr.tab_services);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .button(self.tr.svc_new)
-                            .on_hover_text(self.tr.tip_svc_new)
+                            .button(tr.svc_new)
+                            .on_hover_text(tr.tip_svc_new)
                             .clicked()
                         {
                             new_service = true;
@@ -3842,56 +3924,129 @@ impl App {
                 });
                 ui.separator();
 
-                if self.services.is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(self.tr.svc_empty);
-                    ui.add_space(8.0);
-                    // Not `small`: this is the text that explains what the tab
-                    // is for, and the one place someone actually reads. It was
-                    // already reported once as too small elsewhere.
-                    ui.label(self.tr.svc_empty_hint);
-                    return;
-                }
-
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (index, service) in self.services.iter().enumerate() {
-                            let current = self.service_focus == Some(index);
-                            if ui
-                                .add(egui::Button::selectable(current, &service.name))
-                                .on_hover_text(&service.spec_url)
-                                .clicked()
-                                && !current
-                            {
-                                fetch = Some(index);
+                        // What is already usable, both kinds together.
+                        let placed: Vec<(usize, &Favourite)> = favourites
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, favourite)| favourite.from.is_some())
+                            .collect();
+
+                        if services.is_empty() && placed.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(tr.svc_empty);
+                            ui.add_space(4.0);
+                            ui.label(tr.svc_empty_hint);
+                            ui.add_space(8.0);
+                        } else {
+                            ui.label(egui::RichText::new(tr.svc_set_up).weak().small());
+                            ui.add_space(2.0);
+                        }
+
+                        for (index, service) in services.iter().enumerate() {
+                            let current = focus == Some(index);
+                            ui.horizontal(|ui| {
+                                catalogue_icon(ui, icons, logos, logo_of(service));
+                                if ui
+                                    .add(egui::Button::selectable(current, &service.name))
+                                    .on_hover_text(&service.spec_url)
+                                    .clicked()
+                                {
+                                    // Both, and in this order: the form opens,
+                                    // and behind it the tools are already being
+                                    // read, so closing it leaves the panel
+                                    // filled rather than empty.
+                                    fetch = Some(index);
+                                    edit = Some(index);
+                                }
+                            });
+                            ui.add_space(2.0);
+                        }
+
+                        // The single-entry kind, made from a template or read
+                        // out of a ShareX file. Its row carries its own three
+                        // buttons rather than filling the panel to the right:
+                        // there is nothing to fetch and nothing to tick.
+                        for (index, favourite) in placed {
+                            ui.horizontal(|ui| {
+                                catalogue_icon(ui, icons, logos, favourite.from.as_deref());
+                                if ui
+                                    .add(egui::Button::selectable(false, &favourite.name))
+                                    .on_hover_text(tr.tip_svc_open_form)
+                                    .clicked()
+                                {
+                                    on_favourite = Some(FavouriteAction::Edit(index));
+                                }
+                            });
+                            ui.add_space(2.0);
+                        }
+
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(tr.svc_on_offer).weak().small());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(tr.tpl_from_sxcu)
+                                        .on_hover_text(tr.tip_tpl_from_sxcu)
+                                        .clicked()
+                                    {
+                                        import_sxcu = true;
+                                    }
+                                },
+                            );
+                        });
+                        ui.small(tr.svc_on_offer_hint);
+                        ui.add_space(4.0);
+
+                        // The OpenAPI kind first: one of these is worth more
+                        // than the rest of the list put together.
+                        ui.label(egui::RichText::new(tr.svc_group_openapi).weak().small());
+                        for (index, template) in service::TEMPLATES.iter().enumerate() {
+                            if template.name.is_empty() {
+                                continue;
                             }
-                            if current {
+                            ui.horizontal(|ui| {
+                                catalogue_icon(ui, icons, logos, Some(template.logo));
+                                if ui
+                                    .link(template.name)
+                                    .on_hover_text(tr.tip_svc_many_tools)
+                                    .clicked()
+                                {
+                                    from_service_template = Some(index);
+                                }
+                            });
+                        }
+                        ui.add_space(4.0);
+
+                        for group in templates::Group::ALL {
+                            ui.label(egui::RichText::new(group.label(tr)).weak().small());
+                            for (index, template) in templates::all().iter().enumerate() {
+                                if template.group != group {
+                                    continue;
+                                }
                                 ui.horizontal(|ui| {
+                                    catalogue_icon(ui, icons, logos, Some(&template.id));
                                     if ui
-                                        .small_button(self.tr.svc_refresh)
-                                        .on_hover_text(self.tr.tip_svc_refresh)
+                                        .link(&template.name)
+                                        .on_hover_text(format!(
+                                            "{}
+
+{}",
+                                            template.what.shown(),
+                                            template.hint.shown()
+                                        ))
                                         .clicked()
                                     {
-                                        fetch = Some(index);
-                                    }
-                                    if ui
-                                        .small_button(self.tr.fav_edit)
-                                        .on_hover_text(self.tr.tip_svc_edit)
-                                        .clicked()
-                                    {
-                                        edit = Some(index);
-                                    }
-                                    if ui
-                                        .small_button(self.tr.fav_remove)
-                                        .on_hover_text(self.tr.tip_svc_remove)
-                                        .clicked()
-                                    {
-                                        remove = Some(index);
+                                        from_template = Some(index);
                                     }
                                 });
                             }
-                            ui.add_space(2.0);
+                            ui.add_space(4.0);
                         }
                     });
             });
@@ -3902,6 +4057,32 @@ impl App {
                 fresh: true,
             });
         }
+        if let Some(index) = from_service_template
+            && let Some(template) = service::TEMPLATES.get(index)
+        {
+            self.dialog = Some(Dialog::Service {
+                draft: Box::new(service_from_template(template)),
+                fresh: true,
+            });
+        }
+        if let Some(index) = from_template
+            && let Some(template) = templates::all().get(index)
+        {
+            let mut draft = template.favourite();
+            draft.note = Some(template.hint.shown().to_string());
+            self.dialog = Some(Dialog::Favourite {
+                draft: Box::new(draft),
+                before: None,
+            });
+        }
+        if import_sxcu {
+            self.import_sxcu();
+        }
+        // The same three the favourites tab offers, doing the same three
+        // things: one path, so a rename here cannot mean something else there.
+        if let Some(action) = on_favourite {
+            self.apply_favourite_action(action);
+        }
         if let Some(index) = edit
             && let Some(service) = self.services.get(index)
         {
@@ -3910,25 +4091,66 @@ impl App {
                 fresh: false,
             });
         }
-        if let Some(index) = remove {
-            self.services.remove(index);
-            // The favourites made from it stay: they work on their own, and
-            // silently deleting a menu entry the user is still using would be
-            // the worst possible reading of "remove this service".
-            self.service_focus = None;
-            self.service_tools.clear();
-            clear_service_inputs(
-                &mut self.service_picked,
-                &mut self.service_settings,
-                &mut self.service_fields,
-            );
-            if let Err(error) = service::save(&self.services) {
-                self.service_error = Some(format!("{error:#}"));
-            }
-        }
         if let Some(index) = fetch {
             let ctx = ui.ctx().clone();
             self.select_service(index, &ctx);
+        }
+    }
+
+    /// Takes a service out of the list, by id.
+    ///
+    /// By id rather than by index because the caller is a dialog that has been
+    /// open for a while, and the list underneath it may have moved.
+    fn remove_service(&mut self, id: &str) {
+        let Some(index) = self.services.iter().position(|old| old.id == id) else {
+            return;
+        };
+        self.services.remove(index);
+        // The favourites made from it stay: they work on their own, and
+        // silently deleting a menu entry the user is still using would be the
+        // worst possible reading of "remove this service".
+        self.service_focus = None;
+        self.service_tools.clear();
+        clear_service_inputs(
+            &mut self.service_picked,
+            &mut self.service_settings,
+            &mut self.service_fields,
+        );
+        if let Err(error) = service::save(&self.services) {
+            self.service_error = Some(format!("{error:#}"));
+        }
+    }
+
+    /// Reads a ShareX uploader file into the form.
+    ///
+    /// Its own method because the file dialog blocks, and calling it from
+    /// inside the panel closure would hold a borrow of half the window across
+    /// however long somebody takes to find a file.
+    fn import_sxcu(&mut self) {
+        let Some(path) = crate::filedialog::pick_file(None, &crate::filedialog::UPLOADERS, "")
+        else {
+            return;
+        };
+
+        match std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| crate::sxcu::read(&text))
+        {
+            Ok(mut draft) => {
+                draft.note = Some(path.display().to_string());
+                self.dialog = Some(Dialog::Favourite {
+                    draft: Box::new(draft),
+                    before: None,
+                });
+            }
+            // The refusals of `sxcu::read` name the field that was in the way,
+            // which is the whole point of refusing rather than approximating.
+            Err(error) => {
+                self.dialog = Some(Dialog::Error(crate::bilingual::error(
+                    &error,
+                    self.settings.language,
+                )))
+            }
         }
     }
 
@@ -4324,6 +4546,8 @@ impl App {
     /// The form for one service.
     fn service_dialog(&mut self, ui: &mut Ui, mut draft: Box<Service>, fresh: bool) {
         let mut save = false;
+        let mut reload = false;
+        let mut drop_it = false;
         let mut close = false;
 
         egui::Window::new(match fresh {
@@ -4332,9 +4556,10 @@ impl App {
         })
         .collapsible(false)
         .resizable(true)
-        .default_width(620.0)
+        .default_width(form::DIALOG)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ui.ctx(), |ui| {
+            ui.set_max_width(form::DIALOG);
             let icons = &mut self.icons;
             // A template only fills in what cannot be read off the service
             // itself. It is offered before the fields so it is the first thing
@@ -4351,15 +4576,13 @@ impl App {
                         hint = template.address_hint;
                     }
                     if ui.small_button(template.name).clicked() {
-                        draft.name = template.name.to_string();
-                        // Into the field, not only the hint — asked for on
-                        // 2026-08-20: `<host>` stays visible for the user
-                        // to replace, everything around it is already right.
-                        draft.spec_url = template.address_hint.to_string();
-                        draft.result_path = template.result_path.to_string();
-                        draft.allow_insecure = template.allow_insecure;
-                        if !template.icon.is_empty() {
-                            draft.icon = Some(template.icon.to_string());
+                        let filled = service_from_template(template);
+                        draft.name = filled.name;
+                        draft.spec_url = filled.spec_url;
+                        draft.result_path = filled.result_path;
+                        draft.allow_insecure = filled.allow_insecure;
+                        if filled.icon.is_some() {
+                            draft.icon = filled.icon;
                         }
                     }
                 }
@@ -4373,7 +4596,7 @@ impl App {
                     ui.label(self.tr.svc_name);
                     ui.add(
                         egui::TextEdit::singleline(&mut draft.name)
-                            .desired_width(420.0)
+                            .desired_width(form::wide(ui))
                             .hint_text(HINT_SERVICE_NAME),
                     );
                     ui.end_row();
@@ -4381,7 +4604,7 @@ impl App {
                     ui.label(self.tr.svc_address);
                     ui.add(
                         egui::TextEdit::singleline(&mut draft.spec_url)
-                            .desired_width(420.0)
+                            .desired_width(form::wide(ui))
                             .hint_text(hint),
                     );
                     ui.end_row();
@@ -4398,12 +4621,12 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut header.name)
-                                .desired_width(140.0)
+                                .desired_width(form::part(ui))
                                 .hint_text("Authorization"),
                         );
                         ui.add(
                             egui::TextEdit::singleline(&mut header.value)
-                                .desired_width(300.0)
+                                .desired_width(form::wide(ui))
                                 .hint_text(HINT_KEY),
                         );
                     });
@@ -4422,7 +4645,7 @@ impl App {
                     ui.label(self.tr.svc_result);
                     ui.add(
                         egui::TextEdit::singleline(&mut draft.result_path)
-                            .desired_width(220.0)
+                            .desired_width(form::wide(ui))
                             .hint_text(HINT_RESULT_PATH),
                     );
                     ui.end_row();
@@ -4440,6 +4663,10 @@ impl App {
             ui.checkbox(&mut draft.allow_insecure, self.tr.fav_allow_insecure);
             ui.separator();
 
+            // Everything this service can have done to it, in one row at the
+            // bottom of its form. The list beside it carries names and nothing
+            // else -- a row of small buttons that appears under whichever
+            // entry happens to be selected is the thing this replaced.
             ui.horizontal(|ui| {
                 let ready = !draft.name.trim().is_empty() && !draft.spec_url.trim().is_empty();
                 if ui
@@ -4452,8 +4679,41 @@ impl App {
                 if ui.button(self.tr.btn_cancel).clicked() {
                     close = true;
                 }
+                if !fresh {
+                    ui.separator();
+                    if ui
+                        .button(self.tr.svc_refresh)
+                        .on_hover_text(self.tr.tip_svc_refresh)
+                        .clicked()
+                    {
+                        reload = true;
+                    }
+                    if ui
+                        .button(self.tr.fav_remove)
+                        .on_hover_text(self.tr.tip_svc_remove)
+                        .clicked()
+                    {
+                        drop_it = true;
+                    }
+                }
             });
         });
+
+        // The two that end the form without saving it, first: neither wants
+        // the draft written, and both close.
+        if drop_it {
+            self.remove_service(&draft.id);
+            self.dialog = None;
+            return;
+        }
+        if reload {
+            self.dialog = None;
+            if let Some(index) = self.services.iter().position(|old| old.id == draft.id) {
+                let ctx = ui.ctx().clone();
+                self.select_service(index, &ctx);
+            }
+            return;
+        }
 
         match (save, close) {
             (true, _) => {
@@ -4517,6 +4777,8 @@ impl App {
     ) {
         let mut save = false;
         let mut close = false;
+        let mut place = false;
+        let mut drop_it = false;
         let fresh = before.is_none();
 
         egui::Window::new(if fresh {
@@ -4526,26 +4788,54 @@ impl App {
         })
         .collapsible(false)
         .resizable([true, false])
-        .default_width(640.0)
+        .default_width(form::DIALOG)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ui.ctx(), |ui| {
-            // Same rule as the entry editor: the fields take what the window
-            // gives them, minus the label column and the button behind them.
-            // A path is as long as it is, and 440 pixels was a guess.
-            let field_width = (ui.available_width() - 150.0).max(240.0);
+            // The ceiling first, then everything measures against it. Without
+            // this line the elastic fields below pull the window wider every
+            // frame until it hits the edges of the main one.
+            ui.set_max_width(form::DIALOG);
+
+            // Same rule as the entry editor and the service form: a field
+            // takes what the window gives it, minus the label column. The one
+            // measure, from `form`, so all three line up with each other.
+            let field_width = form::beside(ui, form::LABEL);
             let icons = &mut self.icons;
 
             egui::Grid::new("fav-grid")
                 .num_columns(2)
-                .spacing([10.0, 6.0])
+                .spacing([10.0, 8.0])
+                .min_col_width(form::LABEL)
                 .show(ui, |ui| {
-                    ui.label(self.tr.fav_name);
+                    form::label(ui, self.tr.fav_name);
                     ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(field_width));
                     ui.end_row();
 
                     icon_row(ui, self.tr, icons, field_width, &mut draft.icon);
 
-                    ui.label(self.tr.fav_kind);
+                    // A field the file has always had and the form never
+                    // showed. It is where a template puts its hint, which is
+                    // the one sentence that says where the key comes from --
+                    // useful again months later, when the favourite needs
+                    // editing and nobody remembers.
+                    form::label(ui, self.tr.fav_note);
+                    let mut note = draft.note.clone().unwrap_or_default();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut note)
+                                .desired_width(field_width)
+                                .hint_text(self.tr.tip_fav_note),
+                        )
+                        .changed()
+                    {
+                        draft.note = match note.trim().is_empty() {
+                            true => None,
+                            false => Some(note),
+                        };
+                    }
+                    ui.end_row();
+
+                    form::label(ui, self.tr.fav_kind);
                     ui.horizontal(|ui| {
                         let is_program = matches!(draft.tool, Tool::Program { .. });
                         if ui
@@ -4574,11 +4864,14 @@ impl App {
                 });
 
             ui.separator();
+            // Read before the borrow below, because the help at the bottom of
+            // the form asks the catalogue what this service is.
+            let from = draft.from.clone();
             match &mut draft.tool {
                 Tool::Program { path, args } => {
                     program_form(ui, self.tr, path, args, field_width, icons)
                 }
-                Tool::Web(web) => web_form(ui, self.tr, web, field_width),
+                Tool::Web(web) => web_form(ui, self.tr, web, field_width, from.as_deref()),
             }
 
             ui.separator();
@@ -4587,6 +4880,8 @@ impl App {
                 ui.colored_label(ui.visuals().warn_fg_color, fav_fault_text(problem, self.tr));
             }
 
+            // Everything this favourite can have done to it, in one row at
+            // the bottom of its form, in the same order the service form uses.
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let blocked = draft.name.trim().is_empty();
@@ -4599,8 +4894,39 @@ impl App {
                 if ui.button(self.tr.btn_cancel).clicked() {
                     close = true;
                 }
+                if !fresh {
+                    ui.separator();
+                    if ui
+                        .button(self.tr.fav_place)
+                        .on_hover_text(self.tr.tip_fav_place)
+                        .clicked()
+                    {
+                        place = true;
+                    }
+                    if ui
+                        .button(self.tr.fav_remove)
+                        .on_hover_text(self.tr.tip_fav_remove)
+                        .clicked()
+                    {
+                        drop_it = true;
+                    }
+                }
             });
         });
+
+        // Both leave the form without writing the draft.
+        if drop_it {
+            self.dialog = None;
+            self.after_favourite_change(favourites::remove(&draft.id));
+            return;
+        }
+        if place {
+            self.dialog = None;
+            if let Some(index) = self.favourites.iter().position(|old| old.id == draft.id) {
+                self.apply_favourite_action(FavouriteAction::Place(index));
+            }
+            return;
+        }
 
         if save {
             // A web address in the icon field is fetched into a local `.ico`
@@ -6360,6 +6686,9 @@ impl App {
                     {
                         let draft = Favourite {
                             id: String::new(),
+                            // Built here rather than picked from a list, so
+                            // the favourites tab is where it belongs.
+                            from: None,
                             name: group.display_name.clone(),
                             icon: group.icon_ref.clone(),
                             note: None,
@@ -7305,10 +7634,193 @@ fn blank_favourite() -> Favourite {
         name: String::new(),
         icon: None,
         note: None,
+        from: None,
         tool: Tool::Program {
             path: std::path::PathBuf::new(),
             args: String::new(),
         },
+    }
+}
+
+/// The measures every form in this window is built on.
+///
+/// Four numbers and no fifth. Before this each field carried whatever width
+/// looked right while that field was being written -- 420 here, 320 there, 160
+/// and 80 and 50 -- so nothing lined up with anything, and a dialog dragged
+/// wider kept its fields at the size they had when the window was small.
+///
+/// The rule: a field is as wide as what it holds, expressed in what the dialog
+/// has rather than in pixels. An address takes the rest of the row, a name
+/// takes a share of it, a word takes a word's worth.
+mod form {
+    use egui;
+    use egui::Ui;
+
+    /// The label column of a two-column grid.
+    ///
+    /// Wide enough for the longest label either language has: `Name in the
+    /// menu`, `Ergebnis steht in`. A grid works out its own column width from
+    /// the text in it, so two grids under one another end up with two
+    /// different columns and everything below the first one sits shifted --
+    /// which is exactly what happened here. `label` below writes the width
+    /// down instead of letting each grid guess it.
+    pub const LABEL: f32 = 170.0;
+
+    /// A label in the left column, at the one width.
+    ///
+    /// Returns its response so a caller can hang a tooltip on it.
+    pub fn label(ui: &mut Ui, text: &str) -> egui::Response {
+        ui.add_sized(
+            [LABEL, ui.spacing().interact_size.y],
+            egui::Label::new(text).halign(egui::Align::LEFT),
+        )
+    }
+
+    /// A field that holds an address, a command or a sentence: whatever the
+    /// row has left, and never so little that the end of an address cannot be
+    /// seen.
+    pub fn wide(ui: &Ui) -> f32 {
+        ui.available_width().max(MIN)
+    }
+
+    /// A field beside another one on the same row: a header name next to its
+    /// value, a path next to a suffix. `spare` is what the rest of the row
+    /// still needs.
+    pub fn beside(ui: &Ui, spare: f32) -> f32 {
+        (ui.available_width() - spare).max(MIN)
+    }
+
+    /// A field that holds a name, a dotted path, a header name.
+    pub fn part(ui: &Ui) -> f32 {
+        (ui.available_width() * 0.4).clamp(120.0, 320.0)
+    }
+
+    /// A part of a row whose whole width is already known: a name beside its
+    /// value, a path beside a suffix. Shares of one width rather than two
+    /// numbers, so the two add up to the row instead of to whatever they add
+    /// up to.
+    pub fn share(width: f32, part: f32) -> f32 {
+        (width * part).clamp(100.0, 320.0)
+    }
+
+    /// A field that holds one word or one number.
+    pub const SHORT: f32 = 80.0;
+
+    /// What a form dialog is wide, and the reason it stays that way.
+    ///
+    /// Every field here asks for `available_width`, and inside a window that
+    /// is free to grow that is a loop: the field takes what there is, the
+    /// window grows to hold it, and next frame there is more. It ended with
+    /// both dialogs stuck to the edges of the main window. So the content sets
+    /// its own ceiling once, and everything inside measures against that.
+    ///
+    /// Generous rather than tight: an endpoint with a key in its query string
+    /// is a long line, and this is the width at which one is still readable.
+    pub const DIALOG: f32 = 780.0;
+
+    /// Below this an address field shows its middle and nothing else.
+    const MIN: f32 = 160.0;
+}
+
+/// What one small button at the end of a row takes, spacing included.
+///
+/// A field that reaches to the edge pushes its own delete button out of the
+/// dialog, and egui says nothing about it: the button is simply not there any
+/// more.
+const BUTTON_ROOM: f32 = 34.0;
+
+/// Where every catalogue logo sits on disk, resolved once at startup.
+///
+/// In the constructor and not on entering the tab, which is the mistake this
+/// replaced: a window started with `--tab services` never *enters* that tab,
+/// so it drew the whole catalogue without a single picture. The rule is
+/// written down -- whatever a tab needs is read where `settings` is read, and
+/// switching tabs only refreshes it.
+///
+/// The first run writes twenty-one `.ico` files; every run after that finds
+/// them and does nothing. Nothing here reaches the network.
+fn catalogue_logos() -> Vec<(String, String)> {
+    templates::all()
+        .iter()
+        .filter_map(|template| Some((template.id.clone(), template.logo()?)))
+        .chain(service::TEMPLATES.iter().filter_map(|template| {
+            Some((
+                template.logo.to_string(),
+                templates::logo_named(template.logo)?,
+            ))
+        }))
+        .collect()
+}
+
+/// Which logo a set-up service wears, by the name of the template it came
+/// from.
+///
+/// Matched on the name rather than stored: a service is a file the user can
+/// edit by hand, and a field that only the picture depends on is a field that
+/// goes stale without anybody noticing.
+fn logo_of(service: &Service) -> Option<&'static str> {
+    service::TEMPLATES
+        .iter()
+        .find(|template| !template.logo.is_empty() && template.name == service.name.trim())
+        .map(|template| template.logo)
+}
+
+/// The logo in front of a row of the catalogue, or the space where one would
+/// be.
+///
+/// Cheap in the frame path, which is the whole reason the paths are resolved
+/// when the tab is entered: this either hands over a texture that is already
+/// there or queues one request and draws the placeholder. `None`, and an id
+/// with no logo, both come out as empty space of the same width, so the names
+/// stay in one column either way.
+fn catalogue_icon(
+    ui: &mut Ui,
+    icons: &mut IconCache,
+    logos: &[(String, String)],
+    id: Option<&str>,
+) {
+    const SIZE: f32 = 16.0;
+
+    let path = id.and_then(|id| {
+        logos
+            .iter()
+            .find(|(known, _)| known == id)
+            .map(|(_, path)| path.as_str())
+    });
+
+    match path {
+        Some(path) => {
+            let texture = icons.get(path).clone();
+            ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                texture.id(),
+                egui::vec2(SIZE, SIZE),
+            )));
+        }
+        None => {
+            ui.add_space(SIZE + 4.0);
+        }
+    }
+}
+
+/// The draft a service template starts from.
+///
+/// One function rather than the same six lines in the dialog and in the
+/// catalogue beside it: two copies of "what a template fills in" drift, and
+/// the one that drifts is the one nobody opened lately.
+fn service_from_template(template: &service::Template) -> Service {
+    Service {
+        name: template.name.to_string(),
+        // Into the field, not only the hint — asked for on 2026-08-20:
+        // `<host>` stays visible for the user to replace, everything around
+        // it is already right.
+        spec_url: template.address_hint.to_string(),
+        result_path: template.result_path.to_string(),
+        allow_insecure: template.allow_insecure,
+        icon: match template.icon.is_empty() {
+            true => None,
+            false => Some(template.icon.to_string()),
+        },
+        ..blank_service()
     }
 }
 
@@ -7587,7 +8099,7 @@ fn icon_row(
     field_width: f32,
     value: &mut Option<String>,
 ) {
-    ui.label(tr.editor_icon);
+    form::label(ui, tr.editor_icon);
     ui.horizontal(|ui| {
         let mut icon = value.clone().unwrap_or_default();
         let field = ui.add(
@@ -7669,265 +8181,403 @@ fn program_form(
     ui.small(tr.fav_args_hint);
 }
 
-fn web_form(ui: &mut Ui, tr: &'static Strings, web: &mut WebTool, field_width: f32) {
+/// The web half of the favourite form.
+///
+/// One grid for all of it, and that is the whole point. It used to be four
+/// blocks in a row -- a horizontal for the mode, a grid for the upload, two
+/// loose loops for the fields and the headers -- so every block started its
+/// labels wherever it happened to start them, and the header rows began at the
+/// left edge of the dialog while everything above them began a hundred and
+/// fifty pixels in. Reported on 2026-08-21 as "nothing has the same size and
+/// is aligned to anything", which was exactly right.
+///
+/// The rule now: one label column, one content column, and anything that is a
+/// list of its own goes *inside* the content column rather than beside it.
+fn web_form(
+    ui: &mut Ui,
+    tr: &'static Strings,
+    web: &mut WebTool,
+    field_width: f32,
+    from: Option<&str>,
+) {
+    egui::Grid::new("fav-web")
+        .num_columns(2)
+        .spacing([10.0, 8.0])
+        .min_col_width(form::LABEL)
+        .show(ui, |ui| {
+            form::label(ui, tr.fav_mode);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    let current = mode_index(&web.mode);
+                    for (index, label) in
+                        [tr.fav_mode_clipboard, tr.fav_mode_open, tr.fav_mode_upload]
+                            .into_iter()
+                            .enumerate()
+                    {
+                        if ui.selectable_label(current == index, label).clicked()
+                            && current != index
+                        {
+                            let url = current_url(&web.mode);
+                            web.mode = match index {
+                                0 => WebMode::Clipboard { url },
+                                1 => WebMode::Open { url },
+                                _ => WebMode::Upload(Box::new(Upload {
+                                    endpoint: url,
+                                    method: "POST".into(),
+                                    body: UploadBody::Multipart {
+                                        field: "file".into(),
+                                    },
+                                    headers: Vec::new(),
+                                    fields: Vec::new(),
+                                    poll: None,
+                                    result: ResultAction::Report,
+                                })),
+                            };
+                        }
+                    }
+                });
+                // Under the buttons it explains, not under the label of a
+                // different row.
+                ui.small(match &web.mode {
+                    WebMode::Clipboard { .. } => tr.fav_mode_clipboard_hint,
+                    WebMode::Open { .. } => tr.fav_mode_open_hint,
+                    WebMode::Upload(_) => tr.fav_mode_upload_hint,
+                });
+            });
+            ui.end_row();
+
+            match &mut web.mode {
+                WebMode::Clipboard { url } | WebMode::Open { url } => {
+                    form::label(ui, tr.fav_url);
+                    ui.add(
+                        egui::TextEdit::singleline(url)
+                            .desired_width(field_width)
+                            .hint_text(HINT_URL),
+                    );
+                    ui.end_row();
+                }
+                WebMode::Upload(upload) => upload_rows(ui, tr, upload, field_width, from),
+            }
+
+            form::label(ui, "");
+            ui.vertical(|ui| {
+                ui.checkbox(&mut web.allow_insecure, tr.fav_allow_insecure);
+                if web.confirmed {
+                    ui.horizontal(|ui| {
+                        ui.small(tr.fav_confirmed);
+                        if ui.small_button(tr.fav_forget_consent).clicked() {
+                            web.confirmed = false;
+                        }
+                    });
+                }
+            });
+            ui.end_row();
+        });
+}
+
+/// The upload rows, added to the grid the caller opened.
+///
+/// Rows rather than a grid of its own: a second grid inside the first one is
+/// what made the labels of the two disagree about where the fields start.
+fn upload_rows(
+    ui: &mut Ui,
+    tr: &'static Strings,
+    upload: &mut Upload,
+    field_width: f32,
+    from: Option<&str>,
+) {
+    form::label(ui, tr.fav_endpoint);
+    ui.add(
+        egui::TextEdit::singleline(&mut upload.endpoint)
+            .desired_width(field_width)
+            .hint_text(HINT_ENDPOINT),
+    );
+    ui.end_row();
+
+    form::label(ui, tr.fav_method);
     ui.horizontal(|ui| {
-        ui.label(tr.fav_mode);
-        let current = mode_index(&web.mode);
-        for (index, label) in [tr.fav_mode_clipboard, tr.fav_mode_open, tr.fav_mode_upload]
+        for verb in ["POST", "PUT"] {
+            if ui.selectable_label(upload.method == verb, verb).clicked() {
+                upload.method = verb.to_string();
+            }
+        }
+    });
+    ui.end_row();
+
+    form::label(ui, tr.fav_body);
+    ui.horizontal(|ui| {
+        let multipart = matches!(upload.body, UploadBody::Multipart { .. });
+        if ui
+            .selectable_label(multipart, tr.fav_body_multipart)
+            .clicked()
+        {
+            upload.body = UploadBody::Multipart {
+                field: "file".into(),
+            };
+        }
+        if ui.selectable_label(!multipart, tr.fav_body_raw).clicked() {
+            upload.body = UploadBody::Raw;
+        }
+        if let UploadBody::Multipart { field } = &mut upload.body {
+            ui.label(tr.fav_field);
+            ui.add(egui::TextEdit::singleline(field).desired_width(form::share(field_width, 0.3)));
+        }
+    });
+    ui.end_row();
+
+    form::label(ui, tr.fav_result);
+    ui.horizontal(|ui| {
+        let current = result_index(&upload.result);
+        for (index, label) in [tr.fav_result_save, tr.fav_result_open, tr.fav_result_report]
             .into_iter()
             .enumerate()
         {
             if ui.selectable_label(current == index, label).clicked() && current != index {
-                let url = current_url(&web.mode);
-                web.mode = match index {
-                    0 => WebMode::Clipboard { url },
-                    1 => WebMode::Open { url },
-                    _ => WebMode::Upload(Box::new(Upload {
-                        endpoint: url,
-                        method: "POST".into(),
-                        body: UploadBody::Multipart {
-                            field: "file".into(),
-                        },
-                        headers: Vec::new(),
-                        fields: Vec::new(),
-                        poll: None,
-                        result: ResultAction::Report,
-                    })),
+                let source = current_source(&upload.result);
+                upload.result = match index {
+                    0 => ResultAction::Save {
+                        source,
+                        suffix: ".neu".into(),
+                        extension: String::new(),
+                    },
+                    1 => ResultAction::Open { source },
+                    _ => ResultAction::Report,
                 };
             }
         }
     });
+    ui.end_row();
 
-    ui.small(match &web.mode {
-        WebMode::Clipboard { .. } => tr.fav_mode_clipboard_hint,
-        WebMode::Open { .. } => tr.fav_mode_open_hint,
-        WebMode::Upload(_) => tr.fav_mode_upload_hint,
-    });
-    ui.add_space(4.0);
-
-    match &mut web.mode {
-        WebMode::Clipboard { url } | WebMode::Open { url } => {
-            ui.horizontal(|ui| {
-                ui.label(tr.fav_url);
-                ui.add(
-                    egui::TextEdit::singleline(url)
-                        .desired_width(field_width)
-                        .hint_text(HINT_URL),
-                );
+    // Where the answer keeps the result, and what to call it. Two rows rather
+    // than one long one: five buttons and two fields on a single line is what
+    // ran out of the right edge of the dialog.
+    match &mut upload.result {
+        ResultAction::Save {
+            source,
+            suffix,
+            extension,
+        } => {
+            form::label(ui, tr.fav_result_source);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| source_picker(ui, tr, source, field_width));
+                ui.horizontal(|ui| {
+                    ui.label(tr.fav_suffix);
+                    ui.add(egui::TextEdit::singleline(suffix).desired_width(form::SHORT));
+                    // Narrow on purpose and empty for almost everything: only a
+                    // converter answers with a different kind of file than it
+                    // was given.
+                    ui.label(tr.fav_extension)
+                        .on_hover_text(tr.tip_fav_extension);
+                    ui.add(
+                        egui::TextEdit::singleline(extension)
+                            .desired_width(form::SHORT)
+                            .hint_text("pdf"),
+                    );
+                });
             });
+            ui.end_row();
         }
-        WebMode::Upload(upload) => upload_form(ui, tr, upload, field_width),
-    }
-
-    ui.add_space(4.0);
-    ui.checkbox(&mut web.allow_insecure, tr.fav_allow_insecure);
-    if web.confirmed {
-        ui.horizontal(|ui| {
-            ui.small(tr.fav_confirmed);
-            if ui.small_button(tr.fav_forget_consent).clicked() {
-                web.confirmed = false;
-            }
-        });
-    }
-}
-
-fn upload_form(ui: &mut Ui, tr: &'static Strings, upload: &mut Upload, field_width: f32) {
-    egui::Grid::new("fav-upload")
-        .num_columns(2)
-        .spacing([10.0, 6.0])
-        .show(ui, |ui| {
-            ui.label(tr.fav_endpoint);
-            ui.add(
-                egui::TextEdit::singleline(&mut upload.endpoint)
-                    .desired_width(field_width)
-                    .hint_text(HINT_ENDPOINT),
-            );
+        ResultAction::Open { source } => {
+            form::label(ui, tr.fav_result_source);
+            // `horizontal` and not `vertical`: without it the four buttons
+            // stand one under the other and the row grows to four lines.
+            ui.horizontal(|ui| source_picker(ui, tr, source, field_width));
             ui.end_row();
-
-            ui.label(tr.fav_method);
-            ui.horizontal(|ui| {
-                for verb in ["POST", "PUT"] {
-                    if ui.selectable_label(upload.method == verb, verb).clicked() {
-                        upload.method = verb.to_string();
-                    }
-                }
-            });
-            ui.end_row();
-
-            ui.label(tr.fav_body);
-            ui.horizontal(|ui| {
-                let multipart = matches!(upload.body, UploadBody::Multipart { .. });
-                if ui
-                    .selectable_label(multipart, tr.fav_body_multipart)
-                    .clicked()
-                {
-                    upload.body = UploadBody::Multipart {
-                        field: "file".into(),
-                    };
-                }
-                if ui.selectable_label(!multipart, tr.fav_body_raw).clicked() {
-                    upload.body = UploadBody::Raw;
-                }
-                if let UploadBody::Multipart { field } = &mut upload.body {
-                    ui.label(tr.fav_field);
-                    ui.add(egui::TextEdit::singleline(field).desired_width(120.0));
-                }
-            });
-            ui.end_row();
-
-            ui.label(tr.fav_result);
-            ui.horizontal(|ui| {
-                let current = result_index(&upload.result);
-                for (index, label) in [tr.fav_result_save, tr.fav_result_open, tr.fav_result_report]
-                    .into_iter()
-                    .enumerate()
-                {
-                    if ui.selectable_label(current == index, label).clicked() && current != index {
-                        let source = current_source(&upload.result);
-                        upload.result = match index {
-                            0 => ResultAction::Save {
-                                source,
-                                suffix: ".neu".into(),
-                            },
-                            1 => ResultAction::Open { source },
-                            _ => ResultAction::Report,
-                        };
-                    }
-                }
-            });
-            ui.end_row();
-
-            // Where the answer keeps the result, and what to call it.
-            match &mut upload.result {
-                ResultAction::Save { source, suffix } => {
-                    ui.label(tr.fav_result_source);
-                    ui.horizontal(|ui| {
-                        source_picker(ui, tr, source);
-                        ui.label(tr.fav_suffix);
-                        ui.add(egui::TextEdit::singleline(suffix).desired_width(80.0));
-                    });
-                    ui.end_row();
-                }
-                ResultAction::Open { source } => {
-                    ui.label(tr.fav_result_source);
-                    ui.horizontal(|ui| source_picker(ui, tr, source));
-                    ui.end_row();
-                }
-                ResultAction::Report => {}
-            }
-        });
-
-    // The form fields that travel beside the file. This is where a tool's
-    // settings live, and until now they were invisible here: a favourite made
-    // on the services tab carried them, and opening it for editing showed no
-    // trace of them at all.
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(tr.fav_fields).on_hover_text(tr.tip_fav_fields);
-        if ui.small_button(tr.fav_header_add).clicked() {
-            upload.fields.push(Header {
-                name: String::new(),
-                value: String::new(),
-            });
         }
-    });
-
-    let mut drop_field = None;
-    for (index, field) in upload.fields.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut field.name)
-                    .desired_width(160.0)
-                    .hint_text("settings"),
-            );
-            // Multiline: the value is usually JSON, and a single line hides
-            // everything past the first forty characters of it.
-            ui.add(
-                egui::TextEdit::multiline(&mut field.value)
-                    .desired_width(320.0)
-                    .desired_rows(2)
-                    .hint_text(HINT_SETTINGS),
-            );
-            if ui.small_button("\u{00d7}").clicked() {
-                drop_field = Some(index);
-            }
-        });
-    }
-    if let Some(index) = drop_field {
-        upload.fields.remove(index);
+        ResultAction::Report => {}
     }
 
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(tr.fav_headers);
-        if ui.small_button(tr.fav_header_add).clicked() {
-            upload.headers.push(Header {
-                name: String::new(),
-                value: String::new(),
-            });
-        }
-    });
+    // The form fields that travel beside the file, and the headers. Both are
+    // lists inside one cell, so their rows begin where every other field
+    // begins.
+    pairs_row(
+        ui,
+        tr.fav_fields,
+        Some(tr.tip_fav_fields),
+        &mut upload.fields,
+        field_width,
+        PairKind::Field,
+        tr,
+    );
+    pairs_row(
+        ui,
+        tr.fav_headers,
+        None,
+        &mut upload.headers,
+        field_width,
+        PairKind::Header,
+        tr,
+    );
 
-    let mut drop_header = None;
-    for (index, header) in upload.headers.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut header.name)
-                    .desired_width(160.0)
-                    .hint_text("Authorization"),
-            );
-            ui.add(
-                egui::TextEdit::singleline(&mut header.value)
-                    .desired_width(320.0)
-                    .hint_text("Basic \u{2026}"),
-            );
-            if ui.small_button("\u{00d7}").clicked() {
-                drop_header = Some(index);
-            }
-        });
-    }
-    if let Some(index) = drop_header {
-        upload.headers.remove(index);
-    }
-
-    // A worked example, folded away. Every field above is obvious once one of
-    // these has been filled in and impossible to guess before that: which
-    // header carries a key, what a JSON path looks like, why a self-hosted
-    // service on the local network needs the insecure box.
-    ui.add_space(6.0);
+    form::label(ui, "");
     egui::CollapsingHeader::new(tr.editor_help)
         .id_salt("fav-upload-help")
         .default_open(false)
-        .show(ui, |ui| {
-            for (label, value) in [
-                (tr.fav_endpoint, UPLOAD_EXAMPLE_ENDPOINT),
-                (tr.fav_field, UPLOAD_EXAMPLE_FIELD),
-                (tr.fav_headers, UPLOAD_EXAMPLE_HEADER),
-                (tr.fav_source_json, UPLOAD_EXAMPLE_PATH),
-            ] {
-                ui.label(egui::RichText::new(label).weak().small());
-                ui.add(
-                    egui::Label::new(egui::RichText::new(value).monospace())
-                        .selectable(true)
-                        .wrap(),
-                );
-                ui.add_space(4.0);
-            }
-            ui.add(egui::Label::new(tr.fav_help_upload).wrap());
-        });
+        .show(ui, |ui| help_for(ui, tr, from));
+    ui.end_row();
 }
 
-fn source_picker(ui: &mut Ui, tr: &'static Strings, source: &mut ResultSource) {
+/// What the help under the form says.
+///
+/// Two different things, because two different people open it. Somebody who
+/// picked a service from the catalogue wants to know what *this* service does
+/// and where its key comes from -- a worked example built around a service
+/// they did not choose was, in their case, simply the wrong service's
+/// documentation. Somebody filling the form in by hand has no service to be
+/// told about and wants the example.
+fn help_for(ui: &mut Ui, tr: &'static Strings, from: Option<&str>) {
+    if let Some(template) = templates::by_id(from) {
+        ui.label(egui::RichText::new(&template.name).strong());
+        ui.add(egui::Label::new(template.what.shown()).wrap());
+        ui.add_space(6.0);
+
+        ui.label(egui::RichText::new(tr.fav_help_key).weak().small());
+        ui.add(egui::Label::new(template.hint.shown()).wrap());
+        ui.add_space(6.0);
+
+        // `ui.link` plus the shell, because `hyperlink_to` only queues a
+        // command this build has no opener for.
+        if ui.link(&template.home).clicked() {
+            let _ = crate::webtool::shell::open(&template.home);
+        }
+        return;
+    }
+
+    // A worked example, for a form nobody filled in from the catalogue. Every
+    // field above is obvious once one of these has been filled in and
+    // impossible to guess before that: which header carries a key, what a JSON
+    // path looks like, why a self-hosted service on the local network needs the
+    // insecure box.
+    for (label, value) in [
+        (tr.fav_endpoint, UPLOAD_EXAMPLE_ENDPOINT),
+        (tr.fav_field, UPLOAD_EXAMPLE_FIELD),
+        (tr.fav_headers, UPLOAD_EXAMPLE_HEADER),
+        (tr.fav_source_json, UPLOAD_EXAMPLE_PATH),
+    ] {
+        ui.label(egui::RichText::new(label).weak().small());
+        ui.add(
+            egui::Label::new(egui::RichText::new(value).monospace())
+                .selectable(true)
+                .wrap(),
+        );
+        ui.add_space(4.0);
+    }
+    ui.add(egui::Label::new(tr.fav_help_upload).wrap());
+}
+
+/// Which of the two name-and-value lists a row is drawing.
+///
+/// They differ in three details and in nothing else: what the empty fields
+/// suggest, whether the value is one line or two, and whether the Basic button
+/// belongs beside it.
+#[derive(Clone, Copy, PartialEq)]
+enum PairKind {
+    Field,
+    Header,
+}
+
+/// One grid row holding a whole list of name-and-value pairs.
+fn pairs_row(
+    ui: &mut Ui,
+    label: &'static str,
+    tip: Option<&'static str>,
+    pairs: &mut Vec<Header>,
+    field_width: f32,
+    kind: PairKind,
+    tr: &'static Strings,
+) {
+    let response = form::label(ui, label);
+    if let Some(tip) = tip {
+        response.on_hover_text(tip);
+    }
+
+    let mut drop_row = None;
+    ui.vertical(|ui| {
+        let name_width = form::share(field_width, 0.32);
+        // What the value may take: the rest of the row, minus the buttons that
+        // sit behind it. A field that reaches the edge pushes its own delete
+        // button out of the dialog, and egui says nothing about that.
+        let buttons = match kind {
+            PairKind::Field => BUTTON_ROOM,
+            PairKind::Header => BUTTON_ROOM + 46.0,
+        };
+        let value_width = (field_width - name_width - buttons - 10.0).max(120.0);
+
+        for (index, pair) in pairs.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut pair.name)
+                        .desired_width(name_width)
+                        .hint_text(match kind {
+                            PairKind::Field => "settings",
+                            PairKind::Header => "Authorization",
+                        }),
+                );
+                match kind {
+                    // Multiline: the value is usually JSON, and a single line
+                    // hides everything past the first forty characters of it.
+                    PairKind::Field => {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut pair.value)
+                                .desired_width(value_width)
+                                .desired_rows(2)
+                                .hint_text(HINT_SETTINGS),
+                        );
+                    }
+                    PairKind::Header => {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut pair.value)
+                                .desired_width(value_width)
+                                .hint_text("Basic \u{2026}"),
+                        );
+                        // The one thing curl does that this program does not: a
+                        // service whose documentation says `--user api:KEY`
+                        // wants that pair encoded, and encoding it by hand is
+                        // the step people get wrong.
+                        if ui
+                            .small_button(tr.fav_header_basic)
+                            .on_hover_text(tr.tip_fav_header_basic)
+                            .clicked()
+                            && pair.value.contains(':')
+                            && !pair.value.starts_with("Basic ")
+                        {
+                            *pair = favourites::Header::basic(pair.value.trim());
+                        }
+                    }
+                }
+                if ui.small_button("\u{00d7}").clicked() {
+                    drop_row = Some(index);
+                }
+            });
+        }
+
+        if ui.small_button(tr.fav_header_add).clicked() {
+            pairs.push(Header {
+                name: String::new(),
+                value: String::new(),
+            });
+        }
+    });
+    ui.end_row();
+
+    if let Some(index) = drop_row {
+        pairs.remove(index);
+    }
+}
+
+fn source_picker(ui: &mut Ui, tr: &'static Strings, source: &mut ResultSource, field_width: f32) {
     let current = match source {
         ResultSource::Body => 0,
         ResultSource::Location => 1,
         ResultSource::Json { .. } => 2,
+        ResultSource::Built { .. } => 3,
     };
 
     for (index, label) in [
         tr.fav_source_body,
         tr.fav_source_location,
         tr.fav_source_json,
+        tr.fav_source_built,
     ]
     .into_iter()
     .enumerate()
@@ -7936,19 +8586,35 @@ fn source_picker(ui: &mut Ui, tr: &'static Strings, source: &mut ResultSource) {
             *source = match index {
                 0 => ResultSource::Body,
                 1 => ResultSource::Location,
-                _ => ResultSource::Json {
+                2 => ResultSource::Json {
                     path: "output.url".into(),
+                },
+                _ => ResultSource::Built {
+                    url: HINT_BUILT.into(),
                 },
             };
         }
     }
 
-    if let ResultSource::Json { path } = source {
-        ui.add(
-            egui::TextEdit::singleline(path)
-                .desired_width(160.0)
-                .hint_text("output.url"),
-        );
+    match source {
+        ResultSource::Json { path } => {
+            ui.add(
+                egui::TextEdit::singleline(path)
+                    .desired_width(form::share(field_width, 0.32))
+                    .hint_text("output.url"),
+            );
+        }
+        // Wider than the path field beside it: this one holds a whole address
+        // with a field name inside it, and a third of the row would show its
+        // middle.
+        ResultSource::Built { url } => {
+            ui.add(
+                egui::TextEdit::singleline(url)
+                    .desired_width(form::share(field_width, 0.66))
+                    .hint_text(HINT_BUILT),
+            );
+        }
+        _ => {}
     }
 }
 

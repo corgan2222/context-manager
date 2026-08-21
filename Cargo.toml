@@ -92,7 +92,27 @@ resolver = "3"
 # never in the new one. Both sides now come from one normalisation, and the
 # DLL reads either form so that records already on disk work. Nothing stored
 # changed shape and no subcommand moved.
-version = "1.5.1"
+# 1.6.0 on 2026-08-21: a minor, because the program knows services it did not
+# know before. Twenty-one of them ship inside the binary as a JSON file rather
+# than as code, so adding one is a pull request on a text file; the services
+# tab shows them as a catalogue with their logos, grouped, and one click fills
+# in every field but the key. A ShareX `.sxcu` file can be read in as well, and
+# what such a file holds that this program cannot do ends the import with a
+# sentence naming that thing. Five limits went with it: an upload endpoint now
+# takes `{name}`, `{stem}` and `{ext}` and nothing else, which is what a WebDAV
+# or object-storage address needs; a result behind a key can be fetched, but
+# only where it stays on the host the file went to; an address can be built
+# around a field of the answer or around the file's own SHA-256, which is how a
+# service that checks files names its page; a converted file may carry the
+# extension of what came back rather than of what went out; and a header value
+# typed as `user:key` becomes the Basic line curl would have built.
+#
+# One caveat this claim does not cover. `favourites.json` gained optional
+# fields an older version ignores -- `from`, `extension` -- but a favourite
+# whose result reads `"from": "built"` names a value 1.5.1 has never heard of,
+# and that one file will not read there. Forwards is safe: everything 1.5.1
+# wrote reads here unchanged.
+version = "1.6.0"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so

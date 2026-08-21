@@ -150,7 +150,7 @@ export default function HomePage() {
           <ContextMenuArt className="hidden xl:block" />
           <div className="flex max-w-2xl flex-col items-center xl:items-start">
             <span className="mb-5 rounded-full border border-fd-border bg-fd-card px-4 py-1.5 text-sm text-fd-muted-foreground">
-              Windows 10 and 11 · 64-bit · v1.5.0
+              Windows 10 and 11 · 64-bit · v1.5.1 · 21 services built in
             </span>
             <h1 className="text-balance text-4xl font-bold tracking-tight sm:text-6xl">
               Take your right-click menu back

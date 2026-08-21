@@ -208,7 +208,11 @@ pub fn matches_digest(bytes: &[u8], expected: &str) -> bool {
 }
 
 /// SHA-256 as the sixty-four characters people compare by eye.
-fn sha256(input: &[u8]) -> String {
+///
+/// Public because a second caller wants exactly this form: a service that
+/// checks files names its page after the file's own digest, so
+/// `webtool::built` reaches for it when an address template says `{sha256}`.
+pub fn sha256(input: &[u8]) -> String {
     sha256_bytes(input)
         .iter()
         .map(|byte| format!("{byte:02x}"))

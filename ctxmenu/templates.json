@@ -1,0 +1,631 @@
+[
+  {
+    "id": "imgur",
+    "name": "Imgur",
+    "group": "images",
+    "category": "image",
+    "home": "https://imgur.com",
+    "what": {
+      "de": "Bild hochladen, Adresse kommt zurück",
+      "en": "Uploads an image and hands back its address"
+    },
+    "hint": {
+      "de": "Der Client-ID kommt von api.imgur.com und wird hinter „Client-ID “ gesetzt. Mehr braucht ein anonymer Upload nicht.",
+      "en": "The Client-ID comes from api.imgur.com and goes after \"Client-ID \". An anonymous upload needs nothing else."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://api.imgur.com/3/image",
+    "method": "POST",
+    "body": "multipart",
+    "field": "image",
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": "Client-ID "
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "data.link"
+    }
+  },
+  {
+    "id": "imgbb",
+    "name": "ImgBB",
+    "group": "images",
+    "category": "image",
+    "home": "https://imgbb.com",
+    "what": {
+      "de": "Bild hochladen, Adresse kommt zurück",
+      "en": "Uploads an image and hands back its address"
+    },
+    "hint": {
+      "de": "Der Schlüssel steht bei ImgBB in der Adresse, nicht in einer Kopfzeile: hinten an „?key=“ anhängen. Bis 32 MB je Bild.",
+      "en": "ImgBB takes its key in the address rather than in a header: append it to \"?key=\". Up to 32 MB per image."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://api.imgbb.com/1/upload?key=",
+    "method": "POST",
+    "body": "multipart",
+    "field": "image",
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "data.url"
+    }
+  },
+  {
+    "id": "freeimage-host",
+    "name": "Freeimage.host",
+    "group": "images",
+    "category": "image",
+    "home": "https://freeimage.host",
+    "what": {
+      "de": "Bild hochladen, Adresse kommt zurück",
+      "en": "Uploads an image and hands back its address"
+    },
+    "hint": {
+      "de": "Der Schlüssel steht auf der Seite /page/api und gehört hinter „X-API-Key“. Bis 64 MB je Bild. Dieselbe Schnittstelle hat jede Chevereto-Installation.",
+      "en": "The key is on /page/api and goes after \"X-API-Key\". Up to 64 MB per image. Every Chevereto installation speaks the same API."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://freeimage.host/api/1/upload",
+    "method": "POST",
+    "body": "multipart",
+    "field": "source",
+    "headers": [
+      {
+        "name": "X-API-Key",
+        "value": ""
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "image.url"
+    }
+  },
+  {
+    "id": "catbox",
+    "name": "Catbox",
+    "group": "files",
+    "home": "https://catbox.moe",
+    "what": {
+      "de": "Beliebige Datei dauerhaft ablegen, bis 200 MB",
+      "en": "Puts any file up for good, up to 200 MB"
+    },
+    "hint": {
+      "de": "Kein Konto, kein Schlüssel, bis 200 MB. Wer einen Userhash hat, trägt ihn als weiteres Formularfeld „userhash“ ein.",
+      "en": "No account, no key, up to 200 MB. With a userhash, add it as a second form field called \"userhash\"."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://catbox.moe/user/api.php",
+    "method": "POST",
+    "body": "multipart",
+    "field": "fileToUpload",
+    "fields": [
+      {
+        "name": "reqtype",
+        "value": "fileupload"
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "body"
+    }
+  },
+  {
+    "id": "gofile",
+    "name": "Gofile",
+    "group": "files",
+    "home": "https://gofile.io",
+    "what": {
+      "de": "Beliebige Datei ablegen, ohne Konto",
+      "en": "Puts any file up, no account needed"
+    },
+    "hint": {
+      "de": "Kein Konto nötig. Ohne Abruf verschwindet die Datei nach zehn Tagen.",
+      "en": "No account needed. Without a download the file goes after ten days."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://upload.gofile.io/uploadfile",
+    "method": "POST",
+    "body": "multipart",
+    "field": "file",
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "data.downloadPage"
+    }
+  },
+  {
+    "id": "removebg",
+    "name": "remove.bg",
+    "group": "editing",
+    "category": "image",
+    "home": "https://www.remove.bg",
+    "what": {
+      "de": "Hintergrund aus einem Foto entfernen",
+      "en": "Takes the background out of a photo"
+    },
+    "hint": {
+      "de": "Der Schlüssel kommt von remove.bg/api und gehört hinter „X-Api-Key“. Die ersten 50 Aufrufe im Monat sind frei; das Ergebnis wird neben das Original gelegt.",
+      "en": "The key comes from remove.bg/api and goes after \"X-Api-Key\". The first 50 calls a month are free, and the result is written beside the original."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://api.remove.bg/v1.0/removebg",
+    "method": "POST",
+    "body": "multipart",
+    "field": "image_file",
+    "fields": [
+      {
+        "name": "size",
+        "value": "auto"
+      }
+    ],
+    "headers": [
+      {
+        "name": "X-Api-Key",
+        "value": ""
+      }
+    ],
+    "result": "save",
+    "source": {
+      "from": "body"
+    },
+    "suffix": ".nobg",
+    "extension": "png"
+  },
+  {
+    "id": "photoroom",
+    "name": "PhotoRoom",
+    "group": "editing",
+    "category": "image",
+    "home": "https://www.photoroom.com",
+    "what": {
+      "de": "Hintergrund aus einem Foto entfernen",
+      "en": "Takes the background out of a photo"
+    },
+    "hint": {
+      "de": "Der Schlüssel kommt aus dem PhotoRoom-Konto und gehört hinter „x-api-key“. Das Ergebnis wird neben das Original gelegt.",
+      "en": "The key comes from your PhotoRoom account and goes after \"x-api-key\". The result is written beside the original."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://sdk.photoroom.com/v1/segment",
+    "method": "POST",
+    "body": "multipart",
+    "field": "image_file",
+    "headers": [
+      {
+        "name": "x-api-key",
+        "value": ""
+      }
+    ],
+    "result": "save",
+    "source": {
+      "from": "body"
+    },
+    "suffix": ".nobg",
+    "extension": "png"
+  },
+  {
+    "id": "stability-ai",
+    "name": "Stability AI",
+    "group": "editing",
+    "category": "image",
+    "home": "https://stability.ai",
+    "what": {
+      "de": "Bild auf das Vierfache vergrößern",
+      "en": "Enlarges an image four times over"
+    },
+    "hint": {
+      "de": "Vergrößert ein Bild um das Vierfache. Der Schlüssel beginnt mit „sk-“ und gehört hinter „Bearer “. Kostet Punkte je Aufruf.",
+      "en": "Upscales an image four times over. The key starts with \"sk-\" and goes after \"Bearer \". Each call costs credits."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://api.stability.ai/v2beta/stable-image/upscale/fast",
+    "method": "POST",
+    "body": "multipart",
+    "field": "image",
+    "headers": [
+      {
+        "name": "authorization",
+        "value": "Bearer "
+      },
+      {
+        "name": "accept",
+        "value": "image/*"
+      }
+    ],
+    "result": "save",
+    "source": {
+      "from": "body"
+    },
+    "suffix": ".gross"
+  },
+  {
+    "id": "tinypng",
+    "name": "TinyPNG",
+    "group": "editing",
+    "category": "image",
+    "home": "https://tinypng.com",
+    "what": {
+      "de": "PNG und JPEG kleiner rechnen",
+      "en": "Makes a PNG or JPEG smaller"
+    },
+    "hint": {
+      "de": "Die Doku zeigt „--user api:SCHLÜSSEL“. Beides in das Wertfeld tippen und auf „Basic“ drücken — das baut die Kopfzeile. 500 Bilder im Monat sind frei.",
+      "en": "The documentation shows \"--user api:KEY\". Type both into the value field and press \"Basic\", which builds the header line. 500 images a month are free."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://api.tinify.com/shrink",
+    "method": "POST",
+    "body": "raw",
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": ""
+      }
+    ],
+    "result": "save",
+    "source": {
+      "from": "location"
+    },
+    "suffix": ".min"
+  },
+  {
+    "id": "stirling-pdf",
+    "name": "Stirling-PDF",
+    "group": "documents",
+    "home": "https://www.stirlingpdf.com",
+    "what": {
+      "de": "PDF verkleinern, auf dem eigenen Server",
+      "en": "Shrinks a PDF, on a server of your own"
+    },
+    "hint": {
+      "de": "Selbst betrieben: „<host>“ durch den eigenen Rechner ersetzen. Der Schlüssel steht in den Kontoeinstellungen der Instanz und gehört hinter „X-API-KEY“. Über den Dienste-Reiter kommen alle Werkzeuge auf einmal herein.",
+      "en": "Self-hosted: replace \"<host>\" with your own machine. The key is in the instance's account settings and goes after \"X-API-KEY\". The services tab brings in every tool at once instead."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "http://<host>:8080/api/v1/misc/compress-pdf",
+    "method": "POST",
+    "body": "multipart",
+    "field": "fileInput",
+    "fields": [
+      {
+        "name": "optimizeLevel",
+        "value": "5"
+      }
+    ],
+    "headers": [
+      {
+        "name": "X-API-KEY",
+        "value": ""
+      }
+    ],
+    "allow_insecure": true,
+    "result": "save",
+    "source": {
+      "from": "body"
+    },
+    "suffix": ".min"
+  },
+  {
+    "id": "gotenberg",
+    "name": "Gotenberg",
+    "group": "documents",
+    "home": "https://gotenberg.dev",
+    "what": {
+      "de": "Office-Datei in eine PDF wandeln",
+      "en": "Turns an Office document into a PDF"
+    },
+    "hint": {
+      "de": "Selbst betrieben, ohne Anmeldung: „<host>“ ersetzen. Macht aus Office-Dateien eine PDF, deshalb steht bei der Endung „pdf“.",
+      "en": "Self-hosted and unauthenticated: replace \"<host>\". Turns Office documents into a PDF, which is why the extension says \"pdf\"."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "http://<host>:3000/forms/libreoffice/convert",
+    "method": "POST",
+    "body": "multipart",
+    "field": "files",
+    "allow_insecure": true,
+    "result": "save",
+    "source": {
+      "from": "body"
+    },
+    "suffix": "",
+    "extension": "pdf"
+  },
+  {
+    "id": "nutrient",
+    "name": "Nutrient DWS",
+    "group": "documents",
+    "home": "https://www.nutrient.io",
+    "what": {
+      "de": "Datei in eine PDF wandeln",
+      "en": "Turns a file into a PDF"
+    },
+    "hint": {
+      "de": "Der Schlüssel beginnt mit „pdf_live_“ oder „pdf_test_“ und gehört hinter „Bearer “. Das Feld „instructions“ sagt, was geschehen soll; hier steht die einfachste Form, die aus der Datei eine PDF macht.",
+      "en": "The key starts with \"pdf_live_\" or \"pdf_test_\" and goes after \"Bearer \". The \"instructions\" field says what to do; the one here is the simplest form, which turns the file into a PDF."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://api.nutrient.io/build",
+    "method": "POST",
+    "body": "multipart",
+    "field": "document",
+    "fields": [
+      {
+        "name": "instructions",
+        "value": "{\"parts\":[{\"file\":\"document\"}]}"
+      }
+    ],
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": "Bearer "
+      }
+    ],
+    "result": "save",
+    "source": {
+      "from": "body"
+    },
+    "suffix": "",
+    "extension": "pdf"
+  },
+  {
+    "id": "paste-rs",
+    "name": "paste.rs",
+    "group": "text",
+    "category": "text",
+    "home": "https://paste.rs",
+    "what": {
+      "de": "Textdatei teilen, Adresse kommt zurück",
+      "en": "Shares a text file and hands back its address"
+    },
+    "hint": {
+      "de": "Kein Konto, kein Schlüssel. Die Antwort ist die Adresse und sonst nichts. Stark begrenzt, was die Zahl der Aufrufe angeht.",
+      "en": "No account, no key. The answer is the address and nothing else. Heavily rate limited."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://paste.rs/",
+    "method": "POST",
+    "body": "raw",
+    "result": "open",
+    "source": {
+      "from": "body"
+    }
+  },
+  {
+    "id": "bpast",
+    "name": "bpa.st",
+    "group": "text",
+    "category": "text",
+    "home": "https://bpa.st",
+    "what": {
+      "de": "Textdatei teilen, Adresse steht in der Meldung",
+      "en": "Shares a text file; the address is in the report"
+    },
+    "hint": {
+      "de": "Kein Konto, kein Schlüssel. Die Antwort nennt die Adresse in ihrem Text; deshalb steht hier „melden“ und die Adresse steht in der Meldung.",
+      "en": "No account, no key. The answer names the address inside a line of text, which is why this reports rather than opens; the address is in the report."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://bpa.st/curl",
+    "method": "POST",
+    "body": "multipart",
+    "field": "raw",
+    "result": "report"
+  },
+  {
+    "id": "gitea",
+    "name": "Gitea",
+    "group": "development",
+    "home": "https://about.gitea.com",
+    "what": {
+      "de": "Datei an ein Issue hängen",
+      "en": "Attaches the file to an issue"
+    },
+    "hint": {
+      "de": "Hängt die Datei an ein Issue. In der Adresse „<host>“, „<owner>“, „<repo>“ und die Nummer ersetzen; der Token kommt aus den Kontoeinstellungen und gehört hinter „token “.",
+      "en": "Attaches the file to an issue. Replace \"<host>\", \"<owner>\", \"<repo>\" and the number in the address; the token comes from your account settings and goes after \"token \"."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://<host>/api/v1/repos/<owner>/<repo>/issues/1/assets",
+    "method": "POST",
+    "body": "multipart",
+    "field": "attachment",
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": "token "
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "browser_download_url"
+    }
+  },
+  {
+    "id": "forgejo",
+    "name": "Forgejo",
+    "group": "development",
+    "home": "https://forgejo.org",
+    "what": {
+      "de": "Datei an ein Issue hängen",
+      "en": "Attaches the file to an issue"
+    },
+    "hint": {
+      "de": "Wie Gitea, dieselbe Schnittstelle. „<host>“, „<owner>“, „<repo>“ und die Nummer ersetzen, Token hinter „token “.",
+      "en": "The same API as Gitea. Replace \"<host>\", \"<owner>\", \"<repo>\" and the number, and put the token after \"token \"."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://<host>/api/v1/repos/<owner>/<repo>/issues/1/assets",
+    "method": "POST",
+    "body": "multipart",
+    "field": "attachment",
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": "token "
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "browser_download_url"
+    }
+  },
+  {
+    "id": "zipline",
+    "name": "Zipline",
+    "group": "development",
+    "home": "https://zipline.diced.sh",
+    "what": {
+      "de": "Datei auf den eigenen Hoster legen",
+      "en": "Puts the file on a host of your own"
+    },
+    "hint": {
+      "de": "Eigener Datei-Hoster. „<host>“ ersetzen; der Token steht in den eigenen Einstellungen und kommt ohne Wort davor in die Kopfzeile.",
+      "en": "A file host of your own. Replace \"<host>\"; the token is in your own settings and goes into the header with no word in front of it."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://<host>/api/upload",
+    "method": "POST",
+    "body": "multipart",
+    "field": "file",
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": ""
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "json",
+      "path": "files.0.url"
+    }
+  },
+  {
+    "id": "nextcloud",
+    "name": "Nextcloud",
+    "group": "storage",
+    "home": "https://nextcloud.com",
+    "what": {
+      "de": "Datei in die eigene Nextcloud legen",
+      "en": "Puts the file into your own Nextcloud"
+    },
+    "hint": {
+      "de": "Legt die Datei über WebDAV ab. „<host>“ und „<benutzer>“ ersetzen, „{name}“ stehen lassen — das ist der Dateiname. Für die Kopfzeile „benutzer:app-passwort“ tippen und auf „Basic“ drücken; das App-Passwort steht unter Einstellungen, Sicherheit.",
+      "en": "Puts the file into WebDAV. Replace \"<host>\" and \"<user>\" and leave \"{name}\" alone, which is the file name. For the header type \"user:app-password\" and press \"Basic\"; the app password is under Settings, Security."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://<host>/remote.php/dav/files/<user>/{name}",
+    "method": "PUT",
+    "body": "raw",
+    "headers": [
+      {
+        "name": "Authorization",
+        "value": ""
+      }
+    ],
+    "result": "report"
+  },
+  {
+    "id": "bunny",
+    "name": "Bunny Storage",
+    "group": "storage",
+    "home": "https://bunny.net",
+    "what": {
+      "de": "Datei in eine Storage Zone legen",
+      "en": "Puts the file into a storage zone"
+    },
+    "hint": {
+      "de": "„<region>“ und „<zone>“ ersetzen, „{name}“ stehen lassen. Das Passwort der Storage Zone steht unter „FTP & API Access“ und gehört hinter „AccessKey“. Die öffentliche Adresse kommt von der Pull Zone, nicht aus der Antwort.",
+      "en": "Replace \"<region>\" and \"<zone>\" and leave \"{name}\" alone. The storage zone's password is under \"FTP & API Access\" and goes after \"AccessKey\". The public address comes from the pull zone, not from the answer."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://<region>.storage.bunnycdn.com/<zone>/{name}",
+    "method": "PUT",
+    "body": "raw",
+    "headers": [
+      {
+        "name": "AccessKey",
+        "value": ""
+      }
+    ],
+    "result": "report"
+  },
+  {
+    "id": "minio",
+    "name": "MinIO",
+    "group": "storage",
+    "home": "https://min.io",
+    "what": {
+      "de": "Datei in einen offenen Eimer legen",
+      "en": "Puts the file into an open bucket"
+    },
+    "hint": {
+      "de": "Nur für einen Eimer, den der Betreiber auf „upload“ freigegeben hat: „mc anonymous set upload <alias>/<eimer>“. Signierte Anfragen kann dieses Programm nicht. „<host>“ und „<eimer>“ ersetzen, „{name}“ stehen lassen.",
+      "en": "Only for a bucket the operator has opened with \"mc anonymous set upload <alias>/<bucket>\"; this program cannot sign requests. Replace \"<host>\" and \"<bucket>\" and leave \"{name}\" alone."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://<host>/<bucket>/{name}",
+    "method": "PUT",
+    "body": "raw",
+    "result": "report"
+  },
+  {
+    "id": "virustotal",
+    "name": "VirusTotal",
+    "group": "security",
+    "home": "https://www.virustotal.com",
+    "what": {
+      "de": "Datei prüfen lassen, Bericht geht auf",
+      "en": "Has the file checked; the report opens"
+    },
+    "hint": {
+      "de": "Der Schlüssel steht im eigenen VirusTotal-Profil und gehört hinter „x-apikey“. Die freie Stufe erlaubt vier Anfragen je Minute und 500 am Tag und ist nicht für gewerbliche Produkte gedacht; bis 32 MB je Datei. Die Adresse wird aus dem SHA-256 der Datei gebaut, nicht aus der Antwort — die Antwort nennt nur eine Auftragsnummer.",
+      "en": "The key is in your own VirusTotal profile and goes after \"x-apikey\". The free tier allows four requests a minute and 500 a day and is not meant for commercial products; up to 32 MB per file. The address is built from the file's own SHA-256 rather than from the answer, which names nothing but a job id."
+    },
+    "kind": "web",
+    "mode": "upload",
+    "endpoint": "https://www.virustotal.com/api/v3/files",
+    "method": "POST",
+    "body": "multipart",
+    "field": "file",
+    "headers": [
+      {
+        "name": "x-apikey",
+        "value": ""
+      }
+    ],
+    "result": "open",
+    "source": {
+      "from": "built",
+      "url": "https://www.virustotal.com/gui/file/{sha256}"
+    }
+  }
+]
