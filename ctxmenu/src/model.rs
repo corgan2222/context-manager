@@ -171,6 +171,36 @@ impl Category {
             .cloned()
     }
 
+    /// The same category with every extension in the form the registry uses:
+    /// leading dot, lowercase.
+    ///
+    /// A user types `png` as readily as `.png`, and both used to survive into
+    /// the record. The registry path did not care — `check_ext` normalised on
+    /// the way there — but `entries.json` kept the raw text, and the Windows
+    /// 11 handler compares it against an extension that carries its dot. The
+    /// entry then worked in the classic menu and was invisible in the new
+    /// one. Normalising here rather than at each text field is deliberate:
+    /// there were three fields and it was missing from all three.
+    ///
+    /// Input this cannot make sense of is returned untouched. Refusing is
+    /// `check_ext`'s job, and it does it with a message; a silent drop here
+    /// would take the error text away from the user.
+    pub fn normalized(&self) -> Category {
+        let ext = |raw: &String| {
+            crate::registry::filetypes::normalize_ext(raw).unwrap_or_else(|| raw.clone())
+        };
+        match self {
+            Category::ExtAssoc(raw) => Category::ExtAssoc(ext(raw)),
+            Category::ExtDirect(raw) => Category::ExtDirect(ext(raw)),
+            Category::ProgId { prog_id, from_ext } => Category::ProgId {
+                prog_id: prog_id.clone(),
+                from_ext: ext(from_ext),
+            },
+            Category::PerceivedType(kind) => Category::PerceivedType(kind.trim().to_lowercase()),
+            other => other.clone(),
+        }
+    }
+
     /// What this entry applies to, in the shortest form that still says it.
     ///
     /// The column a user actually needs when one program registers itself

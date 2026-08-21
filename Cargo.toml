@@ -73,7 +73,26 @@ resolver = "3"
 # fetched once into a local `.ico`. Everything stored still reads back:
 # entries.json, favourites.json and services.json only grew optional fields
 # an older version ignores.
-version = "1.5.0"
+# 1.5.1 on 2026-08-21: a patch, because the handler from 1.5.0 asked the wrong
+# witness. `is_installed` read one key under `PackagedCom`, which the
+# deployment stack leaves behind when a registration goes away -- so the
+# checkbox claimed the package was registered while the upper menu showed
+# nothing, and switching it off ran into the same stale key and snapped back.
+# Measured on a Windows 11 VM on 2026-08-21: `Get-AppxPackage ctxmenu.Menu`
+# found nothing while `ctxmenu.Menu_1.0.0.0_x64__0fw22dw1vr2nw` still stood in
+# the key, and the AppXDeploymentServer log named the moment Windows itself
+# removed the package (07:04:46, `RemoveForUserProfileDeletion`) six hours
+# after a registration nobody had touched since. The question now goes to
+# `PackageManager`, the stale key is cleared when it disagrees, removing no
+# longer asks for rights it does not need, and the DLL stops claiming it can
+# never be unloaded. A second fault with the same symptom went with it: an
+# extension typed without its dot was normalised on the way to the registry
+# and stored raw in entries.json, so `png` built the right key and a record
+# the handler could not match -- the entry showed in the classic menu and
+# never in the new one. Both sides now come from one normalisation, and the
+# DLL reads either form so that records already on disk work. Nothing stored
+# changed shape and no subcommand moved.
+version = "1.5.1"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
@@ -121,6 +140,14 @@ features = [
     # go together: a toast is an `XmlDocument` before it is anything else.
     "UI_Notifications",
     "Data_Xml_Dom",
+    # WinRT again, and this time it is the only honest answer available. The
+    # question "is the handler package registered for this user" was read off
+    # `PackagedCom` until 1.5.1, and that key survives a registration by hours
+    # (measured 2026-08-21). `PackageManager` asks the deployment stack itself.
+    # Foundation_Collections comes with it: the result is an `IIterable`.
+    "Management_Deployment",
+    "Foundation_Collections",
+    "ApplicationModel",
 
     "Win32_Foundation",
     "Win32_Globalization",             # GetUserDefaultUILanguage

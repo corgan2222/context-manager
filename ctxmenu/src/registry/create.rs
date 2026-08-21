@@ -521,6 +521,18 @@ pub fn category_is_creatable(category: &Category) -> bool {
 }
 
 impl NewEntry {
+    /// The same entry with its category normalised.
+    ///
+    /// See [`Category::normalized`]. Applied once in [`create_in`], where it
+    /// covers the registry path and the record together; the three text
+    /// fields in the window that build a category never have to remember.
+    fn normalized(&self) -> NewEntry {
+        NewEntry {
+            category: self.category.normalized(),
+            ..self.clone()
+        }
+    }
+
     /// Where this entry will live.
     pub fn target(&self) -> Result<RegTarget> {
         let relative = category_relative(&self.category)?;
@@ -628,6 +640,16 @@ pub fn create(entry: &NewEntry) -> Result<Created> {
 /// The same, recording into a named file, so that "the entry is written even
 /// when the record cannot be" can be tested without a full disk.
 fn create_in(file: &Path, entry: &NewEntry) -> Result<Created> {
+    // One normalisation, before anything reads the category, so that the key
+    // and the record cannot disagree about what the user typed. Until 1.5.1
+    // only the key was normalised — inside `category_relative`, by way of
+    // `check_ext` — while `record_in` stored the raw text. Typing `png`
+    // instead of `.png` therefore wrote the key
+    // `SystemFileAssociations\.png\shell` and the record `{"ExtAssoc":"png"}`,
+    // and the Windows 11 handler matches that against an extension that
+    // carries its dot. The entry worked in the classic menu and never showed
+    // in the new one.
+    let entry = &entry.normalized();
     let problems = check(entry);
     if let Some(error) = problems.iter().find(|p| p.is_error()) {
         bail!("{}", error.message());
@@ -1018,6 +1040,49 @@ mod tests {
             from_ext: ".png".into(),
         }));
         assert!(!category_is_creatable(&Category::CommandStore));
+    }
+
+    /// Regression: the key was normalised, the record was not.
+    ///
+    /// `category_relative` puts every extension through `check_ext` on the
+    /// way to the registry, so typing `png` produced the correct key
+    /// `SystemFileAssociations\.png\shell`. `record_in` stored the entry as
+    /// typed, so `entries.json` got `{"ExtAssoc":"png"}` — and the Windows 11
+    /// handler compares that against an extension carrying its dot. The entry
+    /// showed in the classic menu and never in the new one.
+    ///
+    /// Both halves come from one normalisation now, and this asserts they
+    /// agree rather than that either is correct on its own.
+    #[test]
+    fn the_recorded_extension_has_the_same_form_as_the_registry_key() {
+        for typed in ["png", ".png", ".PNG", "*.png", "  PNG  "] {
+            let fixed = entry(Category::ExtAssoc(typed.into()), "notepad.exe").normalized();
+
+            assert_eq!(
+                fixed.category,
+                Category::ExtAssoc(".png".into()),
+                "typed {typed:?}"
+            );
+            let path = fixed.target().expect("a valid extension").full_path();
+            assert!(
+                path.contains(r"SystemFileAssociations\.png\shell"),
+                "typed {typed:?} produced the key {path}"
+            );
+        }
+    }
+
+    /// Normalising must not swallow input that is not an extension at all.
+    /// Refusing is `check_ext`'s job, and it refuses with a message the user
+    /// can read; a silent drop here would replace that with nothing.
+    #[test]
+    fn unusable_input_survives_normalisation_so_the_check_can_refuse_it() {
+        for typed in ["", "   ", ".", "a b"] {
+            let fixed = entry(Category::ExtAssoc(typed.into()), "notepad.exe").normalized();
+            assert!(
+                !category_is_creatable(&fixed.category),
+                "typed {typed:?} must still be refused, not quietly repaired"
+            );
+        }
     }
 
     fn entry(category: Category, command: &str) -> NewEntry {
