@@ -7,15 +7,10 @@ export default function Layout({ children }: LayoutProps<'/docs'>) {
 
   return (
     // No footer under the page list. fumadocs draws one as soon as it has
-    // something to put there — the theme switch, or an icon link built from
-    // `githubUrl` — so both are dropped here rather than hidden with CSS. Both
-    // still sit in the header of the landing page, which is where a reader
-    // looks for them.
-    <DocsLayout
-      tree={source.getPageTree()}
-      {...base}
-      themeSwitch={{ enabled: false }}
-    >
+    // something to put there, and the icon link built from `githubUrl` is the
+    // last thing left that would fill it. The link still sits in the header of
+    // the landing page.
+    <DocsLayout tree={source.getPageTree()} {...base}>
       {children}
     </DocsLayout>
   );
