@@ -14,7 +14,9 @@ Werkzeugen aus einer einzigen Adresse**, wenn eine Webanwendung sich selbst
 über OpenAPI beschreibt.
 
 Windows 10 und 11, 64 Bit. Eine einzelne `.exe`, in Rust geschrieben, ohne Installation,
-ohne Laufzeitbibliothek, ohne Dienst im Hintergrund.
+ohne Laufzeitbibliothek, ohne Dienst im Hintergrund. Die [jüngste
+Veröffentlichung](https://github.com/corgan2222/context-manager/releases/latest)
+trägt `ctxmenu.exe`, ein Zip daneben und die Prüfsummen, die beide signieren.
 
 *A manager for the Windows context menu. German and English interface,
 switchable at runtime; this README is German only.*
@@ -30,12 +32,13 @@ markiert, was sich ohne Administratorrechte nicht ändern lässt.*
 
 ## Was es kann
 
-- **Alles sehen.** Die sieben Basis-Kategorien (Dateien, Ordner,
-  Ordner-Hintergrund, Desktop-Hintergrund, Laufwerke, Dateisystemobjekte und
-  der Shell-Namensraum) über drei Registry-Bereiche: `HKCU`, `HKLM` und die
-  32-Bit-Sicht `WOW6432Node`. Auf einer gewachsenen Maschine kommen diese
-  sieben auf rund 130 Einträge; löst man zusätzlich jeden Dateityp auf,
-  erreicht der ganze Scan rund 930. Statische Verben und COM-Handler getrennt
+- **Alles sehen.** Die elf Basis-Kategorien (Dateien, Dateien ohne
+  Zuordnung, Ordner, Ordner-Hintergrund, die drei Ordner-Inhaltsmenüs für
+  Musik, Bilder und Video, Desktop-Hintergrund, Laufwerke,
+  Dateisystemobjekte und der Shell-Namensraum) über drei Registry-Bereiche:
+  `HKCU`, `HKLM` und die 32-Bit-Sicht `WOW6432Node`. Auf einer gewachsenen
+  Maschine kommen diese elf auf rund 140 Einträge; löst man zusätzlich jeden
+  Dateityp auf, erreicht der ganze Scan rund 940. Statische Verben und COM-Handler getrennt
   ausgewiesen: ein Verb ist ein Schlüssel mit einem Befehl, ein COM-Handler
   eine CLSID, hinter der eine DLL steckt, und für den Handler zeigt das
   Programm den Klarnamen der CLSID und die DLL dahinter. Dazu Windows' eigener
@@ -53,7 +56,7 @@ markiert, was sich ohne Administratorrechte nicht ändern lässt.*
   eine kuratierte Auswahl von 98 Typen; ein Feld darüber nimmt jede weitere
   Endung auf, die dann gespeichert bleibt. Wer alles sehen will, drückt
   *Alle installierten* — auf einem gewachsenen Rechner sind das weit über
-  tausend Typen statt 98; auf dem, an dem das hier entsteht, 1674. Entsprechend
+  tausend Typen statt 98; auf dem, an dem das hier entsteht, 1739. Entsprechend
   länger dauert das Einlesen.
 - **Nach Programm gruppieren.** Ein Programm, das sich in zwanzig Dateitypen
   einträgt, erscheint als **eine** Gruppe mit allen Vorkommen — mit seinem
@@ -125,13 +128,24 @@ markiert, was sich ohne Administratorrechte nicht ändern lässt.*
 - **Den Text eines COM-Handlers ändern.** Der entsteht zur Laufzeit in
   `IContextMenu::QueryContextMenu` und steht nirgends in der Registry. Gezeigt
   werden Schlüsselname, Klarname der CLSID und die DLL dahinter.
-- **Das neue Windows-11-Hauptmenü umbauen.** Das Werkzeug arbeitet am
-  klassischen Menü („Weitere Optionen anzeigen"), das Windows 11 weiterhin
-  vollständig führt. Was es sehr wohl kann: den Explorer ganz auf dieses
-  klassische Menü umstellen — siehe *Loslegen*.
+- **Das neue Windows-11-Menü sortieren.** Seine Einträge stehen in der
+  Liste, lassen sich verstecken und selbst anlegen wie die klassischen —
+  wo einer davon oben erscheint, entscheidet aber Windows: weder das
+  Manifest noch die Registry verschiebt ihn. Sortieren bleibt eine
+  Fähigkeit des klassischen Menüs.
+- **An die Befehle kommen, die der Explorer selbst einbaut.** „An mein
+  Smartphone senden" und seinesgleichen tragen überhaupt keine
+  Registrierung: kein Paket-Manifest, keine COM-Registrierung, kein Verb,
+  gemessen auf Windows 11 Build 26200. Was nicht registriert ist, lässt
+  sich weder listen noch über die Sperrliste ausblenden — dafür gibt es
+  die Windows-Einstellungen.
 - **Die Reihenfolge frei bestimmen.** Windows sortiert die Unterschlüssel
-  alphabetisch und kennt nur die groben Blöcke `Position=Top` und
-  `Position=Bottom`. Beides ist nachgemessen; mehr gibt das System nicht her.
+  alphabetisch. Der einzige Hebel daneben ist `Position`, und der ist eine
+  freie Zeichenkette statt einer Wahl aus zweien: `Top` und `Bottom`
+  verhalten sich vorhersagbar, Microsoft selbst liefert `Last` und `After`
+  samt `PositionCompare`-GUID aus. Nachgemessen; feiner gibt das System
+  nichts her. Ausnahme sind Untermenüs aus eigener Hand, deren Kinder das
+  Werkzeug beim Schreiben durchnummeriert.
 - **Gescannte Einträge bearbeiten.** Das Formular zeigt alles, was in der
   Registry steht, schreibt aber noch nichts zurück. Selbst angelegte Einträge
   sind davon nicht betroffen.
@@ -140,7 +154,9 @@ markiert, was sich ohne Administratorrechte nicht ändern lässt.*
 
 ## Loslegen
 
-Es gibt keinen Installer. Die `.exe` starten reicht.
+Es gibt keinen Installer. `ctxmenu.exe` aus der [jüngsten
+Veröffentlichung](https://github.com/corgan2222/context-manager/releases/latest)
+laden und starten.
 
 ```
 ctxmenu.exe
