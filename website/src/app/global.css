@@ -47,3 +47,303 @@ html > body[data-scroll-locked] {
     radial-gradient(60rem 30rem at 50% -10%, color-mix(in oklab, #006fee 18%, transparent), transparent),
     radial-gradient(40rem 20rem at 80% 0%, color-mix(in oklab, #7828c8 12%, transparent), transparent);
 }
+
+/* The hero artwork. Layout numbers come from the design canvas the piece was
+ * drawn in; they are absolute on purpose, because the drawing is one fixed
+ * composition rather than a component that reflows. It is shown from the xl
+ * breakpoint up, where 640px of it fit beside the headline. */
+.ctx-art {
+  position: relative;
+  width: 640px;
+  height: 600px;
+  flex: none;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  color: #e8eaee;
+}
+
+.ctx-glow {
+  position: absolute;
+  left: 90px;
+  top: 40px;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(91, 135, 221, 0.28) 0%, rgba(91, 135, 221, 0) 65%);
+  filter: blur(40px);
+  animation: ctxGlow 8s ease-in-out infinite;
+}
+
+.ctx-before {
+  position: absolute;
+  left: 6px;
+  top: 0;
+  width: 292px;
+  box-sizing: border-box;
+  background: #23262e;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  padding: 5px 4px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  transform: rotate(-1.6deg) scale(0.985);
+  transform-origin: top left;
+  filter: blur(2.1px) saturate(0.7) brightness(0.82);
+  animation: ctxFade 9s ease-in-out infinite;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.ctx-before-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 25px;
+  padding: 0 10px 0 30px;
+  font-size: 12.5px;
+  color: #aeb4bf;
+}
+
+.ctx-before-row:first-child {
+  color: #b3b9c4;
+  font-weight: 600;
+}
+
+.ctx-arrow {
+  color: #7d8492;
+}
+
+.ctx-rule {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 4px 7px;
+}
+
+.ctx-before .ctx-rule {
+  background: rgba(255, 255, 255, 0.06);
+  margin: 3px 6px;
+}
+
+/* The perspective is what keeps the two menus from reading as one flat stack. */
+.ctx-tilt {
+  position: absolute;
+  left: 196px;
+  top: 56px;
+  transform: perspective(1500px) rotateY(-4deg) rotateX(1.5deg);
+}
+
+.ctx-menu {
+  width: 340px;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(44, 48, 59, 0.96), rgba(33, 37, 47, 0.97));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow:
+    0 30px 70px rgba(0, 0, 0, 0.6),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  animation: ctxFloat 7s ease-in-out infinite;
+}
+
+.ctx-verbs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.ctx-verb {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 0 7px 0;
+  border-radius: 5px;
+  color: #cdd2da;
+  font-size: 11px;
+}
+
+.ctx-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 36px;
+  padding: 0 9px;
+  border-radius: 5px;
+  overflow: hidden;
+  font-size: 14px;
+}
+
+.ctx-row-mine {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ctx-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: flex;
+  color: #c3c9d4;
+}
+
+.ctx-row-mine .ctx-icon {
+  color: #9cc0ff;
+}
+
+.ctx-label {
+  flex: 1;
+  white-space: nowrap;
+}
+
+.ctx-hint {
+  margin-left: auto;
+  display: flex;
+  font-size: 12px;
+  color: #8b92a0;
+}
+
+.ctx-tag {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  flex: none;
+  color: #9aa0ab;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.ctx-tag-mine {
+  color: #9cc0ff;
+  background: rgba(91, 135, 221, 0.16);
+  border-color: rgba(91, 135, 221, 0.38);
+  padding: 2px 8px;
+}
+
+.ctx-tag-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  color: #9aa0ab;
+}
+
+.ctx-cursor {
+  position: absolute;
+  left: 366px;
+  top: 372px;
+  z-index: 4;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+  animation: ctxCurIn 14s ease-in-out infinite;
+}
+
+.ctx-toast {
+  position: absolute;
+  left: 218px;
+  top: 524px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 16px 11px 12px;
+  background: rgba(24, 28, 36, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.ctx-toast-mark {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(91, 135, 221, 0.18);
+  border: 1px solid rgba(91, 135, 221, 0.4);
+  color: #9cc0ff;
+}
+
+.ctx-toast-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ctx-toast-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e7e9ee;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+.ctx-toast-path {
+  font-size: 11px;
+  color: #8b91a0;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+}
+
+/* The fourteen-second loop: the antivirus entry folds away, the two own
+ * entries unfold in its place, the cursor appears while they are there. */
+@keyframes ctxGlow {
+  0%,
+  100% { opacity: 0.55; }
+  50% { opacity: 0.85; }
+}
+
+@keyframes ctxFloat {
+  0%,
+  100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes ctxFade {
+  0%,
+  100% { opacity: 0.5; }
+  50% { opacity: 0.34; }
+}
+
+@keyframes ctxAvOut {
+  0%,
+  12% { height: 36px; opacity: 1; }
+  15% { height: 24px; opacity: 0.42; }
+  21%,
+  88% { height: 0; opacity: 0; }
+  96%,
+  100% { height: 36px; opacity: 1; }
+}
+
+@keyframes ctxSxIn {
+  0%,
+  32% { height: 0; opacity: 0; }
+  40%,
+  88% { height: 36px; opacity: 1; }
+  96%,
+  100% { height: 0; opacity: 0; }
+}
+
+@keyframes ctxPsIn {
+  0%,
+  50% { height: 0; opacity: 0; }
+  58%,
+  88% { height: 36px; opacity: 1; }
+  96%,
+  100% { height: 0; opacity: 0; }
+}
+
+@keyframes ctxCurIn {
+  0%,
+  32% { opacity: 0; }
+  40%,
+  88% { opacity: 1; }
+  96%,
+  100% { opacity: 0; }
+}
+
+/* Whoever asked their system for less motion gets the finished state: all
+ * three entries present, nothing folding. */
+@media (prefers-reduced-motion: reduce) {
+  .ctx-art *,
+  .ctx-art {
+    animation: none !important;
+  }
+}
