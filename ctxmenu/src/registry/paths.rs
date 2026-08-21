@@ -13,6 +13,13 @@ pub enum SourceKind {
     /// `…\shell` — verbs with display text and command line in the registry.
     Shell,
     /// `…\shellex\ContextMenuHandlers` — CLSIDs of COM handlers.
+    ///
+    /// Only `ContextMenuHandlers` is read, on purpose: the sibling shellex
+    /// kinds feed the properties dialog (`PropertySheetHandlers`), the copy
+    /// pipeline (`CopyHookHandlers`), the right-drag menu
+    /// (`DragDropHandlers` — a different menu than the right-click, decided
+    /// out) and pre-Vista column providers (`ColumnHandlers`, dead since
+    /// Vista). None of them builds the menu this program manages.
     ShellEx,
 }
 
@@ -99,6 +106,18 @@ impl Location {
 /// carry `shellex\ContextMenuHandlers` subkeys in practice — 7-Zip registers
 /// under `Folder\shellex` on this machine. Scanning a superset costs one
 /// failed key open when a location is absent.
+///
+/// What is deliberately *not* here, decided after comparing this list
+/// against ShellMenuView and Autoruns: `AudioCD`, `DVD` and `NetServer`
+/// (real menus, but hardware-bound and rare), `AllSyncRootObjects` (visible
+/// OneDrive verbs, DelegateExecute plumbing throughout), and the Home-view
+/// plumbing (`FrequentPlace`, `RecentDocument` and kin) — none of it is
+/// something this program should manage. The library family
+/// (`LibraryFolder`, `LibraryFolder\background`, `UserLibraryFolder`)
+/// carries real handlers on Windows 11 but sits behind a sidebar entry
+/// hidden by default since Windows 10, and stays out with them. `Unknown`
+/// and the three `SystemFileAssociations\Directory.*` folder menus are in:
+/// ordinary user menus that third parties extend.
 pub fn base_sources() -> Vec<CategorySource> {
     use Category::*;
     use SourceKind::*;
@@ -112,12 +131,44 @@ pub fn base_sources() -> Vec<CategorySource> {
             r"AllFilesystemObjects\shellex\ContextMenuHandlers",
             ShellEx,
         ),
+        (Unknown, r"Unknown\shell", Shell),
+        (Unknown, r"Unknown\shellex\ContextMenuHandlers", ShellEx),
         (Directory, r"Directory\shell", Shell),
         (Directory, r"Directory\shellex\ContextMenuHandlers", ShellEx),
         (DirectoryBackground, r"Directory\Background\shell", Shell),
         (
             DirectoryBackground,
             r"Directory\Background\shellex\ContextMenuHandlers",
+            ShellEx,
+        ),
+        (
+            DirectoryAudio,
+            r"SystemFileAssociations\Directory.Audio\shell",
+            Shell,
+        ),
+        (
+            DirectoryAudio,
+            r"SystemFileAssociations\Directory.Audio\shellex\ContextMenuHandlers",
+            ShellEx,
+        ),
+        (
+            DirectoryImage,
+            r"SystemFileAssociations\Directory.Image\shell",
+            Shell,
+        ),
+        (
+            DirectoryImage,
+            r"SystemFileAssociations\Directory.Image\shellex\ContextMenuHandlers",
+            ShellEx,
+        ),
+        (
+            DirectoryVideo,
+            r"SystemFileAssociations\Directory.Video\shell",
+            Shell,
+        ),
+        (
+            DirectoryVideo,
+            r"SystemFileAssociations\Directory.Video\shellex\ContextMenuHandlers",
             ShellEx,
         ),
         (Folder, r"Folder\shell", Shell),
@@ -680,5 +731,24 @@ mod tests {
             display_path(Scope::User, r"Directory\shell"),
             r"HKCU\SOFTWARE\Classes\Directory\shell"
         );
+    }
+
+    /// The locations the ShellMenuView comparison added: `Unknown` and the
+    /// three folder-content menus. Pinned by full path so a later cleanup
+    /// cannot quietly fold them into the wrong parent.
+    #[test]
+    fn the_compared_in_locations_point_where_the_shell_reads() {
+        let sources = base_sources();
+        for expected in [
+            r"Unknown\shell",
+            r"SystemFileAssociations\Directory.Audio\shell",
+            r"SystemFileAssociations\Directory.Image\shell",
+            r"SystemFileAssociations\Directory.Video\shell",
+        ] {
+            assert!(
+                sources.iter().any(|s| s.relative == expected),
+                "missing base source {expected}"
+            );
+        }
     }
 }

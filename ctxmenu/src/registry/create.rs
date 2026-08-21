@@ -553,6 +553,18 @@ fn category_relative(category: &Category) -> Result<String> {
         Category::DesktopBackground => r"DesktopBackground\Shell".into(),
         Category::Drive => r"Drive\shell".into(),
 
+        // Scannable and hideable, but not creatable yet: every shipped
+        // version reads `entries.json` strictly, and a category it does not
+        // know makes that reader set the whole file aside as damaged — the
+        // Win11 handler's input included. These four open up once a tolerant
+        // reader has been shipped for a release.
+        Category::Unknown
+        | Category::DirectoryAudio
+        | Category::DirectoryImage
+        | Category::DirectoryVideo => bail!(
+            "\x1eFür diese Kategorie können keine Einträge angelegt werden\x1fcannot create entries for\x1d {category:?}"
+        ),
+
         // One extension: `.png` only.
         Category::ExtAssoc(ext) => {
             let ext = check_ext(ext)?;
@@ -1093,9 +1105,15 @@ mod tests {
     #[test]
     fn entries_always_land_in_the_users_own_hive() {
         for category in Category::BASE {
+            // The four newest base categories are deliberately not creatable
+            // until a tolerant entries.json reader has shipped — see
+            // category_relative.
+            if !category_is_creatable(&category) {
+                continue;
+            }
             let mut e = entry(category, "x");
             e.key_name = "ctxmenu_x".into();
-            let target = e.target().expect("base categories are creatable");
+            let target = e.target().expect("creatable base categories create");
             assert_eq!(
                 target.scope(),
                 Scope::User,

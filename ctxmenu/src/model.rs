@@ -89,10 +89,19 @@ pub enum Category {
     AllFiles,
     /// `AllFilesystemObjects` — files and folders.
     AllFilesystemObjects,
+    /// `Unknown` — right-click on a file no program has claimed.
+    Unknown,
     /// `Directory` — right-click on a folder.
     Directory,
     /// `Directory\Background` — right-click on empty space inside a folder.
     DirectoryBackground,
+    /// `SystemFileAssociations\Directory.Audio` — a folder whose template
+    /// says music; the shell merges these verbs into the folder's menu.
+    DirectoryAudio,
+    /// `SystemFileAssociations\Directory.Image` — a folder of pictures.
+    DirectoryImage,
+    /// `SystemFileAssociations\Directory.Video` — a folder of videos.
+    DirectoryVideo,
     /// `Folder` — folders plus shell namespace objects such as ZIP archives.
     Folder,
     /// `DesktopBackground` — right-click on the desktop.
@@ -116,12 +125,16 @@ pub enum Category {
 }
 
 impl Category {
-    /// The seven base categories scanned without any file-type resolution.
-    pub const BASE: [Category; 7] = [
+    /// The eleven base categories scanned without any file-type resolution.
+    pub const BASE: [Category; 11] = [
         Category::AllFiles,
         Category::AllFilesystemObjects,
+        Category::Unknown,
         Category::Directory,
         Category::DirectoryBackground,
+        Category::DirectoryAudio,
+        Category::DirectoryImage,
+        Category::DirectoryVideo,
         Category::Folder,
         Category::DesktopBackground,
         Category::Drive,
@@ -132,8 +145,12 @@ impl Category {
         match self {
             Category::AllFiles => "allfiles".into(),
             Category::AllFilesystemObjects => "allfilesystemobjects".into(),
+            Category::Unknown => "unknown".into(),
             Category::Directory => "directory".into(),
             Category::DirectoryBackground => "directorybackground".into(),
+            Category::DirectoryAudio => "directoryaudio".into(),
+            Category::DirectoryImage => "directoryimage".into(),
+            Category::DirectoryVideo => "directoryvideo".into(),
             Category::Folder => "folder".into(),
             Category::DesktopBackground => "desktopbackground".into(),
             Category::Drive => "drive".into(),
