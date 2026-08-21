@@ -40,6 +40,22 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
           })}
         />
       </DocsBody>
+      {page.data.lastModified && (
+        // The date this file was last committed, not the date the site was
+        // built: a page nobody touched in a year should say so. UTC on
+        // purpose, so the build machine's zone cannot move it by a day.
+        <p className="mt-12 border-t border-fd-border pt-4 text-sm text-fd-muted-foreground">
+          Last updated{' '}
+          <time dateTime={page.data.lastModified.toISOString()}>
+            {page.data.lastModified.toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+              timeZone: 'UTC',
+            })}
+          </time>
+        </p>
+      )}
     </DocsPage>
   );
 }

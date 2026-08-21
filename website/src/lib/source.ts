@@ -16,6 +16,7 @@ import {
   Rocket,
   Scale,
   Sparkles,
+  Star,
   Table2,
   Terminal,
 } from 'lucide-react';
@@ -24,6 +25,10 @@ const docs = defineDocs({
   dir: 'content/docs',
   docs: {
     schema: pageSchema,
+    // Read from git, per file, at build time. The workflow has to check out
+    // the whole history for it — with the default shallow clone every page
+    // would carry the date of the deploy.
+    lastModified: true,
     postprocess: {
       includeProcessedMarkdown: true,
     },
@@ -51,6 +56,7 @@ export const pageIcons = {
   Rocket,
   Scale,
   Sparkles,
+  Star,
   Table2,
   Terminal,
 };
