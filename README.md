@@ -14,7 +14,9 @@ and web services, all the way to **two hundred tools from a single
 address** when a web application describes itself through OpenAPI.
 
 Windows 10 and 11, 64-bit. A single `.exe` written in Rust, no installation, no
-runtime library, no background service.
+runtime library, no background service. The [latest
+release](https://github.com/corgan2222/context-manager/releases/latest) carries
+`ctxmenu.exe`, a zip beside it, and the checksums both are signed with.
 
 *Interface in German and English, switchable at runtime; this README is
 English only.*
@@ -30,12 +32,13 @@ what cannot be changed without administrator rights.*
 
 ## What It Can Do
 
-- **See everything.** The seven base categories (files, folders, folder
-  background, desktop background, drives, filesystem objects, and the shell
-  namespace) across three registry areas: `HKCU`, `HKLM`, and the 32-bit
-  view `WOW6432Node`. On a machine that has grown over the years, those
-  seven come to about 130 entries; resolve every file type as well and the
-  whole scan reaches around 930. Static verbs and COM handlers are shown
+- **See everything.** The eleven base categories (files, files no program has
+  claimed, folders, folder background, the three folder-content menus for
+  music, pictures and video, desktop background, drives, filesystem objects,
+  and the shell namespace) across three registry areas: `HKCU`, `HKLM`, and
+  the 32-bit view `WOW6432Node`. On a machine that has grown over the years,
+  those eleven come to about 140 entries; resolve every file type as well
+  and the whole scan reaches around 940. Static verbs and COM handlers are shown
   separately: a verb is a key with a command, a COM handler is a CLSID
   backed by a DLL, and for the handler the program shows the CLSID's
   plain-text name and the DLL behind it. Plus Windows' own **verb store**
@@ -53,7 +56,7 @@ what cannot be changed without administrator rights.*
   curated selection of 98 types; a field above it accepts any further
   extension, which then stays saved. Anyone who wants to see everything
   presses *All installed*: on a machine that has grown over the years, that
-  is well over a thousand types instead of 98 -- 1674 on the machine this
+  is well over a thousand types instead of 98 -- 1739 on the machine this
   was written on -- and reading them in takes
   correspondingly longer.
 - **Group by program.** A program that registers itself in twenty file types
@@ -125,13 +128,22 @@ what cannot be changed without administrator rights.*
   `IContextMenu::QueryContextMenu` and appears nowhere in the registry.
   What is shown is the key name, the CLSID's plain-text name, and the DLL
   behind it.
-- **Rebuild the new Windows 11 main menu.** The tool works on the classic
-  menu ("Weitere Optionen anzeigen", i.e. "Show more options"), which
-  Windows 11 continues to run in full. What it can do is switch Explorer
-  over to that classic menu altogether — see *Getting Started*.
-- **Freely determine the order.** Windows sorts subkeys alphabetically and
-  only knows the coarse blocks `Position=Top` and `Position=Bottom`. Both
-  have been measured; the system does not offer anything more.
+- **Order the new Windows 11 menu.** Its entries are listed, hidden and
+  created like the classic ones, but where each one sits up there is
+  Windows' decision: neither the manifest nor the registry moves it.
+  Sorting stays a capability of the classic menu.
+- **Reach the commands Explorer builds into that menu itself.** "Send to my
+  phone" and its kin carry no registration at all: no package manifest, no
+  COM registration, no verb, measured on Windows 11 build 26200. What has
+  no registration cannot be listed, and cannot be hidden through the
+  blocked list either. Those switches live in Windows Settings.
+- **Freely determine the order.** Windows sorts subkeys alphabetically. The
+  one lever beside that is `Position`, and it is a free-text value rather
+  than a choice of two: `Top` and `Bottom` behave predictably, while
+  Microsoft itself ships `Last` and `After` with a `PositionCompare` GUID.
+  Measured; the system offers nothing finer. Submenus the tool writes
+  itself are the exception, because it numbers their children as it writes
+  them.
 - **Edit scanned entries.** The form shows everything that is in the
   registry but does not yet write anything back. Entries you created
   yourself are not affected by this.
@@ -140,7 +152,9 @@ what cannot be changed without administrator rights.*
 
 ## Getting Started
 
-There is no installer. Starting the `.exe` is enough.
+There is no installer. Download `ctxmenu.exe` from the [latest
+release](https://github.com/corgan2222/context-manager/releases/latest) and
+start it.
 
 ```
 ctxmenu.exe

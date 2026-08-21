@@ -1,0 +1,17 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "features",
+    "getting-started",
+    "the-list",
+    "editing",
+    "windows-11",
+    "services",
+    "backups",
+    "updating",
+    "command-line",
+    "building",
+    "contributing"
+  ]
+}

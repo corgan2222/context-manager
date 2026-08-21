@@ -1,0 +1,145 @@
+---
+title: Keeping it up to date
+description: How the program finds a newer release, what it verifies before installing one, and how it replaces itself while running.
+---
+
+There is no installer, so nothing on this machine notices that a copy has gone
+stale. The program asks GitHub instead.
+
+## The dot on the logo button
+
+While the window opens, the program makes one GET to
+`api.github.com/repos/corgan2222/context-manager/releases/latest`. No account,
+no token. Nothing else leaves the machine until you press the button described
+below.
+
+What comes back stays quiet. When there is nothing newer, nothing appears. When
+the request fails, nothing appears either and the reason goes to the log. A
+program that opens a window to announce that it could not reach GitHub is a
+program people learn to switch off.
+
+Only a newer version shows itself, and only as a dot in the corner of the logo
+button in the top bar. The tooltip on that button names the version. The About
+window behind it carries the version number, the release notes, and a **Fetch
+and restart** button.
+
+## What the second click checks
+
+That click is the first moment the program downloads anything. It then works in
+this order.
+
+<Steps>
+<Step>
+### Fetch the list and the signature
+
+The program fetches `checksums.txt` and `checksums.txt.sig`.
+</Step>
+<Step>
+### Verify the signature
+
+The signature has to verify against the public key compiled into the running
+`.exe`. That key is `ctxmenu/release-signing.pub.pem`. The scheme is RSA
+PKCS#1 v1.5 over SHA-256, and Windows' own CNG does the arithmetic through
+`BCryptVerifySignature`. Nothing below this line runs when the check fails.
+</Step>
+<Step>
+### Tie the list to the version being offered
+
+The signature covers the digests and nothing else. It does not cover the tag,
+and it does not cover the release the assets hang on. So the program requires a
+line for `ctxmenu_<offered version>_windows_amd64.zip` in the list. It never
+downloads that archive. It needs the name only.
+</Step>
+<Step>
+### Read the digest for the executable
+
+The program reads the digest for `ctxmenu.exe` out of a file it has now proved
+to be both the author's and this version's.
+</Step>
+<Step>
+### Fetch the executable
+
+The program fetches `ctxmenu.exe` and accepts it only when its SHA-256 is that
+digest.
+</Step>
+</Steps>
+
+<Callout type="warn" title="Why the third step exists">
+Somebody who takes over the GitHub account cannot sign anything. That person
+can still tag a release `v99.0.0` and attach the `checksums.txt`,
+`checksums.txt.sig` and `ctxmenu.exe` of an older release that was genuinely
+signed. Every check after that passes, and the user moves back to a version
+with a hole that was already fixed. A line naming the offered version can only
+sit in a list that was signed for exactly that version, so requiring one closes
+the gap.
+</Callout>
+
+## Two things are trusted, and an attacker needs both
+
+TLS says the bytes came from GitHub. WinHTTP validates the certificate against
+the Windows certificate store, the same store every other program on this
+machine relies on.
+
+The signature says the bytes came from whoever holds the private key. That is
+the half that still holds when the first one does not. The private key lives in
+the `RELEASE_SIGNING_KEY` repository secret, and one step of `release.yml` uses
+it. It does not live in the account it protects. Somebody who can publish a
+release cannot sign one.
+
+The author generated the key pair once and does not rotate it. A new pair would
+take self-update away from every copy already shipped.
+
+<Callout type="warn" title="A release without a signature is never offered">
+When `checksums.txt.sig` is missing, or when it does not verify, the program
+does not offer that release for installing. This covers every release before
+1.4.0, and it is meant that way. A set of assets that may arrive short is a set
+somebody gets to shorten.
+</Callout>
+
+Such a release does not count as "you are up to date" either, and neither does
+one whose assets are still uploading. The program names both as announced but
+not finished publishing yet, because from the outside they are the same thing:
+a version that exists and that this program will not install. For the few
+minutes after every publish that sentence is literally true, and the button
+that would fetch the release is not there.
+
+## Replacing the running file
+
+Windows refuses to overwrite an executable that is running. It does allow
+renaming one, and the swap uses that.
+
+1. The program writes the new bytes beside the old file as `ctxmenu.exe.new`.
+2. It renames the running file to `ctxmenu.exe.old`.
+3. It renames `ctxmenu.exe.new` over the original name.
+
+The download sits complete on disk before anything moves. The original name
+therefore has no file behind it only for the gap between two renames. When step
+3 fails anyway, the program undoes step 2. The next start deletes
+`ctxmenu.exe.old`.
+
+The new copy starts with the same command line this one had, and this window
+closes.
+
+<Callout>
+When the `.exe` sits in a folder this account may not write to, usually
+`C:\Program Files`, the message says exactly that. It does not report a broken
+download.
+</Callout>
+
+## Switching the check off
+
+*Look for new versions on start*, in the About window, is on by default.
+Unticking it stops the request entirely. **Look now**, at the foot of the same
+block, works either way, because pressing it is the decision the setting
+otherwise makes.
+
+There is no background service and no scheduled task. The program measures
+nothing and reports nothing back. It downloads and installs nothing without
+that second click.
+
+<Callout type="warn" title="Two kinds of signature, and neither stands in for the other">
+The `.exe` is still not Authenticode-signed, and SmartScreen still warns about
+it after a download in a browser. Windows checks Authenticode before it runs a
+downloaded file. This program checks the release signature before it replaces
+itself.
+</Callout>

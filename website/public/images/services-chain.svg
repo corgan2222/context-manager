@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" width="960" height="420" role="img" aria-label="One documentation address becomes 232 menu entries: the description is found, endpoints that take a file are kept, they are grouped by measurement, and each ticked one becomes a favourite.">
+  <style>
+    :root { color-scheme: light dark; }
+    .bg    { fill: #ffffff; }
+    .card  { fill: #f4f4f5; stroke: #e4e4e7; }
+    .ink   { fill: #18181b; }
+    .dim   { fill: #71717a; }
+    .mono  { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+    .sans  { font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+    .rule  { stroke: #d4d4d8; }
+    .accent{ fill: #006fee; }
+    .accentstroke { stroke: #006fee; }
+    .drop  { fill: #a1a1aa; }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #09090b; }
+      .card { fill: #111113; stroke: #27272a; }
+      .ink  { fill: #fafafa; }
+      .dim  { fill: #a1a1aa; }
+      .rule { stroke: #27272a; }
+      .accent { fill: #4796ff; }
+      .accentstroke { stroke: #4796ff; }
+      .drop { fill: #52525b; }
+    }
+  </style>
+
+  <rect class="bg" width="960" height="420" rx="16"/>
+
+  <!-- Station 1: the address you paste -->
+  <text class="sans dim" x="40" y="46" font-size="13" letter-spacing="1.5">1 · YOU PASTE</text>
+  <rect class="card" x="40" y="58" width="880" height="52" rx="12" stroke-width="1.5"/>
+  <circle class="drop" cx="66" cy="84" r="4"/>
+  <circle class="drop" cx="80" cy="84" r="4"/>
+  <circle class="drop" cx="94" cy="84" r="4"/>
+  <text class="mono ink" x="118" y="89" font-size="15">https://service.example/api/docs/</text>
+  <text class="mono dim" x="430" y="89" font-size="15" text-decoration="line-through">#tag/tools</text>
+  <text class="sans dim" x="560" y="89" font-size="13">the anchor is stripped</text>
+
+  <!-- arrow -->
+  <path class="accentstroke" d="M480 116 L480 140" stroke-width="2" fill="none"/>
+  <path class="accent" d="M480 148 l-6 -10 h12 z"/>
+
+  <!-- Station 2: what is found and what is kept -->
+  <text class="sans dim" x="40" y="176" font-size="13" letter-spacing="1.5">2 · THE PROGRAM READS</text>
+
+  <rect class="card" x="40" y="188" width="270" height="86" rx="12" stroke-width="1.5"/>
+  <text class="ink sans" x="60" y="216" font-size="15" font-weight="600">351 paths</text>
+  <text class="dim sans" x="60" y="240" font-size="13">in the description behind it</text>
+  <text class="dim sans" x="60" y="260" font-size="13">found by parsing, not by status code</text>
+
+  <path class="accentstroke" d="M318 231 L346 231" stroke-width="2" fill="none"/>
+  <path class="accent" d="M354 231 l-10 -6 v12 z"/>
+
+  <rect class="card" x="362" y="188" width="250" height="86" rx="12" stroke-width="1.5"/>
+  <text class="accent sans" x="382" y="216" font-size="15" font-weight="600">232 take a file</text>
+  <text class="dim sans" x="382" y="240" font-size="13">multipart/form-data</text>
+  <text class="dim sans" x="382" y="260" font-size="13">the rest cannot become an entry</text>
+
+  <path class="accentstroke" d="M620 231 L648 231" stroke-width="2" fill="none"/>
+  <path class="accent" d="M656 231 l-10 -6 v12 z"/>
+
+  <rect class="card" x="664" y="188" width="256" height="86" rx="12" stroke-width="1.5"/>
+  <text class="ink sans" x="684" y="216" font-size="15" font-weight="600">grouped by measurement</text>
+  <text class="dim sans" x="684" y="240" font-size="13">every path segment scored</text>
+  <text class="dim sans" x="684" y="260" font-size="13">beat the flat tag by 26x</text>
+
+  <!-- arrow down -->
+  <path class="accentstroke" d="M480 282 L480 306" stroke-width="2" fill="none"/>
+  <path class="accent" d="M480 314 l-6 -10 h12 z"/>
+
+  <!-- Station 3: the menu -->
+  <text class="sans dim" x="40" y="342" font-size="13" letter-spacing="1.5">3 · YOUR RIGHT-CLICK MENU</text>
+  <rect class="card" x="40" y="352" width="880" height="48" rx="12" stroke-width="1.5"/>
+  <text class="sans ink" x="64" y="381" font-size="14">Image</text>
+  <text class="sans dim" x="122" y="381" font-size="14">81</text>
+  <line class="rule" x1="150" y1="364" x2="150" y2="388" stroke-width="1"/>
+  <text class="sans ink" x="170" y="381" font-size="14">Video</text>
+  <text class="sans dim" x="222" y="381" font-size="14">30</text>
+  <line class="rule" x1="250" y1="364" x2="250" y2="388" stroke-width="1"/>
+  <text class="sans ink" x="270" y="381" font-size="14">PDF</text>
+  <text class="sans dim" x="310" y="381" font-size="14">27</text>
+  <line class="rule" x1="338" y1="364" x2="338" y2="388" stroke-width="1"/>
+  <text class="sans ink" x="358" y="381" font-size="14">Audio</text>
+  <text class="sans dim" x="408" y="381" font-size="14">25</text>
+  <line class="rule" x1="436" y1="364" x2="436" y2="388" stroke-width="1"/>
+  <text class="sans ink" x="456" y="381" font-size="14">Files</text>
+  <text class="sans dim" x="500" y="381" font-size="14">15</text>
+  <text class="sans dim" x="700" y="381" font-size="14">one address, one round of ticks</text>
+</svg>

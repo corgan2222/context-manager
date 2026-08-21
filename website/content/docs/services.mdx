@@ -1,0 +1,75 @@
+---
+title: Services
+description: Two hundred menu entries from a single OpenAPI address.
+---
+
+If a web application describes itself through OpenAPI, its documentation page
+is enough to start. Paste the address, and the program finds the
+machine-readable document behind it, reads which endpoints accept a file, and
+turns every one you tick into a menu entry.
+
+![From one documentation address to a grouped menu: 351 paths are read, 232 of them take a file, and the grouping is chosen by measurement.](/images/services-chain.svg)
+
+![The Services tab: the tools read out of one OpenAPI description, grouped the way the service groups itself.](/images/08-services_en.web.png)
+
+## What happens to the address
+
+<Steps>
+
+<Step>
+### The document is found, not guessed
+
+The address of a documentation page is not the address of the description. The
+program tries the usual places behind it and decides by whether the answer
+parses as a description, not by the HTTP status code — a server that answers
+`200` with an error page is common enough that the status alone proves nothing.
+</Step>
+
+<Step>
+### Only endpoints that take a file are offered
+
+Of 351 paths on the test service, 232 accept a file as `multipart/form-data`.
+The rest cannot become a menu entry, so they are not listed.
+</Step>
+
+<Step>
+### The grouping is measured, not taken on trust
+
+An OpenAPI tag is often a single flat drawer holding everything. The program
+scores the tag against every path segment and picks whichever divides the tools
+best. On the test service that beat the tag by a factor of 26.
+</Step>
+
+<Step>
+### Options become a form
+
+Where an endpoint documents its options, the program builds a form for them —
+including where the service describes them only in running prose. Of 227 such
+descriptions it produced 431 fields. Where the prose is not unambiguous, the
+field stays a text box with the description above it: a wrong field would send
+nonsense to a real service, while a missing one costs a checkbox.
+</Step>
+
+</Steps>
+
+## Tools that answer with a job number
+
+Some endpoints queue the work and answer with a job number instead of a file.
+Those are listed like any other and marked *works in the background*. The
+favourite made from one follows the job over the service's progress path and
+saves the finished file when it is done.
+
+<Callout>
+The declaration in the description does not decide this. The same endpoint on
+the test service answered directly and with a job number in turns, so the
+program looks at the real answer rather than the promise.
+</Callout>
+
+## Why the program sends the file
+
+A web page may not read a file off your disk — that is a browser rule, not an
+oversight. So the menu entry does not open a page and hope. It sends the file
+itself: as `multipart/form-data`, as a raw body, or by putting it on the
+clipboard and opening the page ready to paste.
+
+The result lands beside the original. The original is never overwritten.

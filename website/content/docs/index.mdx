@@ -1,0 +1,82 @@
+---
+title: ctxmenu
+description: A manager for the classic Windows context menu, and for the new Windows 11 one.
+---
+
+ctxmenu reads what is in your right-click menu, shows where each entry lives in
+the registry and which program put it there, and lets you hide, sort, delete or
+create entries. Every change is backed up before it happens.
+
+<Cards>
+  <Card
+    title="Getting started"
+    href="/docs/getting-started"
+    description="Download, first run, and the six tabs."
+  />
+  <Card
+    title="Everything it does"
+    href="/docs/features"
+    description="The complete list, and the limits with their reasons."
+  />
+  <Card
+    title="Working the list"
+    href="/docs/the-list"
+    description="Columns, sorting, search, and what the detail pane shows."
+  />
+  <Card
+    title="Editing the menu"
+    href="/docs/editing"
+    description="Five levels from hide to delete, and what each one writes."
+  />
+  <Card
+    title="The Windows 11 menu"
+    href="/docs/windows-11"
+    description="Both halves of it, and what belongs to Explorer."
+  />
+  <Card
+    title="Services"
+    href="/docs/services"
+    description="Two hundred tools from a single OpenAPI address."
+  />
+  <Card
+    title="Backups and restore"
+    href="/docs/backups"
+    description="Why a change cannot happen without one."
+  />
+  <Card
+    title="Keeping it up to date"
+    href="/docs/updating"
+    description="The self-update, and the signature it checks first."
+  />
+  <Card
+    title="From the command line"
+    href="/docs/command-line"
+    description="Subcommands and flags, for scripts and for reading."
+  />
+  <Card
+    title="Building it yourself"
+    href="/docs/building"
+    description="The toolchain, the commands, and what goes wrong."
+  />
+</Cards>
+
+## What it sees
+
+The scan covers eleven base categories across three registry areas: `HKCU`,
+`HKLM`, and the 32-bit view under `WOW6432Node`. On a machine that has grown
+over the years, those eleven hold 142 entries; resolve the file types as well
+and the scan reaches 938.
+
+Verbs and COM handlers are listed apart, because they are different things. A
+verb is a registry key holding a command. A COM handler is a CLSID that a DLL
+implements, and for one of those the list shows the plain-text name of the
+CLSID and the path of the DLL behind it.
+
+## What it will not do
+
+Some limits are the platform's, not the program's. Windows generates the text
+of a COM handler at run time, so no registry reader can know it. The order of
+entries in the new Windows 11 menu belongs to Explorer. And the commands
+Explorer builds into that menu itself, such as "Send to my phone", carry no
+registration at all, which means nothing can list them and nothing can hide
+them.
