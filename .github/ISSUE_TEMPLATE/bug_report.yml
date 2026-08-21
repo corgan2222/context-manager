@@ -1,0 +1,83 @@
+name: Bug report
+description: Something behaves wrongly, shows the wrong thing, or crashes.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Two things before you start: search the
+        existing issues for the same problem, and if this is a security
+        vulnerability, report it privately as the security policy describes
+        rather than here.
+  - type: input
+    id: version
+    attributes:
+      label: ctxmenu version
+      description: The About window names it; so do the exe's file properties.
+      placeholder: "1.5.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: "`winver` shows both. The build decides which menus exist."
+      placeholder: "Windows 11 24H2, build 26100"
+    validations:
+      required: true
+  - type: dropdown
+    id: menu
+    attributes:
+      label: Which menu
+      description: >-
+        The new Windows 11 menu is the short one on first right-click; the
+        classic menu sits behind "Show more options".
+      options:
+        - Classic menu
+        - New Windows 11 top menu
+        - Both / not menu-related
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where in the program
+      options:
+        - Categories tab
+        - File types tab
+        - Programs tab
+        - Favourites tab
+        - Services tab
+        - Backups tab
+        - Editor / creating entries
+        - Own entries in the Windows 11 menu
+        - Self-update
+        - Command line
+        - Somewhere else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Steps to get there, what you expected, what you saw instead.
+      placeholder: |
+        1. …
+        2. …
+        Expected: …
+        Instead: …
+    validations:
+      required: true
+  - type: textarea
+    id: key
+    attributes:
+      label: Affected registry key, if one is involved
+      description: >-
+        The detail pane shows the full path of the selected entry and copies
+        it with one click.
+      placeholder: HKCU\SOFTWARE\Classes\Directory\shell\…
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: UI language, screenshots, console output — whatever helps.
