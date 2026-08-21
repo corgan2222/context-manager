@@ -7,6 +7,7 @@ import {
   Archive,
   Bot,
   Cloud,
+  GitCompare,
   Hammer,
   LayoutGrid,
   MousePointerClick,
@@ -35,11 +36,13 @@ const docs = defineDocs({
 // The icons the sidebar draws in front of each page, named in that page's
 // frontmatter. Listed one by one rather than reached through the whole of
 // lucide-react: a namespace import pulls every icon into the bundle, and a
-// named handful is what the site actually draws.
-const pageIcons = {
+// named handful is what the site actually draws. Exported because the cards on
+// the documentation index draw the same twelve, and two lists would drift.
+export const pageIcons = {
   Archive,
   Bot,
   Cloud,
+  GitCompare,
   Hammer,
   LayoutGrid,
   MousePointerClick,

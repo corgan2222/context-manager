@@ -1,0 +1,59 @@
+---
+title: How it compares
+description: The other managers for the Windows context menu, what each one is built on, and where this one is different.
+icon: GitCompare
+---
+
+Seven tools for the same menu, and none of them do the same thing. This page
+says which is which, so the choice is an informed one rather than a search
+result.
+
+<Callout title="Where these entries come from">
+  Documentation, release notes and licence files of each project, read on 21
+  August 2026. Every cell is read rather than tested, and the amber ones say
+  where a feature exists but is limited. Versions and prices age fast; if a
+  line here is wrong, [say so in an
+  issue](https://github.com/corgan2222/context-manager/issues/new/choose) and
+  it gets corrected.
+</Callout>
+
+## The field
+
+| Tool | Licence | Built on | Needs admin | Approach |
+|---|---|---|---|---|
+| [context-manager](https://github.com/corgan2222/context-manager) | MIT | Rust, one file | no | GUI, writes to `HKCU` first |
+| [ContextMenuManager](https://github.com/BluePointLilac/ContextMenuManager) | GPL-3.0 <sup>1</sup> | C# WinForms, .NET Framework | partly | Toggles the entries that are there |
+| [Nilesoft Shell](https://nilesoft.org/) | MIT | C++ shell extension | yes | Replaces the menu, configured in `.nss` |
+| [FileMenu Tools](https://www.lopesoft.com/index.php/en/) | from about $11 | Closed source, native | yes | 40+ file utilities plus own commands |
+| [ShellExView / ShellMenuView](https://www.nirsoft.net/utils/shexview.html) | Freeware, closed | Native, portable | for `HKLM` | View and disable, nothing else |
+| [Easy Context Menu](https://www.sordum.org/7615/easy-context-menu-v1-6/) | Freeware, closed | Portable | yes | Checkbox presets per menu root |
+| [Right Click Enhancer](https://rbsoft.org/downloads/right-click-enhancer/) | $9.99 Pro | .NET, closed | yes | Nine separate tools |
+
+<sup>1</sup> The repository's `LICENCE` file says GPL-3.0 while the About box
+in the program says MIT. Treat it as GPL-3.0 until the project says otherwise.
+
+## Feature by feature
+
+<Yes /> present · <Part>limited, or needs a workaround</Part> · <No /> absent
+
+| | [ctxmenu](https://github.com/corgan2222/context-manager) | [CMM](https://github.com/BluePointLilac/ContextMenuManager) | [Shell](https://nilesoft.org/) | [FMT](https://www.lopesoft.com/index.php/en/) | [NirSoft](https://www.nirsoft.net/utils/shexview.html) | [ECM](https://www.sordum.org/7615/easy-context-menu-v1-6/) | [RCE](https://rbsoft.org/downloads/right-click-enhancer/) |
+|---|---|---|---|---|---|---|---|
+| Free of charge | <Yes /> | <Yes /> | <Yes /> | <Part /> | <Yes /> | <Yes /> | <Part /> |
+| Open source | <Yes /> | <Yes /> | <Yes /> | <No /> | <No /> | <No /> | <No /> |
+| Permissive licence | <Yes /> | <No /> | <Yes /> | – | – | – | – |
+| Windows 11 menu | <Yes /> | <Yes /> | <Part>replaces it</Part> | <Part /> | <Part /> | <Part /> | <No /> |
+| **Works without administrator rights** | <Yes /> | <Part /> | <No /> | <No /> | <Part /> | <No /> | <No /> |
+| GUI rather than a config file | <Yes /> | <Yes /> | <No /> | <Yes /> | <Yes /> | <Yes /> | <Yes /> |
+| Backup before every change | <Yes /> | <Part /> | <No /> | <Part>unverified</Part> | <Part>manual export</Part> | <Part /> | <Part>reg export</Part> |
+| Self-update, signature checked | <Yes /> | <Part>check only</Part> | <No /> | <Part /> | <No /> | <No /> | <Part /> |
+| Favourites list | <Yes /> | <No /> | <Part>via config</Part> | <Part /> | <No /> | <Part>presets</Part> | <Part /> |
+| Dark and light mode in the app | <Yes /> | <No /> | <Part>menu themes</Part> | <No /> | <No /> | <No /> | <No /> |
+| Language switched at runtime | <Yes /> 2 | <Yes /> many | – | <Yes /> | <Part>restart</Part> | <Yes /> 34 | <Yes /> |
+| Add entries by drag and drop | <Yes /> | <No /> | <No /> | <Yes /> | <No /> | <Part /> | <Yes /> |
+| Search across names, paths and **commands** | <Yes /> | <Part>filter</Part> | <No /> | <Part /> | <Part>quick filter</Part> | <No /> | <No /> |
+| **Finds entries whose program is gone** | <Yes /> | <No /> | <No /> | <No /> | <Part>manual</Part> | <No /> | <No /> |
+| **Services from any OpenAPI address** | <Yes /> | <No /> | <No /> | <No /> | <No /> | <No /> | <No /> |
+| One file, no runtime to install | <Yes /> | <No /> .NET | <Yes /> DLL | <No /> | <Yes /> | <Yes /> | <No /> .NET |
+
+CMM = ContextMenuManager · Shell = Nilesoft Shell · FMT = FileMenu Tools ·
+ECM = Easy Context Menu · RCE = Right Click Enhancer
