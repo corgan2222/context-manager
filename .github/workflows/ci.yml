@@ -70,6 +70,9 @@ jobs:
               # a change to the program. Without this line a key rotation would
               # report "nothing here to check" and ship untested.
               - 'ctxmenu/release-signing.pub.pem'
+              # The service logos are `include_bytes!` into the catalogue in
+              # `templates.rs`, so a changed PNG is a changed binary.
+              - 'website/public/icons/**'
               - 'rust-toolchain.toml'
               - '.cargo/**'
               - 'ctxmenu/build.rs'

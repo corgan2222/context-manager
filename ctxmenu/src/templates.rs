@@ -487,6 +487,16 @@ mod tests {
                 "{} is {width}x{height}; a menu icon takes up to 256",
                 template.id
             );
+            // A menu icon is a square. ImgBB shipped in 1.6.0 as a 155x32
+            // word mark, which the size check above let through: in the
+            // menu it was a blue smear, and on the README it stood out of
+            // the column. The site's favicon is the square that belongs
+            // here.
+            assert_eq!(
+                width, height,
+                "{} is {width}x{height}; a menu icon is square, a word mark is not",
+                template.id
+            );
         }
     }
 
