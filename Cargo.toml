@@ -118,7 +118,14 @@ resolver = "3"
 # site `fast-uri`, `next` and `sharp`, each to the version that closes an
 # advisory Dependabot had opened against the one before. `favourites.json`
 # reads and writes as under 1.6.0.
-version = "1.6.1"
+#
+# 1.6.2 on 2026-09-09: a patch. Restoring a backup retries an import that
+# `reg.exe` answered with 0 and no key, the way the export has retried a lost
+# write since August; one such import held up the release run of 1.6.1. The
+# ImgBB logo is the square favicon instead of a word mark, and the catalogue
+# test refuses a logo that is not square. `favourites.json` reads and writes
+# as under 1.6.0.
+version = "1.6.2"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
