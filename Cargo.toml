@@ -112,7 +112,13 @@ resolver = "3"
 # whose result reads `"from": "built"` names a value 1.5.1 has never heard of,
 # and that one file will not read there. Forwards is safe: everything 1.5.1
 # wrote reads here unchanged.
-version = "1.6.0"
+#
+# 1.6.1 on 2026-09-09: a patch. Nothing in the program changed. What moved
+# are dependencies: `read-fonts` 0.43.0 to 0.43.1 in the binary, and in the
+# site `fast-uri`, `next` and `sharp`, each to the version that closes an
+# advisory Dependabot had opened against the one before. `favourites.json`
+# reads and writes as under 1.6.0.
+version = "1.6.1"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
