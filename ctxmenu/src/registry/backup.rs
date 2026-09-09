@@ -396,6 +396,58 @@ fn export_carries_a_key(file: &Path) -> bool {
     decode_reg_file(&bytes).contains("[HKEY_")
 }
 
+/// Imports one file, trying again when `reg.exe` answered 0 and left no key.
+///
+/// The mirror image of [`export_one`], and for the same reason. Exit 0 is
+/// also `reg import`'s answer for a file that names no key at all, so the
+/// registry is asked before an import counts; only a clear "no such key" is
+/// a failure, an unreadable answer must not turn a restored key into an
+/// alarm. On 2026-09-09 the release run of 1.6.1 saw exactly that on the
+/// GitHub runner: exit 0, a file with a key block, no key, for one of three,
+/// and the same commit went through on the next run. The export side had
+/// retried a lost write for weeks by then; the import side had not, and one
+/// lost write was enough to hold up a release.
+///
+/// A file without a key block is not retried: nothing in it can appear, so
+/// twenty attempts would only delay the sentence that says so.
+fn import_one(full: &str, file: &Path) -> Result<Option<String>> {
+    if !export_carries_a_key(file) {
+        return Ok(Some(
+            "\x1eDie Datei tr\u{e4}gt keinen lesbaren Schl\u{fc}sselblock, nichts wiederhergestellt\
+             \x1fthe file carries no readable key block, nothing was restored\x1d"
+                .to_string(),
+        ));
+    }
+
+    let mut last = None;
+    for attempt in 0..RETRY_ATTEMPTS {
+        let failed = match run_reg(&["import", &file.to_string_lossy()])? {
+            None if presence(full) != Presence::Absent => {
+                if attempt > 0 {
+                    crate::errln!(
+                        "backup_import_retry: succeeded on attempt {} for {full}",
+                        attempt + 1
+                    );
+                }
+                return Ok(None);
+            }
+            None => "\x1eImport meldete Erfolg, der Schl\u{fc}ssel fehlt\
+                     \x1fimport reported success, the key is missing\x1d"
+                .to_string(),
+            Some(reason) => {
+                format!("\x1ereg import fehlgeschlagen\x1freg import failed\x1d: {reason}")
+            }
+        };
+        last = Some(failed);
+        match retry_delay(attempt + 1, RETRY_ATTEMPTS, RETRY_STEP) {
+            Some(delay) => std::thread::sleep(delay),
+            None => break,
+        }
+    }
+
+    Ok(Some(last.expect("at least one attempt")))
+}
+
 /// The text of a `.reg` file: UTF-16 LE with BOM since format 5.00, plain
 /// bytes for the older ANSI form.
 ///
@@ -587,21 +639,11 @@ pub fn restore(directory: &Path) -> Result<RestoreReport> {
 
     for entry in present {
         let file = directory.join(&entry.file);
-        match run_reg(&["import", &file.to_string_lossy()])? {
-            // Exit 0 is also reg import's answer for a file that names no
-            // key at all, so the registry is asked before this counts.
-            // Only a clear "no such key" is a failure — an unreadable
-            // answer must not turn a restored key into an alarm.
-            None if presence(&entry.registry_path) != Presence::Absent => report.restored += 1,
-            None => report.failures.push(format!(
-                "{}: \x1eImport meldete Erfolg, der Schl\u{fc}ssel fehlt\
-                 \x1fimport reported success, the key is missing\x1d",
-                entry.registry_path
-            )),
-            Some(reason) => report.failures.push(format!(
-                "{}: \x1ereg import fehlgeschlagen\x1freg import failed\x1d: {reason}",
-                entry.registry_path
-            )),
+        match import_one(&entry.registry_path, &file)? {
+            None => report.restored += 1,
+            Some(reason) => report
+                .failures
+                .push(format!("{}: {reason}", entry.registry_path)),
         }
     }
 
@@ -1057,7 +1099,7 @@ mod tests {
         assert_eq!(report.restored, 0, "nothing came back, nothing may count");
         assert_eq!(report.failed(), 1);
         assert!(
-            report.failures[0].contains("the key is missing"),
+            report.failures[0].contains("no readable key block"),
             "the report must say what went wrong, got {:?}",
             report.failures
         );

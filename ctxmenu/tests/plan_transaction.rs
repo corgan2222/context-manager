@@ -405,7 +405,15 @@ fn deleting_a_group_removes_every_key_and_the_backup_brings_them_back() {
         panic!("one plan, one backup, got {:?}", report.backup_directories);
     };
     let restored = backup::restore(std::path::Path::new(directory)).expect("reg import");
-    assert_eq!(restored.restored, 3, "{:?}", restored.failures);
+    // The same evidence as below: this count failed on the GitHub runner on
+    // 2026-09-09 with nothing but "2 != 3" and one sentence to read.
+    assert_eq!(
+        restored.restored,
+        3,
+        "{:?}\n{}",
+        restored.failures,
+        evidence(Path::new(directory), &fixture)
+    );
     assert_eq!(restored.removed, 0, "nothing was missing when it was taken");
 
     for target in &fixture.targets {
