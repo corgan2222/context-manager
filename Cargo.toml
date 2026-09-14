@@ -151,7 +151,7 @@ egui = "0.36.1"
 # and loads it through ctx.load_texture, so an image crate is not needed.
 egui_extras = { version = "0.36.1", default-features = false }
 raw-window-handle = "0.6"
-windows-registry = "0.6.1"
+windows-registry = "0.100.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
