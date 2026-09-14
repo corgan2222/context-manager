@@ -157,7 +157,7 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-dirs = "6"
+dirs = "7"
 rustc-hash = "2"
 # Reads `AppxManifest.xml`, the only XML this program ever touches. Read-only,
 # no dependencies of its own, and it keeps the namespaces apart — the manifest
