@@ -38,4 +38,4 @@ features = [
 # The #[implement] macro expands to ::windows_core paths, so the crate has
 # to be a direct dependency, not only windows' own.
 [dependencies.windows-core]
-version = "0.62"
+version = "0.100"
