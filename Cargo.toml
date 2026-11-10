@@ -125,7 +125,16 @@ resolver = "3"
 # ImgBB logo is the square favicon instead of a word mark, and the catalogue
 # test refuses a logo that is not square. `favourites.json` reads and writes
 # as under 1.6.0.
-version = "1.6.2"
+# 1.6.3 on 2026-11-10: a patch. Nothing the program does changed; it is
+# built from newer dependencies. `serde_json`, `thiserror`, `roxmltree` and
+# `winresource` moved by patch releases, `dirs` to 7 and `windows-registry` to
+# 0.100 -- both majors by their own numbering, neither needing a code change.
+# The release build's `scan --json` matched the one from 1.6.2 on the same
+# machine, 367 entries field for field. `windows-core` stays on 0.62: its 0.100
+# needs a `windows` 0.100 that does not exist yet. The site's fifteen security
+# alerts were fixed in the same round and do not touch the binary.
+# `favourites.json` reads and writes as under 1.6.0.
+version = "1.6.3"
 edition = "2024"
 rust-version = "1.95"
 # MIT, chosen by the author. Every dependency is MIT or MIT/Apache-2.0, so
