@@ -16,20 +16,23 @@
     "fumadocs-mdx": "15.3.0",
     "fumadocs-ui": "npm:@fumadocs/base-ui@16.14.5",
     "lucide-react": "^1.31.0",
-    "next": "16.3.4",
+    "next": "16.4.6",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/mdx": "^2.0.14",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "postcss": "^8.5.26",
-    "serve": "^14.2.6",
+    "serve": "^14.2.7",
     "tailwindcss": "^4.3.3",
-    "typescript": "^6.0.3",
-    "@biomejs/biome": "^2.5.8"
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "compression": "1.8.2"
   }
 }
