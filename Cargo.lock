@@ -1062,9 +1062,9 @@ dependencies = [
 
 [[package]]
 name = "iconflow"
-version = "1.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdea0c209457d8685cf6f1aae4eabc71d69f3c6ee6bb1fab0861a52251763936"
+checksum = "03d8d9fb7a3ca4ac8f2006e2828f90005099a3e808aa14b8ff4dc3e55f492a45"
 
 [[package]]
 name = "image"
